@@ -34,6 +34,7 @@ class GsTileBuildOptions:
     coordinate_origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
     crs: str | None = None
     cancellation_check: Callable[[], None] | None = None
+    progress_callback: Callable[[dict[str, Any]], None] | None = None
 
     def validate(self) -> None:
         if not 1_024 <= self.leaf_size <= 1_048_576:
@@ -68,12 +69,13 @@ class _WorkFile:
     bounds_max: tuple[float, float, float]
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+def _emit_progress(
+    callback: Callable[[dict[str, Any]], None] | None,
+    event: str,
+    **details: Any,
+) -> None:
+    if callback is not None:
+        callback({"event": event, **details})
 
 
 def _work_dtype(layout: BinaryPlyLayout) -> np.dtype:
@@ -121,13 +123,18 @@ def _create_root_work_file(
     target: Path,
     chunk_records: int,
     cancellation_check: Callable[[], None] | None = None,
-) -> _WorkFile:
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[_WorkFile, str]:
     dtype = _work_dtype(layout)
     minimum = np.full(3, np.inf, dtype=np.float64)
     maximum = np.full(3, -np.inf, dtype=np.float64)
     source_id = 0
+    digest = hashlib.sha256()
     with source.open("rb") as input_handle, target.open("xb") as output_handle:
-        input_handle.seek(layout.header_size)
+        header = input_handle.read(layout.header_size)
+        if len(header) != layout.header_size:
+            raise ValueError("PLY header ended before its declared size")
+        digest.update(header)
         remaining = layout.vertex_count
         while remaining:
             if cancellation_check is not None:
@@ -136,6 +143,7 @@ def _create_root_work_file(
             records = np.fromfile(input_handle, dtype=layout.dtype, count=count)
             if records.shape[0] != count:
                 raise ValueError("PLY payload ended before its declared vertex count")
+            digest.update(memoryview(records).cast("B"))
             working = np.empty(count, dtype=dtype)
             for name in layout.dtype.names or ():
                 working[name] = records[name]
@@ -146,33 +154,25 @@ def _create_root_work_file(
             maximum = np.maximum(maximum, chunk_max)
             working.tofile(output_handle)
             remaining -= count
+            _emit_progress(
+                progress_callback,
+                "source_copy",
+                processed=source_id,
+                total=layout.vertex_count,
+            )
+        for block in iter(lambda: input_handle.read(1024 * 1024), b""):
+            digest.update(block)
         output_handle.flush()
         os.fsync(output_handle.fileno())
-    return _WorkFile(
-        target,
-        layout.vertex_count,
-        tuple(float(value) for value in minimum),
-        tuple(float(value) for value in maximum),
+    return (
+        _WorkFile(
+            target,
+            layout.vertex_count,
+            tuple(float(value) for value in minimum),
+            tuple(float(value) for value in maximum),
+        ),
+        digest.hexdigest(),
     )
-
-
-def _file_bounds(
-    path: Path,
-    dtype: np.dtype,
-    chunk_records: int,
-    cancellation_check: Callable[[], None] | None = None,
-) -> tuple[tuple[float, ...], tuple[float, ...], int]:
-    minimum = np.full(3, np.inf, dtype=np.float64)
-    maximum = np.full(3, -np.inf, dtype=np.float64)
-    count = 0
-    for records in _chunks(path, dtype, chunk_records, cancellation_check):
-        chunk_min, chunk_max = _bounds(records)
-        minimum = np.minimum(minimum, chunk_min)
-        maximum = np.maximum(maximum, chunk_max)
-        count += records.shape[0]
-    if count == 0:
-        raise ValueError("Internal GSTile partition is empty")
-    return tuple(minimum.tolist()), tuple(maximum.tolist()), count
 
 
 def _split_work_file(
@@ -189,12 +189,31 @@ def _split_work_file(
     left_path = item.path.with_name(f"{node_id}0.work")
     right_path = item.path.with_name(f"{node_id}1.work")
     left_count = right_count = 0
+    left_minimum = np.full(3, np.inf, dtype=np.float64)
+    left_maximum = np.full(3, -np.inf, dtype=np.float64)
+    right_minimum = np.full(3, np.inf, dtype=np.float64)
+    right_maximum = np.full(3, -np.inf, dtype=np.float64)
+
+    def record_partition_bounds(records: np.ndarray, *, left: bool) -> None:
+        nonlocal left_minimum, left_maximum, right_minimum, right_maximum
+        if records.size == 0:
+            return
+        chunk_minimum, chunk_maximum = _bounds(records)
+        if left:
+            left_minimum = np.minimum(left_minimum, chunk_minimum)
+            left_maximum = np.maximum(left_maximum, chunk_maximum)
+        else:
+            right_minimum = np.minimum(right_minimum, chunk_minimum)
+            right_maximum = np.maximum(right_maximum, chunk_maximum)
+
     with left_path.open("xb") as left, right_path.open("xb") as right:
         for records in _chunks(item.path, dtype, chunk_records, cancellation_check):
             mask = records[("x", "y", "z")[axis]] < midpoint
             left_records, right_records = records[mask], records[~mask]
             left_records.tofile(left)
             right_records.tofile(right)
+            record_partition_bounds(left_records, left=True)
+            record_partition_bounds(right_records, left=False)
             left_count += left_records.shape[0]
             right_count += right_records.shape[0]
 
@@ -203,6 +222,10 @@ def _split_work_file(
         right_path.unlink(missing_ok=True)
         left_count = item.count // 2
         right_count = item.count - left_count
+        left_minimum.fill(np.inf)
+        left_maximum.fill(-np.inf)
+        right_minimum.fill(np.inf)
+        right_maximum.fill(-np.inf)
         written = 0
         with left_path.open("xb") as left, right_path.open("xb") as right:
             for records in _chunks(item.path, dtype, chunk_records, cancellation_check):
@@ -211,20 +234,26 @@ def _split_work_file(
                 right_part = records[left_remaining:]
                 left_part.tofile(left)
                 right_part.tofile(right)
+                record_partition_bounds(left_part, left=True)
+                record_partition_bounds(right_part, left=False)
                 written += left_part.shape[0]
 
-    left_min, left_max, verified_left = _file_bounds(
-        left_path, dtype, chunk_records, cancellation_check
-    )
-    right_min, right_max, verified_right = _file_bounds(
-        right_path, dtype, chunk_records, cancellation_check
-    )
-    if verified_left != left_count or verified_right != right_count:
+    if left_count + right_count != item.count:
         raise RuntimeError("GSTile partition count changed during split")
     item.path.unlink()
     return (
-        _WorkFile(left_path, left_count, left_min, left_max),
-        _WorkFile(right_path, right_count, right_min, right_max),
+        _WorkFile(
+            left_path,
+            left_count,
+            tuple(left_minimum.tolist()),
+            tuple(left_maximum.tolist()),
+        ),
+        _WorkFile(
+            right_path,
+            right_count,
+            tuple(right_minimum.tolist()),
+            tuple(right_maximum.tolist()),
+        ),
     )
 
 
@@ -275,6 +304,15 @@ def build_gstile_bundle(
     output_required = estimated_output + reserve
     if shared_filesystem:
         temporary_required += estimated_output
+    _emit_progress(
+        options.progress_callback,
+        "preflight",
+        gaussianCount=layout.vertex_count,
+        sourceBytes=source_payload_bytes,
+        estimatedTemporaryBytes=temporary_required,
+        estimatedOutputBytes=output_required,
+        sharedFilesystem=shared_filesystem,
+    )
     if shutil.disk_usage(temporary_parent).free < temporary_required:
         raise RuntimeError(
             "Insufficient temporary disk for GSTile atomic build: "
@@ -294,12 +332,19 @@ def build_gstile_bundle(
         bundle_tmp.mkdir()
         (bundle_tmp / "packs").mkdir()
         work_dtype = _work_dtype(layout)
-        root_work = _create_root_work_file(
+        root_work, source_sha256 = _create_root_work_file(
             source,
             layout,
             build_root / "r.work",
             options.chunk_records,
             options.cancellation_check,
+            options.progress_callback,
+        )
+        _emit_progress(
+            options.progress_callback,
+            "source_ready",
+            gaussianCount=root_work.count,
+            sha256=source_sha256,
         )
         nodes: list[dict[str, Any]] = []
         packs: list[dict[str, Any]] = []
@@ -344,9 +389,24 @@ def build_gstile_bundle(
                 for key, value in errors.items():
                     maximum_errors[key] = max(maximum_errors.get(key, 0.0), value)
                 item.path.unlink()
+                _emit_progress(
+                    options.progress_callback,
+                    "leaf_written",
+                    node=node_id,
+                    depth=depth,
+                    gaussianCount=item.count,
+                    leafCount=len(packs),
+                )
                 return
             if depth >= options.maximum_depth:
                 raise RuntimeError("GSTile partition exceeded maximum depth")
+            _emit_progress(
+                options.progress_callback,
+                "partition_split",
+                node=node_id,
+                depth=depth,
+                gaussianCount=item.count,
+            )
             left, right = _split_work_file(
                 item,
                 node_id=node_id,
@@ -367,7 +427,7 @@ def build_gstile_bundle(
             "profile": GSTILE_PROFILE,
             "bundleId": "sha256:" + "0" * 64,
             "source": {
-                "sha256": _sha256(source),
+                "sha256": source_sha256,
                 "gaussianCount": layout.vertex_count,
                 "colorShDegree": color_degree,
                 "opacityShDegree": opacity_degree,
@@ -402,6 +462,14 @@ def build_gstile_bundle(
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(bundle_tmp, output)
+        _emit_progress(
+            options.progress_callback,
+            "published",
+            bundleId=manifest["bundleId"],
+            gaussianCount=layout.vertex_count,
+            leafCount=len(packs),
+            packBytes=manifest["statistics"]["packBytes"],
+        )
         return GsTileBuildResult(
             output=output,
             manifest_path=output / "manifest.json",

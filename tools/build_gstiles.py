@@ -10,8 +10,10 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 COLMAP_ROOT = REPOSITORY_ROOT / "app1-colmap"
-if str(COLMAP_ROOT) not in sys.path:
-    sys.path.insert(0, str(COLMAP_ROOT))
+for import_root in (REPOSITORY_ROOT, COLMAP_ROOT):
+    root = str(import_root)
+    if root not in sys.path:
+        sys.path.insert(0, root)
 
 from gaussian_tiles import GsTileBuildOptions, build_gstile_bundle  # noqa: E402
 
@@ -25,11 +27,21 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--temporary-root", type=Path)
     parser.add_argument("--crs")
     parser.add_argument("--origin", nargs=3, type=float, default=(0.0, 0.0, 0.0))
+    parser.add_argument(
+        "--progress-jsonl",
+        action="store_true",
+        help="emit structured build progress to stderr",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
+    progress_callback = None
+    if arguments.progress_jsonl:
+        progress_callback = lambda event: print(
+            json.dumps(event, sort_keys=True), file=sys.stderr, flush=True
+        )
     result = build_gstile_bundle(
         arguments.source_ply,
         arguments.output_directory,
@@ -39,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
             temporary_root=arguments.temporary_root,
             coordinate_origin=tuple(arguments.origin),
             crs=arguments.crs,
+            progress_callback=progress_callback,
         ),
     )
     print(

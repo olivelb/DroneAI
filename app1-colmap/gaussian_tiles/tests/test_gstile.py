@@ -115,7 +115,12 @@ def test_pack_rejects_corruption() -> None:
 def test_tiler_is_deterministic_and_spatially_bounded(tmp_path: Path) -> None:
     source = tmp_path / "source.ply"
     _write_ply(source, _records(2_500))
-    options = GsTileBuildOptions(leaf_size=1_024, chunk_records=1_024)
+    events: list[dict[str, object]] = []
+    options = GsTileBuildOptions(
+        leaf_size=1_024,
+        chunk_records=1_024,
+        progress_callback=events.append,
+    )
     first = build_gstile_bundle(source, tmp_path / "first", options=options)
     second = build_gstile_bundle(source, tmp_path / "second", options=options)
 
@@ -125,11 +130,21 @@ def test_tiler_is_deterministic_and_spatially_bounded(tmp_path: Path) -> None:
     assert first.bundle_id == second.bundle_id
     assert first.gaussian_count == 2_500
     assert first.leaf_count >= 3
+    assert first_manifest["source"]["sha256"] == _sha256(source)
     assert sum(pack["recordCount"] for pack in first_manifest["packs"]) == 2_500
     for left, right in zip(first_manifest["packs"], second_manifest["packs"]):
         assert left["sha256"] == right["sha256"]
         assert _sha256(first.output / left["path"]) == _sha256(second.output / right["path"])
     assert read_binary_ply_layout(source).vertex_count == 2_500
+    event_names = {str(event["event"]) for event in events}
+    assert {
+        "preflight",
+        "source_copy",
+        "source_ready",
+        "partition_split",
+        "leaf_written",
+        "published",
+    } <= event_names
 
 
 def test_manifest_rejects_pack_path_traversal(tmp_path: Path) -> None:
