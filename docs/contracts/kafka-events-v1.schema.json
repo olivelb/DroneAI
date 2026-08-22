@@ -679,11 +679,12 @@
                   "gaussian_training",
                   "gaussian_filtering",
                   "rasterization",
-                  "detection"
+                  "detection",
+                  "gaussian_viewer"
                 ],
                 "type": "string"
               },
-              "maxItems": 5,
+              "maxItems": 6,
               "minItems": 1,
               "type": "array"
             },
@@ -830,7 +831,8 @@
                   "gaussian_training",
                   "gaussian_filtering",
                   "rasterization",
-                  "detection"
+                  "detection",
+                  "gaussian_viewer"
                 ]
               },
               "type": "object"

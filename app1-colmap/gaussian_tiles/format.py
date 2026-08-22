@@ -15,8 +15,6 @@ import numpy as np
 from shared.gstile_manifest import (
     GSTILE_PACK_HEADER_SIZE,
     GSTILE_PACK_RECORD_SIZE,
-    GSTILE_PROFILE,
-    GSTILE_SCHEMA,
     GSTILE_VERSION,
     canonical_gstile_manifest_bytes,
     validate_gstile_manifest,
@@ -76,31 +74,23 @@ def _affine_parameters(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return minimum, maximum
 
 
-def _quantize_u16(
-    values: np.ndarray, minimum: np.ndarray, maximum: np.ndarray
-) -> np.ndarray:
+def _quantize_u16(values: np.ndarray, minimum: np.ndarray, maximum: np.ndarray) -> np.ndarray:
     extent = maximum - minimum
     safe_extent = np.where(extent > 0.0, extent, 1.0)
     normalized = np.clip((values - minimum) / safe_extent, 0.0, 1.0)
     return np.rint(normalized * 65535.0).astype("<u2")
 
 
-def _dequantize_u16(
-    values: np.ndarray, minimum: np.ndarray, maximum: np.ndarray
-) -> np.ndarray:
+def _dequantize_u16(values: np.ndarray, minimum: np.ndarray, maximum: np.ndarray) -> np.ndarray:
     return minimum + values.astype(np.float32) * ((maximum - minimum) / 65535.0)
 
 
 def _symmetric_scales(values: np.ndarray, maximum_integer: int) -> np.ndarray:
     maxima = np.max(np.abs(values), axis=0).astype(np.float32)
-    return np.where(maxima > 0.0, maxima / float(maximum_integer), 1.0).astype(
-        np.float32
-    )
+    return np.where(maxima > 0.0, maxima / float(maximum_integer), 1.0).astype(np.float32)
 
 
-def _matrix_from_properties(
-    records: np.ndarray, names: list[str], width: int
-) -> np.ndarray:
+def _matrix_from_properties(records: np.ndarray, names: list[str], width: int) -> np.ndarray:
     result = np.zeros((records.shape[0], width), dtype=np.float32)
     for index, name in enumerate(names):
         result[:, index] = records[name]
@@ -166,15 +156,11 @@ def encode_pack(
         "position",
     )
     log_scale = _finite_matrix(
-        np.column_stack(
-            (records["scale_0"], records["scale_1"], records["scale_2"])
-        ),
+        np.column_stack((records["scale_0"], records["scale_1"], records["scale_2"])),
         "log_scale",
     )
     rotation = _finite_matrix(
-        np.column_stack(
-            (records["rot_0"], records["rot_1"], records["rot_2"], records["rot_3"])
-        ),
+        np.column_stack((records["rot_0"], records["rot_1"], records["rot_2"], records["rot_3"])),
         "rotation",
     )
     rotation_norm = np.linalg.norm(rotation, axis=1)
@@ -183,17 +169,11 @@ def encode_pack(
     rotation = rotation / rotation_norm[:, None]
     opacity = _finite_matrix(records["opacity"].reshape(-1, 1), "opacity")
     color_dc = _finite_matrix(
-        np.column_stack(
-            (records["f_dc_0"], records["f_dc_1"], records["f_dc_2"])
-        ),
+        np.column_stack((records["f_dc_0"], records["f_dc_1"], records["f_dc_2"])),
         "color_dc",
     )
-    color_sh = _finite_matrix(
-        _matrix_from_properties(records, color_names, 45), "color_sh"
-    )
-    opacity_sh = _finite_matrix(
-        _matrix_from_properties(records, opacity_names, 15), "opacity_sh"
-    )
+    color_sh = _finite_matrix(_matrix_from_properties(records, color_names, 45), "color_sh")
+    opacity_sh = _finite_matrix(_matrix_from_properties(records, opacity_names, 15), "opacity_sh")
 
     position_min, position_max = _affine_parameters(position)
     scale_min, scale_max = _affine_parameters(log_scale)
@@ -206,9 +186,7 @@ def encode_pack(
     packed["position"] = _quantize_u16(position, position_min, position_max)
     packed["log_scale"] = _quantize_u16(log_scale, scale_min, scale_max)
     packed["rotation"] = np.rint(np.clip(rotation, -1.0, 1.0) * 32767.0).astype("<i2")
-    packed["opacity_logit"] = _quantize_u16(
-        opacity, opacity_min, opacity_max
-    )[:, 0]
+    packed["opacity_logit"] = _quantize_u16(opacity, opacity_min, opacity_max)[:, 0]
     packed["color_dc"] = np.rint(color_dc / dc_scale).clip(-32767, 32767).astype("<i2")
     packed["color_sh"] = np.rint(color_sh / color_scale).clip(-127, 127).astype("i1")
     packed["opacity_sh"] = np.rint(opacity_sh / opacity_scale).clip(-127, 127).astype("i1")
@@ -316,10 +294,8 @@ def decode_pack(content: bytes, quantization: Mapping[str, Any]) -> dict[str, np
         "log_scale": log_scale,
         "rotation": rotation,
         "opacity_logit": opacity,
-        "color_dc": packed["color_dc"].astype(np.float32)
-        * np.asarray(quantization["colorDcScale"], dtype=np.float32),
-        "color_sh": packed["color_sh"].astype(np.float32)
-        * np.asarray(quantization["colorShScale"], dtype=np.float32),
+        "color_dc": packed["color_dc"].astype(np.float32) * np.asarray(quantization["colorDcScale"], dtype=np.float32),
+        "color_sh": packed["color_sh"].astype(np.float32) * np.asarray(quantization["colorShScale"], dtype=np.float32),
         "opacity_sh": packed["opacity_sh"].astype(np.float32)
         * np.asarray(quantization["opacityShScale"], dtype=np.float32),
         "source_id": packed["source_id"].copy(),

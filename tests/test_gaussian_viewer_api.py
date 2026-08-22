@@ -36,9 +36,16 @@ def _manifest(*, digest: str = "b" * 64) -> dict[str, object]:
                 "id": "root",
                 "bounds": {"min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 1.0]},
                 "gaussianCount": 1,
-                "tile": {"pack": "pack-0", "recordCount": 1},
+                "tile": {
+                    "pack": "pack-0",
+                    "byteOffset": 32,
+                    "byteLength": 96,
+                    "recordCount": 1,
+                    "sha256": digest,
+                },
             }
         ],
+        "statistics": {"lod": "leaf-only"},
     }
 
 

@@ -14,12 +14,14 @@ from typing import Any, Callable, Iterator
 import numpy as np
 
 from gaussian_ortho.ply_stream import BinaryPlyLayout, read_binary_ply_layout
-from shared.gstile_manifest import GSTILE_LOD_PROFILE
-
-from .format import (
+from shared.gstile_manifest import (
+    GSTILE_LOD_PROFILE,
     GSTILE_PROFILE,
     GSTILE_SCHEMA,
     GSTILE_VERSION,
+)
+
+from .format import (
     canonical_manifest_bytes,
     validate_manifest,
     write_pack_atomic,
@@ -45,15 +47,9 @@ class GsTileBuildOptions:
             raise ValueError("GSTile chunk_records must be between 1,024 and 1,048,576")
         if not 1 <= self.maximum_depth <= 64:
             raise ValueError("GSTile maximum_depth must be between 1 and 64")
-        if self.lod_proxy_size is not None and not (
-            1_024 <= self.lod_proxy_size <= self.leaf_size
-        ):
-            raise ValueError(
-                "GSTile lod_proxy_size must be between 1,024 and leaf_size"
-            )
-        if len(self.coordinate_origin) != 3 or not all(
-            np.isfinite(value) for value in self.coordinate_origin
-        ):
+        if self.lod_proxy_size is not None and not (1_024 <= self.lod_proxy_size <= self.leaf_size):
+            raise ValueError("GSTile lod_proxy_size must be between 1,024 and leaf_size")
+        if len(self.coordinate_origin) != 3 or not all(np.isfinite(value) for value in self.coordinate_origin):
             raise ValueError("GSTile coordinate origin must contain three finite values")
 
 
@@ -117,9 +113,7 @@ def _chunks(
 
 
 def _bounds(records: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    xyz = np.column_stack((records["x"], records["y"], records["z"])).astype(
-        np.float64, copy=False
-    )
+    xyz = np.column_stack((records["x"], records["y"], records["z"])).astype(np.float64, copy=False)
     if not np.all(np.isfinite(xyz)):
         raise ValueError("PLY contains non-finite Gaussian positions")
     return xyz.min(axis=0), xyz.max(axis=0)
@@ -131,12 +125,8 @@ def _minhash_keys(source_ids: np.ndarray) -> np.ndarray:
     values = np.asarray(source_ids, dtype=np.uint64).copy()
     with np.errstate(over="ignore"):
         values += np.uint64(0x9E3779B97F4A7C15)
-        values = (values ^ (values >> np.uint64(30))) * np.uint64(
-            0xBF58476D1CE4E5B9
-        )
-        values = (values ^ (values >> np.uint64(27))) * np.uint64(
-            0x94D049BB133111EB
-        )
+        values = (values ^ (values >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+        values = (values ^ (values >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
     return values ^ (values >> np.uint64(31))
 
 
@@ -152,9 +142,7 @@ def _select_lod_proxy(records: np.ndarray, limit: int) -> np.ndarray:
 
 
 def _geometric_error(item: _WorkFile, proxy_count: int) -> float:
-    diagonal = float(
-        np.linalg.norm(np.asarray(item.bounds_max) - np.asarray(item.bounds_min))
-    )
+    diagonal = float(np.linalg.norm(np.asarray(item.bounds_max) - np.asarray(item.bounds_min)))
     return diagonal / max(float(proxy_count) ** (1.0 / 3.0), 1.0)
 
 
@@ -338,7 +326,9 @@ def build_gstile_bundle(
     temporary_parent.mkdir(parents=True, exist_ok=True)
     source_payload_bytes = layout.vertex_count * layout.dtype.itemsize
     estimated_temporary = layout.vertex_count * (layout.dtype.itemsize + 8) * 2
-    estimated_output = layout.vertex_count * 96 + ((layout.vertex_count + options.leaf_size - 1) // options.leaf_size) * 32
+    estimated_output = (
+        layout.vertex_count * 96 + ((layout.vertex_count + options.leaf_size - 1) // options.leaf_size) * 32
+    )
     if options.lod_proxy_size is not None:
         # Every source record can occur in at most one proxy per tree depth.
         # This deliberately conservative bound fails before an atomic build
@@ -361,13 +351,11 @@ def build_gstile_bundle(
     )
     if shutil.disk_usage(temporary_parent).free < temporary_required:
         raise RuntimeError(
-            "Insufficient temporary disk for GSTile atomic build: "
-            f"need about {temporary_required / 1024**3:.1f} GiB"
+            f"Insufficient temporary disk for GSTile atomic build: need about {temporary_required / 1024**3:.1f} GiB"
         )
     if not shared_filesystem and shutil.disk_usage(output_parent).free < output_required:
         raise RuntimeError(
-            "Insufficient output disk for GSTile atomic build: "
-            f"need about {output_required / 1024**3:.1f} GiB"
+            f"Insufficient output disk for GSTile atomic build: need about {output_required / 1024**3:.1f} GiB"
         )
 
     bundle_tmp = output_parent / f".{output.name}.partial"
@@ -520,11 +508,7 @@ def build_gstile_bundle(
         manifest: dict[str, Any] = {
             "schema": GSTILE_SCHEMA,
             "version": GSTILE_VERSION,
-            "profile": (
-                GSTILE_LOD_PROFILE
-                if options.lod_proxy_size is not None
-                else GSTILE_PROFILE
-            ),
+            "profile": (GSTILE_LOD_PROFILE if options.lod_proxy_size is not None else GSTILE_PROFILE),
             "bundleId": "sha256:" + "0" * 64,
             "source": {
                 "sha256": source_sha256,
@@ -546,17 +530,11 @@ def build_gstile_bundle(
                 "packBytes": sum(pack["byteLength"] for pack in packs),
                 "bytesPerGaussian": sum(pack["byteLength"] for pack in packs) / layout.vertex_count,
                 "maximumQuantizationError": maximum_errors,
-                "lod": (
-                    "deterministic-minhash-replacement-v1"
-                    if options.lod_proxy_size is not None
-                    else "leaf-only"
-                ),
+                "lod": ("deterministic-minhash-replacement-v1" if options.lod_proxy_size is not None else "leaf-only"),
                 **(
                     {
                         "exactPackBytes": exact_pack_bytes,
-                        "proxyCount": sum(
-                            1 for node in nodes if "lodTile" in node
-                        ),
+                        "proxyCount": sum(1 for node in nodes if "lodTile" in node),
                         "proxyRecords": proxy_records,
                         "proxyPackBytes": proxy_pack_bytes,
                     }
