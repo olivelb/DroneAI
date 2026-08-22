@@ -15,6 +15,8 @@ import { GSTILE_PACK_HEADER_BYTES, GSTILE_RECORD_BYTES } from "./pack";
 export const GSTILE_SCHEMA = "droneai-gstile";
 export const GSTILE_VERSION = 1;
 export const GSTILE_PROFILE = "dronegs-sh3-opacity-sh3-q96";
+export const GSTILE_LOD_PROFILE =
+  "dronegs-sh3-opacity-sh3-q96-minhash-lod-v1";
 
 export type Vec3 = [number, number, number];
 
@@ -34,8 +36,17 @@ export type GsTileNode = {
   id: string;
   bounds: { min: Vec3; max: Vec3 };
   gaussianCount: number;
+  geometricError?: number;
   children?: [string, string];
   tile?: {
+    pack: string;
+    byteOffset: number;
+    byteLength: number;
+    recordCount: number;
+    sha256: string;
+    quantization: GsTileQuantization;
+  };
+  lodTile?: {
     pack: string;
     byteOffset: number;
     byteLength: number;
@@ -58,7 +69,7 @@ export type GsTilePack = {
 export type GsTileManifest = {
   schema: typeof GSTILE_SCHEMA;
   version: typeof GSTILE_VERSION;
-  profile: typeof GSTILE_PROFILE;
+  profile: typeof GSTILE_PROFILE | typeof GSTILE_LOD_PROFILE;
   bundleId: string;
   source: {
     sha256: string;
@@ -80,6 +91,10 @@ export type GsTileManifest = {
     packBytes: number;
     bytesPerGaussian: number;
     lod: string;
+    exactPackBytes?: number;
+    proxyCount?: number;
+    proxyRecords?: number;
+    proxyPackBytes?: number;
   };
 };
 
@@ -141,6 +156,8 @@ const nodeValidator = objectWith(
   {
     children: childPair,
     tile: tileValidator,
+    lodTile: tileValidator,
+    geometricError: numberValue,
   },
 );
 const packValidator = objectWith({
@@ -158,7 +175,7 @@ const structuralDecoder = decoder<GsTileManifest>(
   objectWith({
     schema: oneOf(GSTILE_SCHEMA),
     version: oneOf(GSTILE_VERSION),
-    profile: oneOf(GSTILE_PROFILE),
+    profile: oneOf(GSTILE_PROFILE, GSTILE_LOD_PROFILE),
     bundleId: nonEmptyString,
     source: objectWith({
       sha256: nonEmptyString,
@@ -175,12 +192,20 @@ const structuralDecoder = decoder<GsTileManifest>(
     root: nonEmptyString,
     nodes: arrayOf(nodeValidator),
     packs: arrayOf(packValidator),
-    statistics: objectWith({
-      leafCount: integerValue,
-      packBytes: integerValue,
-      bytesPerGaussian: numberValue,
-      lod: nonEmptyString,
-    }),
+    statistics: objectWith(
+      {
+        leafCount: integerValue,
+        packBytes: integerValue,
+        bytesPerGaussian: numberValue,
+        lod: nonEmptyString,
+      },
+      {
+        exactPackBytes: integerValue,
+        proxyCount: integerValue,
+        proxyRecords: integerValue,
+        proxyPackBytes: integerValue,
+      },
+    ),
   }),
 );
 
@@ -246,6 +271,46 @@ export const decodeGsTileManifest = (value: unknown): GsTileManifest => {
     );
   }
   const rangesByPack = new Map<string, Array<{ start: number; end: number }>>();
+  const hasLod = manifest.profile === GSTILE_LOD_PROFILE;
+  let proxyCount = 0;
+  let proxyRecords = 0;
+
+  const validateTile = (
+    node: GsTileNode,
+    tile: NonNullable<GsTileNode["tile"]>,
+    kind: "tile" | "lodTile",
+  ) => {
+    const pack = packsById.get(tile.pack);
+    const rangeEnd = tile.byteOffset + tile.byteLength;
+    const exact = kind === "tile";
+    if (
+      !pack ||
+      !Number.isSafeInteger(tile.byteOffset) ||
+      !Number.isSafeInteger(tile.byteLength) ||
+      !Number.isSafeInteger(tile.recordCount) ||
+      tile.recordCount < 1 ||
+      (exact
+        ? tile.recordCount !== node.gaussianCount
+        : tile.recordCount > node.gaussianCount) ||
+      tile.recordCount !== pack.recordCount ||
+      tile.byteLength !== tile.recordCount * GSTILE_RECORD_BYTES ||
+      tile.byteOffset < GSTILE_PACK_HEADER_BYTES ||
+      tile.byteOffset % GSTILE_RECORD_BYTES !== GSTILE_PACK_HEADER_BYTES ||
+      !Number.isSafeInteger(rangeEnd) ||
+      rangeEnd > (pack?.byteLength ?? 0) ||
+      tile.sha256.toLowerCase() !== pack?.sha256.toLowerCase()
+    ) {
+      throw new ResponseContractError(
+        "GSTile manifest",
+        `$.nodes.${node.id}.${kind}`,
+        "valid aligned range in a known pack",
+      );
+    }
+    const ranges = rangesByPack.get(pack.id) ?? [];
+    ranges.push({ start: tile.byteOffset, end: rangeEnd });
+    rangesByPack.set(pack.id, ranges);
+  };
+
   manifest.nodes.forEach((node) => {
     const hasChildren = node.children !== undefined;
     const hasTile = node.tile !== undefined;
@@ -254,6 +319,19 @@ export const decodeGsTileManifest = (value: unknown): GsTileManifest => {
         "GSTile manifest",
         `$.nodes.${node.id}`,
         "exactly children or tile",
+      );
+    }
+    if (
+      (hasLod && hasChildren !== (node.lodTile !== undefined)) ||
+      (!hasLod && node.lodTile !== undefined) ||
+      (hasLod &&
+        (!Number.isFinite(node.geometricError) ||
+          (node.geometricError ?? -1) < 0))
+    ) {
+      throw new ResponseContractError(
+        "GSTile manifest",
+        `$.nodes.${node.id}`,
+        "LOD proxy and non-negative geometric error on every LOD internal node",
       );
     }
     node.bounds.min.forEach((minimum, index) => {
@@ -274,34 +352,29 @@ export const decodeGsTileManifest = (value: unknown): GsTileManifest => {
         );
       }
     });
-    if (node.tile) {
-      const pack = packsById.get(node.tile.pack);
-      const rangeEnd = node.tile.byteOffset + node.tile.byteLength;
-      if (
-        !pack ||
-        !Number.isSafeInteger(node.tile.byteOffset) ||
-        !Number.isSafeInteger(node.tile.byteLength) ||
-        !Number.isSafeInteger(node.tile.recordCount) ||
-        node.tile.recordCount < 1 ||
-        node.tile.recordCount !== node.gaussianCount ||
-        node.tile.byteLength !== node.tile.recordCount * GSTILE_RECORD_BYTES ||
-        node.tile.byteOffset < GSTILE_PACK_HEADER_BYTES ||
-        node.tile.byteOffset % GSTILE_RECORD_BYTES !== GSTILE_PACK_HEADER_BYTES ||
-        !Number.isSafeInteger(rangeEnd) ||
-        rangeEnd > (pack?.byteLength ?? 0) ||
-        node.tile.sha256.toLowerCase() !== pack?.sha256.toLowerCase()
-      ) {
-        throw new ResponseContractError(
-          "GSTile manifest",
-          `$.nodes.${node.id}.tile`,
-          "valid aligned range in a known pack",
-        );
-      }
-      const ranges = rangesByPack.get(pack.id) ?? [];
-      ranges.push({ start: node.tile.byteOffset, end: rangeEnd });
-      rangesByPack.set(pack.id, ranges);
+    if (node.tile) validateTile(node, node.tile, "tile");
+    if (node.lodTile) {
+      validateTile(node, node.lodTile, "lodTile");
+      proxyCount += 1;
+      proxyRecords += node.lodTile.recordCount;
     }
   });
+
+  const expectedLod = hasLod
+    ? "deterministic-minhash-replacement-v1"
+    : "leaf-only";
+  if (
+    manifest.statistics.lod !== expectedLod ||
+    (hasLod &&
+      (manifest.statistics.proxyCount !== proxyCount ||
+        manifest.statistics.proxyRecords !== proxyRecords))
+  ) {
+    throw new ResponseContractError(
+      "GSTile manifest",
+      "$.statistics",
+      "statistics matching the declared LOD profile",
+    );
+  }
 
   for (const pack of manifest.packs) {
     const ranges = (rangesByPack.get(pack.id) ?? []).sort(

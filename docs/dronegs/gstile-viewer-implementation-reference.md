@@ -96,6 +96,26 @@ and image/directional-alpha comparison against frozen DroneGS references.
 
 Exit: no holes/seams during motion or failed fetches; memory stays under budget.
 
+Implementation status:
+
+- `--lod-proxy-size` opts into the distinct
+  `dronegs-sh3-opacity-sh3-q96-minhash-lod-v1` scientific profile; the
+  platform stage remains loss-bounded leaf-only unless this option is
+  explicitly selected;
+- every leaf and source id remains exact. Internal proxies are deterministic
+  SplitMix64 min-hash subsets of those source records, constructed bottom-up
+  without another pass over the PLY and without changing SH, opacity, scale or
+  rotation values before normal q96 encoding;
+- every internal node carries a proxy, an explicit geometric-error estimate
+  and separate proxy counts/bytes. Python and browser contracts reject missing,
+  shared, oversized or profile-inconsistent proxy packs;
+- the subset proxy is a navigation approximation, not an optical aggregate.
+  It deliberately does not claim density, radiance or directional-opacity
+  equivalence to the exact descendants.
+
+Remaining exit evidence: replacement/eviction in the renderer, camera-path
+seam tests, device memory bounds, and visual metrics against the exact leaves.
+
 ### Phase 4 — adaptive 4K and telemetry
 
 - Measure frame CPU, GPU (when timestamp queries exist), sorting, decode,
@@ -143,7 +163,9 @@ Implementation status:
 Remaining exit evidence: real S3/OVH range qualification, cancellation during
 a multi-pack build, SaaS quota policy for bundle bytes, operational alerts and
 the production runbook. These platform tasks do not authorize Phase 3 LOD
-approximations; the current artifact remains the loss-bounded leaf-only profile.
+approximations. The production stage default remains the loss-bounded
+leaf-only profile; the min-hash LOD profile is opt-in until its separate
+renderer and visual gates pass.
 
 ## Non-negotiable separation
 

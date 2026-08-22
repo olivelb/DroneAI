@@ -157,6 +157,56 @@ def test_manifest_rejects_pack_path_traversal(tmp_path: Path) -> None:
         validate_manifest(manifest)
 
 
+def test_lod_profile_adds_deterministic_proxies_without_changing_leaves(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.ply"
+    _write_ply(source, _records(5_000))
+    options = GsTileBuildOptions(
+        leaf_size=1_024,
+        chunk_records=1_024,
+        lod_proxy_size=1_024,
+    )
+    first = build_gstile_bundle(source, tmp_path / "first", options=options)
+    second = build_gstile_bundle(source, tmp_path / "second", options=options)
+    first_manifest = json.loads(first.manifest_path.read_text("ascii"))
+    second_manifest = json.loads(second.manifest_path.read_text("ascii"))
+
+    validate_manifest(first_manifest)
+    assert first.bundle_id == second.bundle_id
+    assert first_manifest["profile"].endswith("minhash-lod-v1")
+    assert first_manifest["statistics"]["lod"] == (
+        "deterministic-minhash-replacement-v1"
+    )
+    assert first_manifest["statistics"]["proxyCount"] > 0
+    assert sum(
+        node["tile"]["recordCount"]
+        for node in first_manifest["nodes"]
+        if "tile" in node
+    ) == 5_000
+
+    root = next(node for node in first_manifest["nodes"] if node["id"] == "r")
+    assert root["geometricError"] > 0
+    proxy_pack = next(
+        pack
+        for pack in first_manifest["packs"]
+        if pack["id"] == root["lodTile"]["pack"]
+    )
+    decoded = decode_pack(
+        (first.output / proxy_pack["path"]).read_bytes(),
+        root["lodTile"]["quantization"],
+    )
+    assert decoded["source_id"].shape == (1_024,)
+    assert np.unique(decoded["source_id"]).shape == (1_024,)
+    assert np.all(decoded["source_id"] < 5_000)
+
+    first_hashes = {pack["id"]: pack["sha256"] for pack in first_manifest["packs"]}
+    second_hashes = {
+        pack["id"]: pack["sha256"] for pack in second_manifest["packs"]
+    }
+    assert first_hashes == second_hashes
+
+
 def test_bundle_publication_is_immutable(tmp_path: Path) -> None:
     source = tmp_path / "source.ply"
     _write_ply(source, _records(1_024))

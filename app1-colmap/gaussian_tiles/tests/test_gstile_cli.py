@@ -21,3 +21,4 @@ def test_build_gstiles_cli_loads_repository_imports() -> None:
     assert "Build an immutable GSTile v1 bundle" in completed.stdout
     assert "--temporary-root" in completed.stdout
     assert "--progress-jsonl" in completed.stdout
+    assert "--lod-proxy-size" in completed.stdout

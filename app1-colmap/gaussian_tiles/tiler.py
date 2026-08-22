@@ -14,6 +14,7 @@ from typing import Any, Callable, Iterator
 import numpy as np
 
 from gaussian_ortho.ply_stream import BinaryPlyLayout, read_binary_ply_layout
+from shared.gstile_manifest import GSTILE_LOD_PROFILE
 
 from .format import (
     GSTILE_PROFILE,
@@ -35,6 +36,7 @@ class GsTileBuildOptions:
     crs: str | None = None
     cancellation_check: Callable[[], None] | None = None
     progress_callback: Callable[[dict[str, Any]], None] | None = None
+    lod_proxy_size: int | None = None
 
     def validate(self) -> None:
         if not 1_024 <= self.leaf_size <= 1_048_576:
@@ -43,6 +45,12 @@ class GsTileBuildOptions:
             raise ValueError("GSTile chunk_records must be between 1,024 and 1,048,576")
         if not 1 <= self.maximum_depth <= 64:
             raise ValueError("GSTile maximum_depth must be between 1 and 64")
+        if self.lod_proxy_size is not None and not (
+            1_024 <= self.lod_proxy_size <= self.leaf_size
+        ):
+            raise ValueError(
+                "GSTile lod_proxy_size must be between 1,024 and leaf_size"
+            )
         if len(self.coordinate_origin) != 3 or not all(
             np.isfinite(value) for value in self.coordinate_origin
         ):
@@ -115,6 +123,39 @@ def _bounds(records: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     if not np.all(np.isfinite(xyz)):
         raise ValueError("PLY contains non-finite Gaussian positions")
     return xyz.min(axis=0), xyz.max(axis=0)
+
+
+def _minhash_keys(source_ids: np.ndarray) -> np.ndarray:
+    """Return deterministic SplitMix64 keys without changing source records."""
+
+    values = np.asarray(source_ids, dtype=np.uint64).copy()
+    with np.errstate(over="ignore"):
+        values += np.uint64(0x9E3779B97F4A7C15)
+        values = (values ^ (values >> np.uint64(30))) * np.uint64(
+            0xBF58476D1CE4E5B9
+        )
+        values = (values ^ (values >> np.uint64(27))) * np.uint64(
+            0x94D049BB133111EB
+        )
+    return values ^ (values >> np.uint64(31))
+
+
+def _select_lod_proxy(records: np.ndarray, limit: int) -> np.ndarray:
+    """Select the global deterministic min-hash subset for a tree population."""
+
+    if records.shape[0] <= limit:
+        return records.copy()
+    keys = _minhash_keys(records["source_id"])
+    selected = np.argpartition(keys, limit - 1)[:limit]
+    order = np.lexsort((records["source_id"][selected], keys[selected]))
+    return records[selected[order]].copy()
+
+
+def _geometric_error(item: _WorkFile, proxy_count: int) -> float:
+    diagonal = float(
+        np.linalg.norm(np.asarray(item.bounds_max) - np.asarray(item.bounds_min))
+    )
+    return diagonal / max(float(proxy_count) ** (1.0 / 3.0), 1.0)
 
 
 def _create_root_work_file(
@@ -298,6 +339,11 @@ def build_gstile_bundle(
     source_payload_bytes = layout.vertex_count * layout.dtype.itemsize
     estimated_temporary = layout.vertex_count * (layout.dtype.itemsize + 8) * 2
     estimated_output = layout.vertex_count * 96 + ((layout.vertex_count + options.leaf_size - 1) // options.leaf_size) * 32
+    if options.lod_proxy_size is not None:
+        # Every source record can occur in at most one proxy per tree depth.
+        # This deliberately conservative bound fails before an atomic build
+        # when an adversarially imbalanced tree would exhaust the output disk.
+        estimated_output += layout.vertex_count * 96 * options.maximum_depth
     reserve = 1024**3
     shared_filesystem = os.stat(temporary_parent).st_dev == os.stat(output_parent).st_dev
     temporary_required = estimated_temporary + reserve
@@ -349,8 +395,47 @@ def build_gstile_bundle(
         nodes: list[dict[str, Any]] = []
         packs: list[dict[str, Any]] = []
         maximum_errors: dict[str, float] = {}
+        exact_pack_bytes = 0
+        proxy_pack_bytes = 0
+        proxy_records = 0
+        leaf_count = 0
 
-        def visit(item: _WorkFile, node_id: str, depth: int) -> None:
+        def pack_tile(
+            records: np.ndarray,
+            *,
+            pack_id: str,
+            node_id: str,
+        ) -> tuple[dict[str, Any], int]:
+            ply_records = np.empty(records.shape[0], dtype=layout.dtype)
+            for name in layout.dtype.names or ():
+                ply_records[name] = records[name]
+            relative = Path("packs") / f"{pack_id}.gst"
+            pack, errors = write_pack_atomic(
+                bundle_tmp / relative,
+                ply_records,
+                records["source_id"],
+                node_id=node_id,
+            )
+            pack["id"] = pack_id
+            pack["path"] = relative.as_posix()
+            pack["byteOffset"] = 32
+            packs.append(pack)
+            for key, value in errors.items():
+                maximum_errors[key] = max(maximum_errors.get(key, 0.0), value)
+            return (
+                {
+                    "pack": pack_id,
+                    "byteOffset": 32,
+                    "byteLength": pack["byteLength"] - 32,
+                    "recordCount": records.shape[0],
+                    "sha256": pack["sha256"],
+                    "quantization": pack.pop("quantization"),
+                },
+                pack["byteLength"],
+            )
+
+        def visit(item: _WorkFile, node_id: str, depth: int) -> np.ndarray | None:
+            nonlocal exact_pack_bytes, leaf_count, proxy_pack_bytes, proxy_records
             if options.cancellation_check is not None:
                 options.cancellation_check()
             node: dict[str, Any] = {
@@ -363,31 +448,15 @@ def build_gstile_bundle(
                 records = np.fromfile(item.path, dtype=work_dtype, count=item.count)
                 if records.shape[0] != item.count:
                     raise RuntimeError("GSTile leaf payload is incomplete")
-                ply_records = np.empty(item.count, dtype=layout.dtype)
-                for name in layout.dtype.names or ():
-                    ply_records[name] = records[name]
-                pack_id = node_id
-                relative = Path("packs") / f"{pack_id}.gst"
-                pack, errors = write_pack_atomic(
-                    bundle_tmp / relative,
-                    ply_records,
-                    records["source_id"],
+                node["tile"], written = pack_tile(
+                    records,
+                    pack_id=node_id,
                     node_id=node_id,
                 )
-                pack["id"] = pack_id
-                pack["path"] = relative.as_posix()
-                pack["byteOffset"] = 32
-                packs.append(pack)
-                node["tile"] = {
-                    "pack": pack_id,
-                    "byteOffset": 32,
-                    "byteLength": pack["byteLength"] - 32,
-                    "recordCount": item.count,
-                    "sha256": pack["sha256"],
-                    "quantization": pack.pop("quantization"),
-                }
-                for key, value in errors.items():
-                    maximum_errors[key] = max(maximum_errors.get(key, 0.0), value)
+                exact_pack_bytes += written
+                leaf_count += 1
+                if options.lod_proxy_size is not None:
+                    node["geometricError"] = 0.0
                 item.path.unlink()
                 _emit_progress(
                     options.progress_callback,
@@ -395,9 +464,11 @@ def build_gstile_bundle(
                     node=node_id,
                     depth=depth,
                     gaussianCount=item.count,
-                    leafCount=len(packs),
+                    leafCount=leaf_count,
                 )
-                return
+                if options.lod_proxy_size is None:
+                    return None
+                return _select_lod_proxy(records, options.lod_proxy_size)
             if depth >= options.maximum_depth:
                 raise RuntimeError("GSTile partition exceeded maximum depth")
             _emit_progress(
@@ -415,8 +486,33 @@ def build_gstile_bundle(
                 cancellation_check=options.cancellation_check,
             )
             node["children"] = [node_id + "0", node_id + "1"]
-            visit(left, node_id + "0", depth + 1)
-            visit(right, node_id + "1", depth + 1)
+            left_proxy = visit(left, node_id + "0", depth + 1)
+            right_proxy = visit(right, node_id + "1", depth + 1)
+            if options.lod_proxy_size is None:
+                return None
+            if left_proxy is None or right_proxy is None:
+                raise RuntimeError("GSTile LOD child proxy is missing")
+            proxy = _select_lod_proxy(
+                np.concatenate((left_proxy, right_proxy)),
+                options.lod_proxy_size,
+            )
+            node["lodTile"], written = pack_tile(
+                proxy,
+                pack_id=f"lod-{node_id}",
+                node_id=f"lod-{node_id}",
+            )
+            node["geometricError"] = _geometric_error(item, proxy.shape[0])
+            proxy_pack_bytes += written
+            proxy_records += proxy.shape[0]
+            _emit_progress(
+                options.progress_callback,
+                "lod_proxy_written",
+                node=node_id,
+                depth=depth,
+                gaussianCount=item.count,
+                proxyCount=proxy.shape[0],
+            )
+            return proxy
 
         visit(root_work, "r", 0)
         if options.cancellation_check is not None:
@@ -424,7 +520,11 @@ def build_gstile_bundle(
         manifest: dict[str, Any] = {
             "schema": GSTILE_SCHEMA,
             "version": GSTILE_VERSION,
-            "profile": GSTILE_PROFILE,
+            "profile": (
+                GSTILE_LOD_PROFILE
+                if options.lod_proxy_size is not None
+                else GSTILE_PROFILE
+            ),
             "bundleId": "sha256:" + "0" * 64,
             "source": {
                 "sha256": source_sha256,
@@ -442,11 +542,27 @@ def build_gstile_bundle(
             "nodes": nodes,
             "packs": packs,
             "statistics": {
-                "leafCount": len(packs),
+                "leafCount": leaf_count,
                 "packBytes": sum(pack["byteLength"] for pack in packs),
                 "bytesPerGaussian": sum(pack["byteLength"] for pack in packs) / layout.vertex_count,
                 "maximumQuantizationError": maximum_errors,
-                "lod": "leaf-only",
+                "lod": (
+                    "deterministic-minhash-replacement-v1"
+                    if options.lod_proxy_size is not None
+                    else "leaf-only"
+                ),
+                **(
+                    {
+                        "exactPackBytes": exact_pack_bytes,
+                        "proxyCount": sum(
+                            1 for node in nodes if "lodTile" in node
+                        ),
+                        "proxyRecords": proxy_records,
+                        "proxyPackBytes": proxy_pack_bytes,
+                    }
+                    if options.lod_proxy_size is not None
+                    else {}
+                ),
             },
         }
         validate_manifest(manifest)
@@ -467,7 +583,7 @@ def build_gstile_bundle(
             "published",
             bundleId=manifest["bundleId"],
             gaussianCount=layout.vertex_count,
-            leafCount=len(packs),
+            leafCount=manifest["statistics"]["leafCount"],
             packBytes=manifest["statistics"]["packBytes"],
         )
         return GsTileBuildResult(
@@ -475,7 +591,7 @@ def build_gstile_bundle(
             manifest_path=output / "manifest.json",
             bundle_id=manifest["bundleId"],
             gaussian_count=layout.vertex_count,
-            leaf_count=len(packs),
+            leaf_count=manifest["statistics"]["leafCount"],
             pack_bytes=manifest["statistics"]["packBytes"],
             source_bytes=source_payload_bytes,
             maximum_errors=maximum_errors,

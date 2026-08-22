@@ -23,6 +23,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("source_ply", type=Path)
     parser.add_argument("output_directory", type=Path)
     parser.add_argument("--leaf-size", type=int, default=65_536)
+    parser.add_argument(
+        "--lod-proxy-size",
+        type=int,
+        help="opt into deterministic hierarchical LOD with this proxy size",
+    )
     parser.add_argument("--chunk-records", type=int, default=131_072)
     parser.add_argument("--temporary-root", type=Path)
     parser.add_argument("--crs")
@@ -47,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
         arguments.output_directory,
         options=GsTileBuildOptions(
             leaf_size=arguments.leaf_size,
+            lod_proxy_size=arguments.lod_proxy_size,
             chunk_records=arguments.chunk_records,
             temporary_root=arguments.temporary_root,
             coordinate_origin=tuple(arguments.origin),
