@@ -360,6 +360,11 @@ Conserver le cut complet précédent jusqu'au succès.
     `transformA` RGBA32U et `transformB` RGBA16F sans créer ni muter un `Vec3`,
     `Quat` et itérateur par splat. Les autres ressources et tous les shaders
     conservent le chemin moteur standard.
+18. Le packing SH3 natif conserve la lecture colonne→tableau local de
+    PlayCanvas, mais calcule le maximum pendant cette lecture et supprime les
+    bornages et arrondis devenus redondants avant le packing binaire. Le clamp
+    du premier coefficient rouge est volontairement conservé pour reproduire
+    le cas asymétrique du moteur mot pour mot.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -457,6 +462,30 @@ centres économise environ 89 Mo mais dégrade la médiane ressource de 1,4 % ;
 supprimer la seconde normalisation quaternion, pourtant float16-identique sur
 le corpus, dégrade la médiane de 1,3 %. Le JIT réel prime donc sur la seule
 réduction du nombre apparent d'opérations.
+
+### Qualification du packing natif SH3 — Saint-Étienne v4c
+
+La télémétrie de construction sépare désormais couleur, transformations et
+SH. Elle confirme que le SH représente environ 73 % du temps de
+`GSplatResource` sur le cut froid. Le premier prototype lisait deux fois les
+45 colonnes et régressait de 33 % ; il a été rejeté. La version retenue ne lit
+chaque colonne qu'une fois, calcule le maximum dans le même ordre que
+PlayCanvas, puis s'appuie sur la conversion `ToInt32` déjà effectuée par les
+décalages binaires. Un test différentiel compare les quatre textures RGBA32U,
+padding compris, sur 16 384 splats pseudo-aléatoires et les cas nuls.
+
+Trois runs Chrome froids par variante, dans la même session et sur le même
+build instrumenté, donnent :
+
+| variante | médiane SH | médiane ressource | médiane commit | médiane LOD |
+|---|---:|---:|---:|---:|
+| PlayCanvas standard | 4,024 s | 5,513 s | 6,257 s | 19,468 s |
+| packing GSTile SH3 | **3,740 s** | **5,132 s** | **5,876 s** | **18,144 s** |
+
+Le gain médian atteint **−7,1 % sur le SH**, **−6,9 % sur la ressource**,
+**−6,1 % sur le commit** et **−6,8 % sur le LOD total**, sans modifier un seul
+mot des textures SH produites. La suite frontend complète passe avec 26
+fichiers et 146 tests, ainsi que typecheck, lint et build production.
 
 ## Sources primaires
 

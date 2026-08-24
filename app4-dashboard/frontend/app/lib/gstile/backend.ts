@@ -44,6 +44,9 @@ export type GaussianRenderStatistics = {
   lodSha256ServiceMs: number | null;
   lodDecodeCpuMs: number | null;
   lodResourceCreateMs: number | null;
+  lodResourceColorMs: number | null;
+  lodResourceTransformMs: number | null;
+  lodResourceShMs: number | null;
   lodStreamUploadMs: number | null;
   lodSceneAttachMs: number | null;
   lodAddedGaussians: number;

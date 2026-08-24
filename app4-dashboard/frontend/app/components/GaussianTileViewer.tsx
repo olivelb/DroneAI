@@ -82,6 +82,9 @@ const emptyStatistics: GaussianRenderStatistics = {
   lodSha256ServiceMs: null,
   lodDecodeCpuMs: null,
   lodResourceCreateMs: null,
+  lodResourceColorMs: null,
+  lodResourceTransformMs: null,
+  lodResourceShMs: null,
   lodStreamUploadMs: null,
   lodSceneAttachMs: null,
   lodAddedGaussians: 0,
@@ -241,6 +244,9 @@ export default function GaussianTileViewer({
       data-lod-sha256-service-ms={statistics.lodSha256ServiceMs ?? ""}
       data-lod-decode-cpu-ms={statistics.lodDecodeCpuMs ?? ""}
       data-lod-resource-create-ms={statistics.lodResourceCreateMs ?? ""}
+      data-lod-resource-color-ms={statistics.lodResourceColorMs ?? ""}
+      data-lod-resource-transform-ms={statistics.lodResourceTransformMs ?? ""}
+      data-lod-resource-sh-ms={statistics.lodResourceShMs ?? ""}
       data-lod-stream-upload-ms={statistics.lodStreamUploadMs ?? ""}
       data-lod-scene-attach-ms={statistics.lodSceneAttachMs ?? ""}
       data-lod-reused-gaussians={statistics.lodReusedGaussians}
@@ -320,6 +326,8 @@ export default function GaussianTileViewer({
                 Σ fetch {statistics.lodFetchServiceMs?.toFixed(0)} · SHA {statistics.lodSha256ServiceMs?.toFixed(0)} · Q96 {statistics.lodDecodeCpuMs.toFixed(0)} ms
                 {statistics.lodResourceCreateMs !== null &&
                   ` · resource ${statistics.lodResourceCreateMs.toFixed(0)}`}
+                {statistics.lodResourceShMs !== null &&
+                  ` (color ${statistics.lodResourceColorMs?.toFixed(0)} · transform ${statistics.lodResourceTransformMs?.toFixed(0)} · SH ${statistics.lodResourceShMs.toFixed(0)})`}
                 {statistics.lodStreamUploadMs !== null &&
                   ` · streams ${statistics.lodStreamUploadMs.toFixed(0)}`}
                 {statistics.lodSceneAttachMs !== null &&
