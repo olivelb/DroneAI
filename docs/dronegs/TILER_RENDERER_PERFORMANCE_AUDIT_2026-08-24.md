@@ -365,6 +365,10 @@ Conserver le cut complet précédent jusqu'au succès.
     bornages et arrondis devenus redondants avant le packing binaire. Le clamp
     du premier coefficient rouge est volontairement conservé pour reproduire
     le cas asymétrique du moteur mot pour mot.
+19. Le chemin `merged` fusionne maintenant déquantification Q96 et packing
+    SH3. Les 45 propriétés PLY restent présentes sous forme de marqueurs vides
+    pour annoncer les trois bandes à PlayCanvas, tandis que quatre streams
+    RGBA32U finaux remplacent les 45 colonnes float32 temporaires.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -486,6 +490,32 @@ Le gain médian atteint **−7,1 % sur le SH**, **−6,9 % sur la ressource**,
 **−6,1 % sur le commit** et **−6,8 % sur le LOD total**, sans modifier un seul
 mot des textures SH produites. La suite frontend complète passe avec 26
 fichiers et 146 tests, ainsi que typecheck, lint et build production.
+
+### Qualification du pipeline Q96→SH3 fusionné — Saint-Étienne v4c
+
+Le décodage fusionné arrondit chaque coefficient avec `Math.fround`, comme
+l'écriture préalable dans une `Float32Array`, puis réutilise le même packer
+SH3 record par record. Les quatre textures obtenues sont comparées mot pour
+mot au chemin décode→45 colonnes→packing. L'allocation CPU du handoff passe de
+300 à 184 octets par splat, soit environ **862 Mo économisés** sur le cut de
+7,4 M splats.
+
+Le microbenchmark de 65 536 splats mesure 11,849 ms contre 7,797 ms pour le
+seul décodage colonne : le surcoût projeté d'environ 0,46 s est volontaire,
+car il supprime le second parcours complet et ses 45 colonnes. Trois runs
+Chrome froids donnent :
+
+| variante | médiane SH | médiane ressource | médiane commit | médiane LOD |
+|---|---:|---:|---:|---:|
+| packing SH après décodage | 3,740 s | 5,132 s | 5,876 s | 18,144 s |
+| Q96→SH3 fusionné | **0,324 s** | **1,728 s** | **2,493 s** | **15,227 s** |
+
+Le gain médian atteint **−91,3 % sur la phase SH**, **−66,3 % sur la
+ressource**, **−57,6 % sur le commit** et **−16,1 % sur le LOD total**. Une
+transition chaude mesure 1,088 s au total et 376 ms de commit avec 6,6 M de
+splats réutilisés. La suite complète passe avec 26 fichiers et 148 tests,
+ainsi que typecheck, lint et build production. Le contrôle visuel humain dans
+Chrome est déclaré conforme au PLY original.
 
 ## Sources primaires
 

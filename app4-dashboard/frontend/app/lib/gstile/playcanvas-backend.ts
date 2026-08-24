@@ -1580,15 +1580,6 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
               gsplatData: import("playcanvas").GSplatData,
             ) {
               const started = performance.now();
-              const properties = Array.from({ length: 45 }, (_, coefficient) => {
-                const storage = gsplatData.getProp(`f_rest_${coefficient}`);
-                if (!(storage instanceof Float32Array)) {
-                  throw new Error(
-                    `GSTile SH property f_rest_${coefficient} is missing`,
-                  );
-                }
-                return storage;
-              });
               const names = [
                 "splatSH_1to3",
                 "splatSH_4to7",
@@ -1608,7 +1599,27 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
                 Uint32Array,
               ];
               try {
-                packGsTileNativeSh(properties, streams);
+                if (tile.shStreams) {
+                  streams.forEach((stream, index) =>
+                    stream.set(tile.shStreams![index]),
+                  );
+                } else {
+                  const properties = Array.from(
+                    { length: 45 },
+                    (_, coefficient) => {
+                      const storage = gsplatData.getProp(
+                        `f_rest_${coefficient}`,
+                      );
+                      if (!(storage instanceof Float32Array)) {
+                        throw new Error(
+                          `GSTile SH property f_rest_${coefficient} is missing`,
+                        );
+                      }
+                      return storage;
+                    },
+                  );
+                  packGsTileNativeSh(properties, streams);
+                }
               } finally {
                 textures.forEach((texture) => texture!.unlock());
               }
@@ -2244,7 +2255,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
     let mergedColumns =
       mergedAssembly && mergedGaussianCount > 0
-        ? allocateGsTilePlayCanvasColumns(mergedGaussianCount)
+        ? allocateGsTilePlayCanvasColumns(mergedGaussianCount, true)
         : null;
     let mergedStaging: LoadedTile | null = null;
     let mergedByteLength = 0;

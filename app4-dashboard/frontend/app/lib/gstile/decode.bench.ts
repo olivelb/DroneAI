@@ -41,6 +41,10 @@ const quantization: GsTileQuantization = {
 };
 const destination = allocateDecodedGsTile(recordCount);
 const columnDestination = allocateGsTilePlayCanvasColumns(recordCount);
+const packedColumnDestination = allocateGsTilePlayCanvasColumns(
+  recordCount,
+  true,
+);
 
 const legacyGsTileToPlyProperties = (tile: DecodedGsTile) => {
   const properties: Array<{
@@ -131,6 +135,18 @@ describe("GSTile merged PlayCanvas final CPU pipeline", () => {
       recordCount,
       quantization,
       columnDestination,
+      0,
+    );
+  });
+
+  bench("decode and pack directly into final PlayCanvas SH streams", () => {
+    decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
+      content,
+      headerBytes,
+      recordCount * recordBytes,
+      recordCount,
+      quantization,
+      packedColumnDestination,
       0,
     );
   });

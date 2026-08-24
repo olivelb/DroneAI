@@ -5,6 +5,11 @@ import {
   GSTILE_RECORD_BYTES,
   type GsTilePackHeader,
 } from "./pack";
+import {
+  createGsTileNativeShScratch,
+  packGsTileNativeShRecord,
+  type GsTileNativeShStreams,
+} from "./native-sh";
 
 export type DecodedGsTile = {
   header: GsTilePackHeader;
@@ -50,6 +55,7 @@ export type GsTilePlayCanvasColumns = GsTilePlyColumns & {
   count: number;
   properties: GsTilePlyProperty[];
   opacityStreams: GsTileOpacityStreams;
+  shStreams: GsTileNativeShStreams | null;
 };
 
 const decodedFloatFields = [
@@ -106,7 +112,6 @@ const validatePlayCanvasColumnRange = (
     [destination.colorDc, 3],
     [destination.logScale, 3],
     [destination.rotation, 4],
-    [destination.colorSh, 45],
   ];
   for (const [columns, width] of groups) {
     if (
@@ -115,6 +120,17 @@ const validatePlayCanvasColumnRange = (
     ) {
       throw new Error("GSTile PlayCanvas column width is inconsistent");
     }
+  }
+  if (
+    destination.colorSh.length !== 45 ||
+    (destination.shStreams === null &&
+      destination.colorSh.some((column) => column.length !== destination.count)) ||
+    (destination.shStreams !== null &&
+      destination.shStreams.some(
+        (stream) => stream.length !== destination.count * 4,
+      ))
+  ) {
+    throw new Error("GSTile PlayCanvas SH width is inconsistent");
   }
   if (
     destination.opacityLogit.length !== destination.count ||
@@ -187,6 +203,7 @@ const gsTilePlyPropertiesFromColumns = (
 /** Allocate the final column-major CPU cut consumed by PlayCanvas. */
 export const allocateGsTilePlayCanvasColumns = (
   count: number,
+  packShDuringDecode = false,
 ): GsTilePlayCanvasColumns => {
   if (!Number.isSafeInteger(count) || count < 1) {
     throw new Error("GSTile PlayCanvas column count must be positive");
@@ -198,13 +215,23 @@ export const allocateGsTilePlayCanvasColumns = (
   const opacityLogit = new Float32Array(count);
   const logScale = columns(3);
   const rotation = columns(4);
-  const colorSh = columns(45);
+  const colorSh = packShDuringDecode
+    ? Array.from({ length: 45 }, () => new Float32Array(0))
+    : columns(45);
   const opacityStreams: GsTileOpacityStreams = [
     new Float32Array(count * 4),
     new Float32Array(count * 4),
     new Float32Array(count * 4),
     new Float32Array(count * 4),
   ];
+  const shStreams: GsTileNativeShStreams | null = packShDuringDecode
+    ? [
+        new Uint32Array(count * 4),
+        new Uint32Array(count * 4),
+        new Uint32Array(count * 4),
+        new Uint32Array(count * 4),
+      ]
+    : null;
   const plyColumns = {
     position,
     colorDc,
@@ -218,6 +245,7 @@ export const allocateGsTilePlayCanvasColumns = (
     ...plyColumns,
     properties: gsTilePlyPropertiesFromColumns(plyColumns),
     opacityStreams,
+    shStreams,
   };
 };
 
@@ -459,7 +487,9 @@ const decodeRecordsIntoPlayCanvasColumns = (
     colorDc,
     colorSh,
     opacityStreams,
+    shStreams,
   } = destination;
+  const shScratch = shStreams ? createGsTileNativeShScratch() : null;
 
   for (let record = 0; record < count; record += 1) {
     const base = byteOffset + record * GSTILE_RECORD_BYTES;
@@ -528,13 +558,32 @@ const decodeRecordsIntoPlayCanvasColumns = (
     opacityStreams[3][opacityOffset + 3] =
       view.getInt8(base + 87) * opacityScale[14];
     const colorScale = quantization.colorShScale;
-    for (let coefficient = 0; coefficient < 45; coefficient += 3) {
-      colorSh[coefficient][targetRecord] =
-        view.getInt8(base + 28 + coefficient) * colorScale[coefficient];
-      colorSh[coefficient + 1][targetRecord] =
-        view.getInt8(base + 29 + coefficient) * colorScale[coefficient + 1];
-      colorSh[coefficient + 2][targetRecord] =
-        view.getInt8(base + 30 + coefficient) * colorScale[coefficient + 2];
+    if (shStreams && shScratch) {
+      const coefficients = shScratch.coefficients;
+      for (let coefficient = 0; coefficient < 15; coefficient += 1) {
+        const index = coefficient * 3;
+        coefficients[index] = Math.fround(
+          view.getInt8(base + 28 + coefficient) * colorScale[coefficient],
+        );
+        coefficients[index + 1] = Math.fround(
+          view.getInt8(base + 43 + coefficient) *
+            colorScale[coefficient + 15],
+        );
+        coefficients[index + 2] = Math.fround(
+          view.getInt8(base + 58 + coefficient) *
+            colorScale[coefficient + 30],
+        );
+      }
+      packGsTileNativeShRecord(shScratch, shStreams, targetRecord);
+    } else {
+      for (let coefficient = 0; coefficient < 45; coefficient += 3) {
+        colorSh[coefficient][targetRecord] =
+          view.getInt8(base + 28 + coefficient) * colorScale[coefficient];
+        colorSh[coefficient + 1][targetRecord] =
+          view.getInt8(base + 29 + coefficient) * colorScale[coefficient + 1];
+        colorSh[coefficient + 2][targetRecord] =
+          view.getInt8(base + 30 + coefficient) * colorScale[coefficient + 2];
+      }
     }
   }
 };
