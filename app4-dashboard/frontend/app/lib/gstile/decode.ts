@@ -19,6 +19,39 @@ export type DecodedGsTile = {
   sourceId: BigUint64Array;
 };
 
+export type GsTilePlyProperty = {
+  name: string;
+  type: "float";
+  byteSize: 4;
+  storage: Float32Array;
+};
+
+export type GsTileOpacityStreams = [
+  Float32Array,
+  Float32Array,
+  Float32Array,
+  Float32Array,
+];
+
+type GsTilePlyColumns = {
+  position: Float32Array[];
+  colorDc: Float32Array[];
+  opacityLogit: Float32Array;
+  logScale: Float32Array[];
+  rotation: Float32Array[];
+  colorSh: Float32Array[];
+};
+
+/**
+ * Final CPU representation consumed by PlayCanvas for one monolithic cut.
+ * Source IDs are intentionally absent: the renderer never uploads them.
+ */
+export type GsTilePlayCanvasColumns = GsTilePlyColumns & {
+  count: number;
+  properties: GsTilePlyProperty[];
+  opacityStreams: GsTileOpacityStreams;
+};
+
 const decodedFloatFields = [
   ["position", 3],
   ["logScale", 3],
@@ -33,6 +66,66 @@ const decodedFloatFields = [
     number,
   ]
 >;
+
+const validateDecodedRange = (
+  destination: DecodedGsTile,
+  recordOffset: number,
+  count: number,
+) => {
+  if (
+    !Number.isSafeInteger(recordOffset) ||
+    recordOffset < 0 ||
+    recordOffset + count > destination.count
+  ) {
+    throw new Error("GSTile decoded range escapes its destination");
+  }
+  for (const [field, width] of decodedFloatFields) {
+    if (destination[field].length !== destination.count * width) {
+      throw new Error("GSTile decoded field width is inconsistent");
+    }
+  }
+  if (destination.sourceId.length !== destination.count) {
+    throw new Error("GSTile decoded source ID width is inconsistent");
+  }
+};
+
+const validatePlayCanvasColumnRange = (
+  destination: GsTilePlayCanvasColumns,
+  recordOffset: number,
+  count: number,
+) => {
+  if (
+    !Number.isSafeInteger(recordOffset) ||
+    recordOffset < 0 ||
+    recordOffset + count > destination.count
+  ) {
+    throw new Error("GSTile PlayCanvas column range escapes its destination");
+  }
+  const groups: ReadonlyArray<readonly [Float32Array[], number]> = [
+    [destination.position, 3],
+    [destination.colorDc, 3],
+    [destination.logScale, 3],
+    [destination.rotation, 4],
+    [destination.colorSh, 45],
+  ];
+  for (const [columns, width] of groups) {
+    if (
+      columns.length !== width ||
+      columns.some((column) => column.length !== destination.count)
+    ) {
+      throw new Error("GSTile PlayCanvas column width is inconsistent");
+    }
+  }
+  if (
+    destination.opacityLogit.length !== destination.count ||
+    destination.opacityStreams.length !== 4 ||
+    destination.opacityStreams.some(
+      (stream) => stream.length !== destination.count * 4,
+    )
+  ) {
+    throw new Error("GSTile PlayCanvas opacity stream width is inconsistent");
+  }
+};
 
 /** Allocate one final decoded cut before individual nodes are loaded. */
 export const allocateDecodedGsTile = (count: number): DecodedGsTile => {
@@ -58,6 +151,73 @@ export const allocateDecodedGsTile = (count: number): DecodedGsTile => {
     colorSh: new Float32Array(count * 45),
     opacitySh: new Float32Array(count * 15),
     sourceId: new BigUint64Array(count),
+  };
+};
+
+const gsTilePlyPropertiesFromColumns = (
+  columns: GsTilePlyColumns,
+): GsTilePlyProperty[] => {
+  const properties: GsTilePlyProperty[] = [];
+  const add = (name: string, storage: Float32Array) =>
+    properties.push({ name, type: "float", byteSize: 4, storage });
+  const addColumns = (
+    names: readonly string[],
+    storage: readonly Float32Array[],
+  ) => {
+    if (names.length !== storage.length) {
+      throw new Error("GSTile PlayCanvas column schema is inconsistent");
+    }
+    names.forEach((name, index) => add(name, storage[index]));
+  };
+
+  addColumns(["x", "y", "z"], columns.position);
+  addColumns(["f_dc_0", "f_dc_1", "f_dc_2"], columns.colorDc);
+  add("opacity", columns.opacityLogit);
+  addColumns(["scale_0", "scale_1", "scale_2"], columns.logScale);
+  addColumns(["rot_0", "rot_1", "rot_2", "rot_3"], columns.rotation);
+  addColumns(
+    Array.from({ length: 45 }, (_, coefficient) =>
+      `f_rest_${coefficient}`,
+    ),
+    columns.colorSh,
+  );
+  return properties;
+};
+
+/** Allocate the final column-major CPU cut consumed by PlayCanvas. */
+export const allocateGsTilePlayCanvasColumns = (
+  count: number,
+): GsTilePlayCanvasColumns => {
+  if (!Number.isSafeInteger(count) || count < 1) {
+    throw new Error("GSTile PlayCanvas column count must be positive");
+  }
+  const columns = (width: number) =>
+    Array.from({ length: width }, () => new Float32Array(count));
+  const position = columns(3);
+  const colorDc = columns(3);
+  const opacityLogit = new Float32Array(count);
+  const logScale = columns(3);
+  const rotation = columns(4);
+  const colorSh = columns(45);
+  const opacityStreams: GsTileOpacityStreams = [
+    new Float32Array(count * 4),
+    new Float32Array(count * 4),
+    new Float32Array(count * 4),
+    new Float32Array(count * 4),
+  ];
+  const plyColumns = {
+    position,
+    colorDc,
+    opacityLogit,
+    logScale,
+    rotation,
+    colorSh,
+  };
+  return {
+    count,
+    ...plyColumns,
+    properties: gsTilePlyPropertiesFromColumns(plyColumns),
+    opacityStreams,
   };
 };
 
@@ -128,9 +288,7 @@ export const crc32 = (content: ArrayBuffer | ArrayBufferView) => {
   return (crc ^ 0xffffffff) >>> 0;
 };
 
-const normalizeQuaternion = (
-  output: Float32Array,
-  offset: number,
+const normalizedQuaternionLength = (
   w: number,
   x: number,
   y: number,
@@ -140,6 +298,18 @@ const normalizeQuaternion = (
   if (!Number.isFinite(length) || length <= 1e-12) {
     throw new Error("GSTile contains an invalid quaternion");
   }
+  return length;
+};
+
+const normalizeQuaternion = (
+  output: Float32Array,
+  offset: number,
+  w: number,
+  x: number,
+  y: number,
+  z: number,
+) => {
+  const length = normalizedQuaternionLength(w, x, y, z);
   output[offset] = w / length;
   output[offset + 1] = x / length;
   output[offset + 2] = y / length;
@@ -163,13 +333,11 @@ const validatePack = (
   return header;
 };
 
-const decodeRecords = (
+const validateRecordRange = (
   content: ArrayBuffer,
-  header: GsTilePackHeader,
   byteOffset: number,
   count: number,
-  quantization: GsTileQuantization,
-): DecodedGsTile => {
+) => {
   if (
     !Number.isSafeInteger(byteOffset) ||
     !Number.isSafeInteger(count) ||
@@ -183,62 +351,23 @@ const decodeRecords = (
   if (byteOffset + byteLength > content.byteLength) {
     throw new Error("GSTile tile range escapes its pack");
   }
+};
+
+const decodeRecords = (
+  content: ArrayBuffer,
+  header: GsTilePackHeader,
+  byteOffset: number,
+  count: number,
+  quantization: GsTileQuantization,
+  destination?: DecodedGsTile,
+  recordOffset = 0,
+): DecodedGsTile => {
+  validateRecordRange(content, byteOffset, count);
+  const output = destination ?? allocateDecodedGsTile(count);
+  validateDecodedRange(output, recordOffset, count);
+  if (!destination) output.header = header;
   const view = new DataView(content);
-  const position = new Float32Array(count * 3);
-  const logScale = new Float32Array(count * 3);
-  const rotation = new Float32Array(count * 4);
-  const opacityLogit = new Float32Array(count);
-  const colorDc = new Float32Array(count * 3);
-  const colorSh = new Float32Array(count * 45);
-  const opacitySh = new Float32Array(count * 15);
-  const sourceId = new BigUint64Array(count);
-
-  for (let record = 0; record < count; record += 1) {
-    const base = byteOffset + record * GSTILE_RECORD_BYTES;
-    for (let axis = 0; axis < 3; axis += 1) {
-      position[record * 3 + axis] = dequantizeU16(
-        view.getUint16(base + axis * 2, true),
-        quantization.position.min[axis],
-        quantization.position.max[axis],
-      );
-      logScale[record * 3 + axis] = dequantizeU16(
-        view.getUint16(base + 6 + axis * 2, true),
-        quantization.logScale.min[axis],
-        quantization.logScale.max[axis],
-      );
-      colorDc[record * 3 + axis] =
-        view.getInt16(base + 22 + axis * 2, true) *
-        quantization.colorDcScale[axis];
-    }
-    normalizeQuaternion(
-      rotation,
-      record * 4,
-      view.getInt16(base + 12, true) / 32_767,
-      view.getInt16(base + 14, true) / 32_767,
-      view.getInt16(base + 16, true) / 32_767,
-      view.getInt16(base + 18, true) / 32_767,
-    );
-    opacityLogit[record] = dequantizeU16(
-      view.getUint16(base + 20, true),
-      quantization.opacityLogit.min,
-      quantization.opacityLogit.max,
-    );
-    for (let coefficient = 0; coefficient < 45; coefficient += 1) {
-      colorSh[record * 45 + coefficient] =
-        view.getInt8(base + 28 + coefficient) *
-        quantization.colorShScale[coefficient];
-    }
-    for (let coefficient = 0; coefficient < 15; coefficient += 1) {
-      opacitySh[record * 15 + coefficient] =
-        view.getInt8(base + 73 + coefficient) *
-        quantization.opacityShScale[coefficient];
-    }
-    sourceId[record] = view.getBigUint64(base + 88, true);
-  }
-
-  return {
-    header,
-    count,
+  const {
     position,
     logScale,
     rotation,
@@ -247,7 +376,124 @@ const decodeRecords = (
     colorSh,
     opacitySh,
     sourceId,
-  };
+  } = output;
+
+  for (let record = 0; record < count; record += 1) {
+    const base = byteOffset + record * GSTILE_RECORD_BYTES;
+    const targetRecord = recordOffset + record;
+    for (let axis = 0; axis < 3; axis += 1) {
+      position[targetRecord * 3 + axis] = dequantizeU16(
+        view.getUint16(base + axis * 2, true),
+        quantization.position.min[axis],
+        quantization.position.max[axis],
+      );
+      logScale[targetRecord * 3 + axis] = dequantizeU16(
+        view.getUint16(base + 6 + axis * 2, true),
+        quantization.logScale.min[axis],
+        quantization.logScale.max[axis],
+      );
+      colorDc[targetRecord * 3 + axis] =
+        view.getInt16(base + 22 + axis * 2, true) *
+        quantization.colorDcScale[axis];
+    }
+    normalizeQuaternion(
+      rotation,
+      targetRecord * 4,
+      view.getInt16(base + 12, true) / 32_767,
+      view.getInt16(base + 14, true) / 32_767,
+      view.getInt16(base + 16, true) / 32_767,
+      view.getInt16(base + 18, true) / 32_767,
+    );
+    opacityLogit[targetRecord] = dequantizeU16(
+      view.getUint16(base + 20, true),
+      quantization.opacityLogit.min,
+      quantization.opacityLogit.max,
+    );
+    for (let coefficient = 0; coefficient < 45; coefficient += 1) {
+      colorSh[targetRecord * 45 + coefficient] =
+        view.getInt8(base + 28 + coefficient) *
+        quantization.colorShScale[coefficient];
+    }
+    for (let coefficient = 0; coefficient < 15; coefficient += 1) {
+      opacitySh[targetRecord * 15 + coefficient] =
+        view.getInt8(base + 73 + coefficient) *
+        quantization.opacityShScale[coefficient];
+    }
+    sourceId[targetRecord] = view.getBigUint64(base + 88, true);
+  }
+
+  return output;
+};
+
+const decodeRecordsIntoPlayCanvasColumns = (
+  content: ArrayBuffer,
+  byteOffset: number,
+  count: number,
+  quantization: GsTileQuantization,
+  destination: GsTilePlayCanvasColumns,
+  recordOffset: number,
+) => {
+  validateRecordRange(content, byteOffset, count);
+  validatePlayCanvasColumnRange(destination, recordOffset, count);
+  const view = new DataView(content);
+  const {
+    position,
+    logScale,
+    rotation,
+    opacityLogit,
+    colorDc,
+    colorSh,
+    opacityStreams,
+  } = destination;
+
+  for (let record = 0; record < count; record += 1) {
+    const base = byteOffset + record * GSTILE_RECORD_BYTES;
+    const targetRecord = recordOffset + record;
+    for (let axis = 0; axis < 3; axis += 1) {
+      position[axis][targetRecord] = dequantizeU16(
+        view.getUint16(base + axis * 2, true),
+        quantization.position.min[axis],
+        quantization.position.max[axis],
+      );
+      logScale[axis][targetRecord] = dequantizeU16(
+        view.getUint16(base + 6 + axis * 2, true),
+        quantization.logScale.min[axis],
+        quantization.logScale.max[axis],
+      );
+      colorDc[axis][targetRecord] =
+        view.getInt16(base + 22 + axis * 2, true) *
+        quantization.colorDcScale[axis];
+    }
+    const w = view.getInt16(base + 12, true) / 32_767;
+    const x = view.getInt16(base + 14, true) / 32_767;
+    const y = view.getInt16(base + 16, true) / 32_767;
+    const z = view.getInt16(base + 18, true) / 32_767;
+    const quaternionLength = normalizedQuaternionLength(w, x, y, z);
+    rotation[0][targetRecord] = w / quaternionLength;
+    rotation[1][targetRecord] = x / quaternionLength;
+    rotation[2][targetRecord] = y / quaternionLength;
+    rotation[3][targetRecord] = z / quaternionLength;
+    const baseOpacity = dequantizeU16(
+      view.getUint16(base + 20, true),
+      quantization.opacityLogit.min,
+      quantization.opacityLogit.max,
+    );
+    opacityLogit[targetRecord] = baseOpacity;
+    opacityStreams[0][targetRecord * 4] = baseOpacity;
+    for (let coefficient = 0; coefficient < 45; coefficient += 1) {
+      colorSh[coefficient][targetRecord] =
+        view.getInt8(base + 28 + coefficient) *
+        quantization.colorShScale[coefficient];
+    }
+    for (let coefficient = 0; coefficient < 15; coefficient += 1) {
+      const packed = coefficient + 1;
+      opacityStreams[Math.floor(packed / 4)][
+        targetRecord * 4 + (packed % 4)
+      ] =
+        view.getInt8(base + 73 + coefficient) *
+        quantization.opacityShScale[coefficient];
+    }
+  }
 };
 
 /** Decode one complete v1 pack into the exact DroneGS property convention. */
@@ -310,50 +556,93 @@ export const decodeSha256VerifiedGsTilePackTile = (
   );
 };
 
+/** Decode authenticated records directly into a final preallocated cut. */
+export const decodeSha256VerifiedGsTilePackTileInto = (
+  content: ArrayBuffer,
+  byteOffset: number,
+  byteLength: number,
+  recordCount: number,
+  quantization: GsTileQuantization,
+  destination: DecodedGsTile,
+  recordOffset: number,
+) => {
+  const header = validatePack(content, false);
+  if (byteLength !== recordCount * GSTILE_RECORD_BYTES) {
+    throw new Error("GSTile tile byte length does not match its record count");
+  }
+  decodeRecords(
+    content,
+    header,
+    byteOffset,
+    recordCount,
+    quantization,
+    destination,
+    recordOffset,
+  );
+};
+
+/** Decode authenticated records directly into PlayCanvas' final CPU layout. */
+export const decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns = (
+  content: ArrayBuffer,
+  byteOffset: number,
+  byteLength: number,
+  recordCount: number,
+  quantization: GsTileQuantization,
+  destination: GsTilePlayCanvasColumns,
+  recordOffset: number,
+) => {
+  validatePack(content, false);
+  if (byteLength !== recordCount * GSTILE_RECORD_BYTES) {
+    throw new Error("GSTile tile byte length does not match its record count");
+  }
+  decodeRecordsIntoPlayCanvasColumns(
+    content,
+    byteOffset,
+    recordCount,
+    quantization,
+    destination,
+    recordOffset,
+  );
+};
+
 /** Convert row-major decoded fields to PlayCanvas' PLY-compatible column arrays. */
 export const gsTileToPlyProperties = (tile: DecodedGsTile) => {
-  const properties: Array<{
-    name: string;
-    type: "float";
-    byteSize: 4;
-    storage: Float32Array;
-  }> = [];
-  const column = (source: Float32Array, width: number, index: number) => {
-    const result = new Float32Array(tile.count);
+  const columns = (source: Float32Array, width: number) => {
+    const result = Array.from(
+      { length: width },
+      () => new Float32Array(tile.count),
+    );
     for (let row = 0; row < tile.count; row += 1) {
-      result[row] = source[row * width + index];
+      const sourceOffset = row * width;
+      for (let index = 0; index < width; index += 1) {
+        result[index][row] = source[sourceOffset + index];
+      }
     }
     return result;
   };
-  const add = (name: string, storage: Float32Array) =>
-    properties.push({ name, type: "float", byteSize: 4, storage });
-
-  add("x", column(tile.position, 3, 0));
-  add("y", column(tile.position, 3, 1));
-  add("z", column(tile.position, 3, 2));
-  add("f_dc_0", column(tile.colorDc, 3, 0));
-  add("f_dc_1", column(tile.colorDc, 3, 1));
-  add("f_dc_2", column(tile.colorDc, 3, 2));
-  add("opacity", tile.opacityLogit);
-  add("scale_0", column(tile.logScale, 3, 0));
-  add("scale_1", column(tile.logScale, 3, 1));
-  add("scale_2", column(tile.logScale, 3, 2));
-  add("rot_0", column(tile.rotation, 4, 0));
-  add("rot_1", column(tile.rotation, 4, 1));
-  add("rot_2", column(tile.rotation, 4, 2));
-  add("rot_3", column(tile.rotation, 4, 3));
-  for (let coefficient = 0; coefficient < 45; coefficient += 1) {
-    add(`f_rest_${coefficient}`, column(tile.colorSh, 45, coefficient));
-  }
-  return properties;
+  const position = columns(tile.position, 3);
+  const colorDc = columns(tile.colorDc, 3);
+  const logScale = columns(tile.logScale, 3);
+  const rotation = columns(tile.rotation, 4);
+  const colorSh = columns(tile.colorSh, 45);
+  return gsTilePlyPropertiesFromColumns({
+    position,
+    colorDc,
+    opacityLogit: tile.opacityLogit,
+    logScale,
+    rotation,
+    colorSh,
+  });
 };
 
 /** RGBA32F resource streams: base logit followed by all 15 opacity-SH values. */
 export const gsTileOpacityStreams = (tile: DecodedGsTile) => {
-  const streams = Array.from(
-    { length: 4 },
-    () => new Float32Array(tile.count * 4),
-  );
+  const streams: GsTileOpacityStreams = [
+    new Float32Array(tile.count * 4),
+    new Float32Array(tile.count * 4),
+    new Float32Array(tile.count * 4),
+    new Float32Array(tile.count * 4),
+  ];
   for (let record = 0; record < tile.count; record += 1) {
     streams[0][record * 4] = tile.opacityLogit[record];
     for (let coefficient = 0; coefficient < 15; coefficient += 1) {

@@ -40,6 +40,12 @@ export type GaussianRenderStatistics = {
   lodTotalMs: number | null;
   lodLoadMs: number | null;
   lodCommitMs: number | null;
+  lodFetchServiceMs: number | null;
+  lodSha256ServiceMs: number | null;
+  lodDecodeCpuMs: number | null;
+  lodResourceCreateMs: number | null;
+  lodStreamUploadMs: number | null;
+  lodSceneAttachMs: number | null;
   lodAddedGaussians: number;
   lodRemovedGaussians: number;
   lodReusedGaussians: number;
