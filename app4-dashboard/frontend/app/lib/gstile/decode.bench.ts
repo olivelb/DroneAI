@@ -43,7 +43,7 @@ const destination = allocateDecodedGsTile(recordCount);
 const columnDestination = allocateGsTilePlayCanvasColumns(recordCount);
 const packedColumnDestination = allocateGsTilePlayCanvasColumns(
   recordCount,
-  { color: true, sh: true },
+  { centerBounds: true, color: true, sh: true },
 );
 
 const legacyGsTileToPlyProperties = (tile: DecodedGsTile) => {

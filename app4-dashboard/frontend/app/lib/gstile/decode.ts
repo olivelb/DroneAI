@@ -58,11 +58,18 @@ export type GsTilePlayCanvasColumns = GsTilePlyColumns & {
   opacityStreams: GsTileOpacityStreams;
   colorStream: Uint16Array | null;
   shStreams: GsTileNativeShStreams | null;
+  centerStream: Float32Array | null;
+  bounds: {
+    minimum: [number, number, number];
+    maximum: [number, number, number];
+    valid: boolean;
+  };
 };
 
 export type GsTilePlayCanvasPacking = {
   color?: boolean;
   sh?: boolean;
+  centerBounds?: boolean;
 };
 
 const decodedFloatFields = [
@@ -115,7 +122,6 @@ const validatePlayCanvasColumnRange = (
     throw new Error("GSTile PlayCanvas column range escapes its destination");
   }
   const groups: ReadonlyArray<readonly [Float32Array[], number]> = [
-    [destination.position, 3],
     [destination.logScale, 3],
     [destination.rotation, 4],
   ];
@@ -126,6 +132,19 @@ const validatePlayCanvasColumnRange = (
     ) {
       throw new Error("GSTile PlayCanvas column width is inconsistent");
     }
+  }
+  const positionColumnLength = destination.centerStream
+    ? 0
+    : destination.count;
+  if (
+    destination.position.length !== 3 ||
+    destination.position.some(
+      (column) => column.length !== positionColumnLength,
+    ) ||
+    (destination.centerStream !== null &&
+      destination.centerStream.length !== destination.count * 3)
+  ) {
+    throw new Error("GSTile PlayCanvas position width is inconsistent");
   }
   const colorColumnLength = destination.colorStream ? 0 : destination.count;
   if (
@@ -227,7 +246,9 @@ export const allocateGsTilePlayCanvasColumns = (
   }
   const columns = (width: number) =>
     Array.from({ length: width }, () => new Float32Array(count));
-  const position = columns(3);
+  const position = packing.centerBounds
+    ? Array.from({ length: 3 }, () => new Float32Array(0))
+    : columns(3);
   const colorDc = packing.color
     ? Array.from({ length: 3 }, () => new Float32Array(0))
     : columns(3);
@@ -252,6 +273,9 @@ export const allocateGsTilePlayCanvasColumns = (
         new Uint32Array(count * 4),
       ]
     : null;
+  const centerStream = packing.centerBounds
+    ? new Float32Array(count * 3)
+    : null;
   const plyColumns = {
     position,
     colorDc,
@@ -267,6 +291,12 @@ export const allocateGsTilePlayCanvasColumns = (
     opacityStreams,
     colorStream,
     shStreams,
+    centerStream,
+    bounds: {
+      minimum: [Infinity, Infinity, Infinity],
+      maximum: [-Infinity, -Infinity, -Infinity],
+      valid: false,
+    },
   };
 };
 
@@ -510,6 +540,7 @@ const decodeRecordsIntoPlayCanvasColumns = (
     opacityStreams,
     colorStream,
     shStreams,
+    centerStream,
   } = destination;
   const shScratch = shStreams ? createGsTileNativeShScratch() : null;
 
@@ -517,11 +548,16 @@ const decodeRecordsIntoPlayCanvasColumns = (
     const base = byteOffset + record * GSTILE_RECORD_BYTES;
     const targetRecord = recordOffset + record;
     for (let axis = 0; axis < 3; axis += 1) {
-      position[axis][targetRecord] = dequantizeU16(
+      const decodedPosition = Math.fround(dequantizeU16(
         view.getUint16(base + axis * 2, true),
         quantization.position.min[axis],
         quantization.position.max[axis],
-      );
+      ));
+      if (centerStream) {
+        centerStream[targetRecord * 3 + axis] = decodedPosition;
+      } else {
+        position[axis][targetRecord] = decodedPosition;
+      }
       logScale[axis][targetRecord] = dequantizeU16(
         view.getUint16(base + 6 + axis * 2, true),
         quantization.logScale.min[axis],

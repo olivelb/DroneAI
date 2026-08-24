@@ -102,6 +102,19 @@ describe("merged GSTile arena bounds", () => {
     merged.max.forEach((value, axis) =>
       expect(value).toBeCloseTo([14, 24, 34][axis]),
     );
+
+    const interleaved = calculateMergedArenaBounds(
+      [new Float32Array(0), new Float32Array(0), new Float32Array(0)],
+      [
+        new Float32Array([0, Math.log(2)]),
+        new Float32Array([0, 0]),
+        new Float32Array([0, 0]),
+      ],
+      1,
+      1,
+      new Float32Array([0, 1, 2, 10, 20, 30]),
+    );
+    expect(interleaved).toEqual(second);
   });
 
   it("rejects empty or non-finite bounds inputs", () => {
