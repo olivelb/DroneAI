@@ -781,6 +781,14 @@ def run_gaussian_viewer_stage(
                 maximum_depth=int(raw_options.get("maximum_depth", 48)),
                 temporary_root=temporary_root,
                 cancellation_check=control.raise_if_cancelled,
+                invisible_gaussian_scale_threshold=(
+                    float(raw_options["filter_invisible_giant_scale"])
+                    if raw_options.get("filter_invisible_giant_scale") is not None
+                    else None
+                ),
+                visibility_opacity_threshold=float(
+                    raw_options.get("filter_visibility_opacity", 0.05)
+                ),
             ),
         )
         control.raise_if_cancelled()

@@ -4,6 +4,12 @@ FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb836
 WORKDIR /app
 
 COPY app4-dashboard/frontend/package*.json ./
+COPY app4-dashboard/frontend/scripts/patch-playcanvas-fastgs.mjs \
+    ./scripts/patch-playcanvas-fastgs.mjs
+COPY app4-dashboard/frontend/scripts/patch-playcanvas-full-transform.mjs \
+    ./scripts/patch-playcanvas-full-transform.mjs
+COPY app4-dashboard/frontend/scripts/patch-playcanvas-incremental-world.mjs \
+    ./scripts/patch-playcanvas-incremental-world.mjs
 RUN npm ci
 
 COPY app4-dashboard/frontend/ ./

@@ -32,6 +32,21 @@ Scientific representation and platform orchestration are tracked separately.
    the source-to-work-buffer copy. The normal unified work-buffer and WebGPU
    global sorter remain unchanged. A maintained engine fork is not justified
    unless a later parity/streaming gate proves these public hooks insufficient.
+   The exact-leaf strong-zoom gate did prove the projector hook insufficient:
+   the pinned dependency now receives one fail-closed source patch that bounds
+   its perspective covariance Jacobian to the FastGS 1.3-field support margin.
+   A second fail-closed patch preserves all quaternion and scale components in
+   the unified GPU work buffer; the stock packed buffer reconstructed only a
+   positive quaternion `w`, corrupting anisotropic rotations for some tiles.
+   The production adapter presents the selected cut as one merged resource, so
+   the global sorter sees the same monolithic representation as the known-good
+   direct PLY path.
+10. **Source hygiene:** an optional producer-side filter may remove only splats
+    that exceed an explicit world-space scale and whose real-SH addition-theorem
+    upper opacity bound remains below the configured visibility threshold for
+    every direction. The filter is disabled by default, runs before spatial
+    partitioning and records input, retained and filtered counts in the
+    manifest. The renderer never clamps exact splat scale by default.
 
 ## Corrected delivery order
 
@@ -79,10 +94,15 @@ Implementation status:
 - PlayCanvas uses `GSPLATDATA_LARGE`, GPU global sorting and continuous SH
   refresh while the camera moves;
 - the resident adapter deliberately rejects scenes above its configured splat
-  ceiling (6 million by default). Loading the 49-million Saint-Étienne result
+  ceiling. Loading the 49-million Saint-Étienne result
   through the exact baseline would still be an uncontrolled multi-gigabyte
   allocation; that scene remains a Phase 3 hierarchical-LOD qualification
   target rather than a reason to remove the safety gate.
+- PlayCanvas' stock WebGPU projector lets the perspective Jacobian grow with
+  arbitrarily off-screen splat centres. DroneGS/FastGS clamps normalized
+  `x/z` and `y/z` to 130% of the half-field before covariance projection. The
+  pinned install patch applies the same bound to all PlayCanvas 2.21.4 build
+  variants and aborts installation if their audited source signature changes.
 
 Remaining exit evidence: real WebGPU shader compilation on the device matrix
 and image/directional-alpha comparison against frozen DroneGS references.
@@ -147,7 +167,10 @@ Implementation status:
 - the PlayCanvas adapter keeps low-alpha rendering and accepts subpixel splats
   (`minContribution=0.05`, `minPixelSize=0.5`). It deliberately disables
   compensated antialiasing for the DroneGS FastGS export and uses directional
-  rather than radial sorting for the translating perspective camera. The
+  rather than radial sorting for the translating perspective camera. Its
+  WebGPU covariance projector now clamps the off-axis perspective derivative
+  to the same 1.3-field margin as FastGS, preventing exact anisotropic splats
+  centred outside the viewport from stretching across its edges. The
   previous culling defaults removed distant facade contribution, while forced
   compensation and radial order softened or misordered exact splats.
 

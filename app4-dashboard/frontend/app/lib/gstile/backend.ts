@@ -27,10 +27,22 @@ export type GaussianRenderStatistics = {
   effectiveMaximumErrorPixels: number;
   selectedExactNodes: number;
   selectedProxyNodes: number;
+  selectedFullDepthNodes: number;
+  selectedShallowLeafNodes: number;
+  selectedInternalNodes: number;
+  selectedLeafDepthCounts: number[];
   maximumSelectedProxyScreenRadiusPixels: number;
   maximumResidentGaussians: number;
+  verticalFovDegrees: number | null;
   frameCpuMs: number | null;
   frameGpuMs: number | null;
+  workBufferUploadPercent: number | null;
+  lodTotalMs: number | null;
+  lodLoadMs: number | null;
+  lodCommitMs: number | null;
+  lodAddedGaussians: number;
+  lodRemovedGaussians: number;
+  lodReusedGaussians: number;
 };
 
 export interface GaussianRenderBackend {

@@ -69,6 +69,13 @@ polling, stale WebSocket protection and the five-stage projection. CI installs
 Chromium with its Linux system dependencies and retains the Playwright report
 on failure.
 
+`npm ci` also applies three fail-closed patches to pinned PlayCanvas 2.21.4:
+the FastGS off-axis covariance bound, lossless float32 quaternion/scale work
+streams and stable incremental unified-world allocations. Every patch is
+idempotent, rejects an unaudited engine source shape and is covered by a source
+transformation test. Keep all three scripts available before `npm ci` in
+container builds.
+
 Use the committed `package-lock.json`; do not replace `npm ci` with an
 unreviewed dependency update.
 

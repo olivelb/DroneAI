@@ -1,29 +1,139 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   completeLodTargetPlan,
   configureHighQualityGsplatRendering,
   coordinateFrameCameraPosition,
   fitOrbitDistance,
   fitOrbitDistanceInFrame,
+  gstileGpuAssembly,
+  gstileOpacityMode,
+  gstileSortMode,
+  gstileLodSelectionKey,
+  gstileTransformPrecision,
+  gstileVerticalFovDegrees,
   lodTransitionCounts,
   lodProxyCoverage,
   orbitCameraBasis,
   planLodTransitions,
   prioritizeLodLoads,
+  resetPlayCanvasGsplatManagers,
   panOrbitTarget,
 } from "./playcanvas-backend";
 import type { GaussianViewFrame } from "./backend";
 import type { GsTileManifest, GsTileNode } from "./contracts";
 
+describe("GSTile transform precision", () => {
+  it("uses PlayCanvas' validated native packing unless float32 is explicit", () => {
+    expect(gstileTransformPrecision(null)).toBe("packed");
+    expect(gstileTransformPrecision("packed")).toBe("packed");
+    expect(gstileTransformPrecision("float32")).toBe("float32");
+  });
+});
+
+describe("GSTile GPU assembly", () => {
+  it("keeps the exact monolithic path as the default", () => {
+    expect(gstileGpuAssembly(null)).toBe("merged");
+    expect(gstileGpuAssembly("merged")).toBe("merged");
+    expect(gstileGpuAssembly("unknown")).toBe("merged");
+  });
+
+  it("allows the two diagnostic multi-resource modes only explicitly", () => {
+    expect(gstileGpuAssembly("tiled")).toBe("tiled");
+    expect(gstileGpuAssembly("incremental")).toBe("incremental");
+  });
+});
+
+describe("GSTile opacity mode", () => {
+  it("keeps directional opacity by default and exposes exact diagnostics", () => {
+    expect(gstileOpacityMode(null)).toBe("directional");
+    expect(gstileOpacityMode("unknown")).toBe("directional");
+    expect(gstileOpacityMode("base")).toBe("base");
+    expect(gstileOpacityMode("directional-no-reveal")).toBe(
+      "directional-no-reveal",
+    );
+  });
+});
+
+describe("GSTile sort mode", () => {
+  it("keeps GPU sorting by default and allows an explicit CPU diagnostic", () => {
+    expect(gstileSortMode(null)).toBe("gpu");
+    expect(gstileSortMode("unknown")).toBe("gpu");
+    expect(gstileSortMode("cpu")).toBe("cpu");
+  });
+});
+
+describe("GSTile LOD selection identity", () => {
+  it("does not rebuild a cut when camera priority only reorders the same nodes", () => {
+    expect(gstileLodSelectionKey(["r10", "r0", "r11"])).toBe(
+      gstileLodSelectionKey(["r11", "r10", "r0"]),
+    );
+    expect(gstileLodSelectionKey(["r0", "r10"])).not.toBe(
+      gstileLodSelectionKey(["r0", "r11"]),
+    );
+  });
+});
+
+describe("GSTile vertical FOV", () => {
+  it("uses a less distorted default and clamps live values", () => {
+    expect(gstileVerticalFovDegrees(null)).toBe(42);
+    expect(gstileVerticalFovDegrees("35")).toBe(35);
+    expect(gstileVerticalFovDegrees(10)).toBe(20);
+    expect(gstileVerticalFovDegrees(120)).toBe(80);
+    expect(gstileVerticalFovDegrees("invalid")).toBe(42);
+  });
+});
+
+describe("PlayCanvas unified world reset", () => {
+  it("destroys every unique manager and clears main and shadow slots", () => {
+    const main = { destroy: vi.fn() };
+    const shadow = { destroy: vi.fn() };
+    type LayerData = {
+      gsplatManager: typeof main | null;
+      gsplatManagerShadow: typeof main | null;
+    };
+    const firstLayer: LayerData = {
+      gsplatManager: main,
+      gsplatManagerShadow: shadow,
+    };
+    const secondLayer: LayerData = {
+      gsplatManager: main,
+      gsplatManagerShadow: null,
+    };
+    const director = {
+      camerasMap: new Map([
+        [
+          "camera",
+          {
+            layersMap: new Map([
+              ["world", firstLayer],
+              ["overlay", secondLayer],
+            ]),
+          },
+        ],
+      ]),
+    };
+
+    expect(resetPlayCanvasGsplatManagers(director)).toBe(2);
+    expect(main.destroy).toHaveBeenCalledTimes(1);
+    expect(shadow.destroy).toHaveBeenCalledTimes(1);
+    expect(firstLayer).toEqual({
+      gsplatManager: null,
+      gsplatManagerShadow: null,
+    });
+    expect(secondLayer).toEqual({
+      gsplatManager: null,
+      gsplatManagerShadow: null,
+    });
+  });
+
+  it("is a no-op before PlayCanvas creates a director", () => {
+    expect(resetPlayCanvasGsplatManagers(null)).toBe(0);
+  });
+});
+
 describe("PlayCanvas orbit camera helpers", () => {
   it("fits both vertical and horizontal bounds into the perspective frustum", () => {
-    const distance = fitOrbitDistance(
-      [-3.5, -7, 0],
-      [3.5, 5, 3],
-      55,
-      2,
-      1,
-    );
+    const distance = fitOrbitDistance([-3.5, -7, 0], [3.5, 5, 3], 55, 2, 1);
     const availableHalfHeight =
       (distance - 1.5) * Math.tan((55 * Math.PI) / 360);
     const availableHalfWidth = availableHalfHeight * 2;
@@ -37,16 +147,7 @@ describe("PlayCanvas orbit camera helpers", () => {
   });
 
   it("pans in screen-aligned horizontal and vertical directions", () => {
-    const target = panOrbitTarget(
-      [0, 0, 0],
-      0,
-      0,
-      10,
-      100,
-      50,
-      1000,
-      90,
-    );
+    const target = panOrbitTarget([0, 0, 0], 0, 0, 10, 100, 50, 1000, 90);
     expect(target[0]).toBeCloseTo(-2);
     expect(target[1]).toBeCloseTo(1);
     expect(target[2]).toBeCloseTo(0);
@@ -161,10 +262,7 @@ describe("GSTile proxy coverage", () => {
 describe("PlayCanvas high-quality Gaussian rendering", () => {
   it("evaluates directional opacity in the same absolute frame as splat centers", () => {
     expect(
-      coordinateFrameCameraPosition(
-        [2.5, -4, 8],
-        [638_000, 6_215_000, 123],
-      ),
+      coordinateFrameCameraPosition([2.5, -4, 8], [638_000, 6_215_000, 123]),
     ).toEqual([638_002.5, 6_214_996, 131]);
   });
 
@@ -172,6 +270,7 @@ describe("PlayCanvas high-quality Gaussian rendering", () => {
     const settings = {
       antiAlias: false,
       alphaClip: 0.3,
+      alphaClipForward: 1 / 255,
       colorUpdateAngle: 4,
       dataFormat: "compact",
       minContribution: 3,
@@ -188,6 +287,7 @@ describe("PlayCanvas high-quality Gaussian rendering", () => {
     expect(settings).toEqual({
       antiAlias: false,
       alphaClip: 1 / 255,
+      alphaClipForward: 1 / 255,
       colorUpdateAngle: 0,
       dataFormat: "large",
       minContribution: 0.05,
@@ -217,22 +317,22 @@ describe("GSTile progressive LOD transitions", () => {
         removeNodeIds: ["r"],
       },
     ]);
-    expect(
-      planLodTransitions(manifest, ["a", "b"], ["a0", "a1", "b"]),
-    ).toEqual([
-      {
-        addNodeIds: ["a0", "a1"],
-        removeNodeIds: ["a"],
-      },
-    ]);
-    expect(
-      planLodTransitions(manifest, ["a0", "a1", "b"], ["a", "b"]),
-    ).toEqual([
-      {
-        addNodeIds: ["a"],
-        removeNodeIds: ["a0", "a1"],
-      },
-    ]);
+    expect(planLodTransitions(manifest, ["a", "b"], ["a0", "a1", "b"])).toEqual(
+      [
+        {
+          addNodeIds: ["a0", "a1"],
+          removeNodeIds: ["a"],
+        },
+      ],
+    );
+    expect(planLodTransitions(manifest, ["a0", "a1", "b"], ["a", "b"])).toEqual(
+      [
+        {
+          addNodeIds: ["a"],
+          removeNodeIds: ["a0", "a1"],
+        },
+      ],
+    );
   });
 
   it("reveals initial target nodes independently as they become ready", () => {

@@ -45,6 +45,8 @@ class GsTileBuildOptions:
     lod_proxy_strategy: Literal[
         "adaptive-moment", "moment-matched", "spatial-stratified", "minhash"
     ] = "moment-matched"
+    invisible_gaussian_scale_threshold: float | None = None
+    visibility_opacity_threshold: float = 0.05
 
     def validate(self) -> None:
         if not 1_024 <= self.leaf_size <= 1_048_576:
@@ -65,6 +67,20 @@ class GsTileBuildOptions:
                 "GSTile lod_proxy_strategy must be adaptive-moment, moment-matched, "
                 "spatial-stratified or minhash"
             )
+        if self.invisible_gaussian_scale_threshold is not None and (
+            not np.isfinite(self.invisible_gaussian_scale_threshold)
+            or self.invisible_gaussian_scale_threshold <= 0.0
+        ):
+            raise ValueError(
+                "GSTile invisible_gaussian_scale_threshold must be finite and positive"
+            )
+        if (
+            not np.isfinite(self.visibility_opacity_threshold)
+            or not 0.0 < self.visibility_opacity_threshold < 1.0
+        ):
+            raise ValueError(
+                "GSTile visibility_opacity_threshold must be strictly between 0 and 1"
+            )
         if len(self.coordinate_origin) != 3 or not all(np.isfinite(value) for value in self.coordinate_origin):
             raise ValueError("GSTile coordinate origin must contain three finite values")
 
@@ -75,6 +91,8 @@ class GsTileBuildResult:
     manifest_path: Path
     bundle_id: str
     gaussian_count: int
+    input_gaussian_count: int
+    filtered_gaussian_count: int
     leaf_count: int
     pack_bytes: int
     source_bytes: int
@@ -261,6 +279,53 @@ def _opacity_property_names(records: np.ndarray) -> list[str]:
         (name for name in records.dtype.names or () if name.startswith("opacity_sh_")),
         key=lambda name: int(name.rsplit("_", 1)[1]),
     )
+
+
+def _invisible_giant_mask(
+    records: np.ndarray,
+    scale_threshold: float | None,
+    opacity_threshold: float,
+) -> np.ndarray:
+    """Select giant splats proven invisible for every viewing direction.
+
+    The real SH addition theorem bounds each degree's directional contribution:
+    ``dot(c_l, Y_l(direction)) <= ||c_l|| sqrt((2l + 1) / 4pi)``.
+    Filtering against that upper bound cannot discard a splat that reaches the
+    configured opacity threshold in any direction. Small low-opacity splats and
+    large visible splats are deliberately retained.
+    """
+
+    if scale_threshold is None or records.size == 0:
+        return np.zeros(records.shape[0], dtype=np.bool_)
+    log_scales = np.column_stack(
+        (records["scale_0"], records["scale_1"], records["scale_2"])
+    ).astype(np.float64, copy=False)
+    if not np.all(np.isfinite(log_scales)):
+        raise ValueError("PLY contains non-finite Gaussian scales")
+    giant = np.max(log_scales, axis=1) > np.log(scale_threshold)
+    if not np.any(giant):
+        return giant
+
+    upper_logit = records["opacity"].astype(np.float64, copy=True)
+    opacity_names = _opacity_property_names(records)
+    start = 0
+    for degree, width in ((1, 3), (2, 5), (3, 7)):
+        if start >= len(opacity_names):
+            break
+        stop = min(start + width, len(opacity_names))
+        coefficients = np.column_stack(
+            tuple(records[name] for name in opacity_names[start:stop])
+        ).astype(np.float64, copy=False)
+        upper_logit += np.linalg.norm(coefficients, axis=1) * np.sqrt(
+            (2 * degree + 1) / (4.0 * np.pi)
+        )
+        start = stop
+    if start != len(opacity_names):
+        raise ValueError("DroneGS opacity SH properties do not encode degree 0 through 3")
+    if not np.all(np.isfinite(upper_logit)):
+        raise ValueError("PLY contains non-finite Gaussian opacity")
+    threshold_logit = np.log(opacity_threshold / (1.0 - opacity_threshold))
+    return giant & (upper_logit < threshold_logit)
 
 
 def _refit_directional_opacity(
@@ -694,11 +759,15 @@ def _create_root_work_file(
     chunk_records: int,
     cancellation_check: Callable[[], None] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
-) -> tuple[_WorkFile, str]:
+    invisible_gaussian_scale_threshold: float | None = None,
+    visibility_opacity_threshold: float = 0.05,
+) -> tuple[_WorkFile, str, int]:
     dtype = _work_dtype(layout)
     minimum = np.full(3, np.inf, dtype=np.float64)
     maximum = np.full(3, -np.inf, dtype=np.float64)
     source_id = 0
+    kept_count = 0
+    filtered_count = 0
     digest = hashlib.sha256()
     with source.open("rb") as input_handle, target.open("xb") as output_handle:
         header = input_handle.read(layout.header_size)
@@ -719,29 +788,43 @@ def _create_root_work_file(
                 working[name] = records[name]
             working["source_id"] = np.arange(source_id, source_id + count, dtype="<u8")
             source_id += count
-            chunk_min, chunk_max = _bounds(working)
-            minimum = np.minimum(minimum, chunk_min)
-            maximum = np.maximum(maximum, chunk_max)
-            working.tofile(output_handle)
+            filtered = _invisible_giant_mask(
+                working,
+                invisible_gaussian_scale_threshold,
+                visibility_opacity_threshold,
+            )
+            filtered_count += int(np.count_nonzero(filtered))
+            working = working[~filtered]
+            if working.size:
+                chunk_min, chunk_max = _bounds(working)
+                minimum = np.minimum(minimum, chunk_min)
+                maximum = np.maximum(maximum, chunk_max)
+                working.tofile(output_handle)
+                kept_count += working.shape[0]
             remaining -= count
             _emit_progress(
                 progress_callback,
                 "source_copy",
                 processed=source_id,
                 total=layout.vertex_count,
+                kept=kept_count,
+                filtered=filtered_count,
             )
         for block in iter(lambda: input_handle.read(1024 * 1024), b""):
             digest.update(block)
         output_handle.flush()
         os.fsync(output_handle.fileno())
+    if kept_count < 1:
+        raise ValueError("GSTile source filtering removed every Gaussian")
     return (
         _WorkFile(
             target,
-            layout.vertex_count,
+            kept_count,
             tuple(float(value) for value in minimum),
             tuple(float(value) for value in maximum),
         ),
         digest.hexdigest(),
+        filtered_count,
     )
 
 
@@ -1161,18 +1244,22 @@ def build_gstile_bundle(
     try:
         bundle_tmp.mkdir()
         (bundle_tmp / "packs").mkdir()
-        root_work, source_sha256 = _create_root_work_file(
+        root_work, source_sha256, filtered_gaussian_count = _create_root_work_file(
             source,
             layout,
             build_root / "r.work",
             options.chunk_records,
             options.cancellation_check,
             options.progress_callback,
+            options.invisible_gaussian_scale_threshold,
+            options.visibility_opacity_threshold,
         )
         _emit_progress(
             options.progress_callback,
             "source_ready",
             gaussianCount=root_work.count,
+            inputGaussianCount=layout.vertex_count,
+            filteredGaussianCount=filtered_gaussian_count,
             sha256=source_sha256,
         )
         tree = _GsTileTreeBuilder(layout, options, bundle_tmp)
@@ -1198,7 +1285,8 @@ def build_gstile_bundle(
             "bundleId": "sha256:" + "0" * 64,
             "source": {
                 "sha256": source_sha256,
-                "gaussianCount": layout.vertex_count,
+                "gaussianCount": root_work.count,
+                "inputGaussianCount": layout.vertex_count,
                 "colorShDegree": color_degree,
                 "opacityShDegree": opacity_degree,
                 "recordBytes": layout.dtype.itemsize,
@@ -1215,7 +1303,12 @@ def build_gstile_bundle(
                 "leafCount": tree.leaf_count,
                 "packBytes": sum(pack["byteLength"] for pack in tree.packs),
                 "bytesPerGaussian": sum(pack["byteLength"] for pack in tree.packs)
-                / layout.vertex_count,
+                / root_work.count,
+                "filteredGaussianCount": filtered_gaussian_count,
+                "invisibleGiantFilter": {
+                    "scaleThreshold": options.invisible_gaussian_scale_threshold,
+                    "opacityThreshold": options.visibility_opacity_threshold,
+                },
                 "maximumQuantizationError": tree.maximum_errors,
                 "lod": (lod_statistic if options.lod_proxy_size is not None else "leaf-only"),
                 **(
@@ -1247,7 +1340,9 @@ def build_gstile_bundle(
             options.progress_callback,
             "published",
             bundleId=manifest["bundleId"],
-            gaussianCount=layout.vertex_count,
+            gaussianCount=root_work.count,
+            inputGaussianCount=layout.vertex_count,
+            filteredGaussianCount=filtered_gaussian_count,
             leafCount=manifest["statistics"]["leafCount"],
             packBytes=manifest["statistics"]["packBytes"],
         )
@@ -1255,7 +1350,9 @@ def build_gstile_bundle(
             output=output,
             manifest_path=output / "manifest.json",
             bundle_id=manifest["bundleId"],
-            gaussian_count=layout.vertex_count,
+            gaussian_count=root_work.count,
+            input_gaussian_count=layout.vertex_count,
+            filtered_gaussian_count=filtered_gaussian_count,
             leaf_count=manifest["statistics"]["leafCount"],
             pack_bytes=manifest["statistics"]["packBytes"],
             source_bytes=source_payload_bytes,

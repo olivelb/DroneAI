@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { GsTileQuantization } from "./contracts";
 import {
+  allocateDecodedGsTile,
+  copyDecodedGsTile,
   crc32,
   decodeGsTilePack,
+  decodeSha256VerifiedGsTilePackTile,
   gsTileOpacityStreams,
   gsTileToPlyProperties,
+  mergeDecodedGsTiles,
 } from "./decode";
 
 const quantization: GsTileQuantization = {
@@ -92,6 +96,21 @@ describe("GSTile pack decoder", () => {
     );
   });
 
+  it("skips the redundant CRC pass only for a SHA-256-authenticated pack", () => {
+    const pack = createPack();
+    const reference = decodeGsTilePack(pack, quantization);
+    const decoded = decodeSha256VerifiedGsTilePackTile(
+      pack,
+      32,
+      96,
+      1,
+      quantization,
+    );
+
+    expect(Array.from(decoded.position)).toEqual(Array.from(reference.position));
+    expect(Array.from(decoded.colorSh)).toEqual(Array.from(reference.colorSh));
+  });
+
   it("packs logit and opacity SH into four float32 RGBA streams", () => {
     const decoded = decodeGsTilePack(createPack(), quantization);
     const streams = gsTileOpacityStreams(decoded);
@@ -125,6 +144,36 @@ describe("GSTile pack decoder", () => {
       decoded.colorSh[44],
     );
   });
+
+  it("assembles a preallocated cut without changing decoded values", () => {
+    const decoded = decodeGsTilePack(createPack(), quantization);
+    const destination = allocateDecodedGsTile(2);
+    copyDecodedGsTile(destination, 0, decoded);
+    copyDecodedGsTile(destination, 1, decoded);
+    const reference = mergeDecodedGsTiles([decoded, decoded]);
+
+    expect(destination.count).toBe(2);
+    expect(Array.from(destination.position)).toEqual(
+      Array.from(reference.position),
+    );
+    expect(Array.from(destination.colorSh)).toEqual(
+      Array.from(reference.colorSh),
+    );
+    expect(Array.from(destination.opacitySh)).toEqual(
+      Array.from(reference.opacitySh),
+    );
+    expect(Array.from(destination.sourceId)).toEqual(
+      Array.from(reference.sourceId),
+    );
+  });
+
+  it("rejects a decoded copy outside the preallocated cut", () => {
+    const decoded = decodeGsTilePack(createPack(), quantization);
+    expect(() => copyDecodedGsTile(allocateDecodedGsTile(1), 1, decoded)).toThrow(
+      "escapes its destination",
+    );
+  });
+
 });
 
 it("implements the standard CRC32 polynomial", () => {

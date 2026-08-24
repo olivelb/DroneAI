@@ -1,5 +1,6 @@
 "use client";
 
+import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { apiCredentials } from "../lib/api-client";
 import type {
@@ -7,7 +8,14 @@ import type {
   GaussianRenderStatistics,
 } from "../lib/gstile/backend";
 import { decodeGsTileManifest } from "../lib/gstile/contracts";
-import { createPlayCanvasResidentBackend } from "../lib/gstile/playcanvas-backend";
+import {
+  createPlayCanvasResidentBackend,
+  gstileGpuAssembly,
+  gstileOpacityMode,
+  gstileSortMode,
+  gstileTransformPrecision,
+  gstileVerticalFovDegrees,
+} from "../lib/gstile/playcanvas-backend";
 import { decodeGsTileViewerDescriptor } from "../lib/gstile/descriptor";
 import { GsTileRangeScheduler } from "../lib/gstile/range-source";
 
@@ -18,7 +26,32 @@ export type GaussianTileViewerProps = {
   className?: string;
 };
 
-const defaultBackendFactory = () => createPlayCanvasResidentBackend();
+const defaultBackendFactory = () => {
+  const search = new URLSearchParams(window.location.search);
+  const scaleOption = search.get("gstileMaxScale");
+  const debugTilesOption = search.get("gstileDebugTiles");
+  const debugTiles =
+    debugTilesOption === "id" || debugTilesOption === "lod"
+      ? debugTilesOption : "off";
+  const assemblyOption = search.get("gstileGpuAssembly");
+  const gpuAssembly = gstileGpuAssembly(assemblyOption);
+  const maximumGaussianScale =
+    scaleOption === null || scaleOption === "none"
+      ? Number.MAX_VALUE
+      : Number(scaleOption);
+  return createPlayCanvasResidentBackend({
+    transformPrecision: gstileTransformPrecision(search.get("gstileTransform")),
+    verticalFovDegrees: gstileVerticalFovDegrees(search.get("gstileFov")),
+    maximumGaussianScale,
+    includeSiblingLeaves: search.get("gstileSiblingLeaves") === "1",
+    retainOffscreenCoverage: search.get("gstileCoverage") !== "0",
+    opacityMode: gstileOpacityMode(search.get("gstileOpacity")),
+    sortMode: gstileSortMode(search.get("gstileSort")),
+    radialSorting: search.get("gstileRadialSort") === "1",
+    debugTiles,
+    gpuAssembly,
+  });
+};
 
 const emptyStatistics: GaussianRenderStatistics = {
   lodState: "steady",
@@ -32,10 +65,22 @@ const emptyStatistics: GaussianRenderStatistics = {
   effectiveMaximumErrorPixels: 0,
   selectedExactNodes: 0,
   selectedProxyNodes: 0,
+  selectedFullDepthNodes: 0,
+  selectedShallowLeafNodes: 0,
+  selectedInternalNodes: 0,
+  selectedLeafDepthCounts: [],
   maximumSelectedProxyScreenRadiusPixels: 0,
   maximumResidentGaussians: 0,
+  verticalFovDegrees: null,
   frameCpuMs: null,
   frameGpuMs: null,
+  workBufferUploadPercent: null,
+  lodTotalMs: null,
+  lodLoadMs: null,
+  lodCommitMs: null,
+  lodAddedGaussians: 0,
+  lodRemovedGaussians: 0,
+  lodReusedGaussians: 0,
 };
 
 const formatCount = (value: number) =>
@@ -53,6 +98,13 @@ export default function GaussianTileViewer({
   createBackend = defaultBackendFactory,
   className = "",
 }: GaussianTileViewerProps) {
+  const searchParams = useSearchParams();
+  const backendQueryKey = searchParams.toString();
+  const assemblyOption = gstileGpuAssembly(
+    searchParams.get("gstileGpuAssembly"),
+  );
+  const mergedGpuMode = assemblyOption === "merged";
+  const incrementalGpuMode = assemblyOption === "incremental";
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState("Initialisation…");
   const [error, setError] = useState<string | null>(null);
@@ -67,6 +119,7 @@ export default function GaussianTileViewer({
     // without the burst memory of decoding an unbounded LOD cut concurrently.
     const scheduler = new GsTileRangeScheduler(6);
     const backend = createBackend();
+    setStatistics(emptyStatistics);
     let animation = 0;
     let lastDiagnostics = 0;
     let disposed = false;
@@ -137,7 +190,7 @@ export default function GaussianTileViewer({
       observer.disconnect();
       backend.dispose();
     };
-  }, [createBackend, descriptorUrl, manifestUrl]);
+  }, [backendQueryKey, createBackend, descriptorUrl, manifestUrl]);
 
   const displayStatus =
     status === "Prêt" && statistics.lodState === "refining"
@@ -159,11 +212,29 @@ export default function GaussianTileViewer({
       data-pending-nodes={statistics.pendingNodes}
       data-selected-exact-nodes={statistics.selectedExactNodes}
       data-selected-proxy-nodes={statistics.selectedProxyNodes}
+      data-selected-full-depth-nodes={statistics.selectedFullDepthNodes}
+      data-selected-shallow-leaf-nodes={statistics.selectedShallowLeafNodes}
+      data-selected-internal-nodes={statistics.selectedInternalNodes}
+      data-selected-leaf-depth-counts={statistics.selectedLeafDepthCounts.join(",")}
       data-maximum-proxy-radius-pixels={statistics.maximumSelectedProxyScreenRadiusPixels}
+      data-frame-cpu-ms={statistics.frameCpuMs ?? ""}
+      data-frame-gpu-ms={statistics.frameGpuMs ?? ""}
+      data-work-buffer-upload-percent={statistics.workBufferUploadPercent ?? ""}
+      data-vertical-fov-degrees={statistics.verticalFovDegrees ?? ""}
+      data-lod-total-ms={statistics.lodTotalMs ?? ""}
+      data-lod-load-ms={statistics.lodLoadMs ?? ""}
+      data-lod-commit-ms={statistics.lodCommitMs ?? ""}
+      data-lod-reused-gaussians={statistics.lodReusedGaussians}
     >
       <canvas ref={canvasRef} className="block h-full min-h-80 w-full" />
       <div className="pointer-events-none absolute left-3 top-3 rounded-xl border border-white/10 bg-black/55 px-3 py-2 text-[11px] text-white/80 backdrop-blur">
-        <div className="font-semibold text-white">GSTile · {displayStatus}</div>
+        <div className="font-semibold text-white">
+          {mergedGpuMode
+            ? "GSTile MERGED"
+            : incrementalGpuMode
+              ? "GSTile INCREMENTAL"
+              : "GSTile"} · {displayStatus}
+        </div>
         {!error && (
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-white/60">
             <span>
@@ -172,7 +243,21 @@ export default function GaussianTileViewer({
             <span>{statistics.selectedNodes} / {statistics.targetNodes || statistics.selectedNodes} tuiles</span>
             {(statistics.selectedExactNodes > 0 || statistics.selectedProxyNodes > 0) && (
               <span>
-                {statistics.selectedExactNodes} exactes · {statistics.selectedProxyNodes} proxys
+                <span className="text-violet-300">
+                  {statistics.selectedExactNodes} terminales
+                </span>
+                {" · "}
+                <span className="text-red-300">
+                  {statistics.selectedInternalNodes} internes/proxys
+                </span>
+              </span>
+            )}
+            {statistics.selectedLeafDepthCounts.some((count) => count > 0) && (
+              <span className="text-white/55">
+                feuilles {statistics.selectedLeafDepthCounts
+                  .map((count, depth) => count > 0 ? `L${depth}:${count}` : "")
+                  .filter(Boolean)
+                  .join(" ")}
               </span>
             )}
             {statistics.pendingNodes > 0 && <span>{statistics.pendingNodes} en attente</span>}
@@ -190,13 +275,36 @@ export default function GaussianTileViewer({
             {statistics.maximumResidentGaussians > 0 && (
               <span>budget {formatCount(statistics.maximumResidentGaussians)}</span>
             )}
+            {statistics.verticalFovDegrees !== null && (
+              <span>FOV {statistics.verticalFovDegrees.toFixed(0)}°</span>
+            )}
             {statistics.frameGpuMs !== null && (
               <span>{statistics.frameGpuMs.toFixed(1)} ms GPU</span>
+            )}
+            {statistics.frameCpuMs !== null && (
+              <span>{statistics.frameCpuMs.toFixed(1)} ms CPU</span>
+            )}
+            {statistics.workBufferUploadPercent !== null && (
+              <span>upload {statistics.workBufferUploadPercent.toFixed(1)}%</span>
+            )}
+            {statistics.lodTotalMs !== null && (
+              <span>
+                LOD {statistics.lodTotalMs.toFixed(0)} ms
+                {statistics.lodLoadMs !== null &&
+                  ` · load ${statistics.lodLoadMs.toFixed(0)}`}
+                {statistics.lodCommitMs !== null &&
+                  ` · commit ${statistics.lodCommitMs.toFixed(0)}`}
+              </span>
+            )}
+            {statistics.lodReusedGaussians > 0 && (
+              <span>
+                reuse {formatCount(statistics.lodReusedGaussians)} splats
+              </span>
             )}
           </div>
         )}
         <div className="mt-1 text-[9px] text-white/45">
-          Rotation : clic gauche · Déplacement : clic droit ou Maj+glisser · Zoom : molette
+          Rotation : clic gauche · Déplacement : clic droit ou Maj+glisser · Zoom : molette · FOV : Alt+molette
         </div>
       </div>
       {error && (

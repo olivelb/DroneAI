@@ -9,6 +9,8 @@ export type GsTileLodSelectionOptions = {
   viewportHeight: number;
   maximumResidentGaussians: number;
   maximumProjectedErrorPixels: number;
+  includeSiblingLeaves?: boolean;
+  retainOffscreenCoverage?: boolean;
 };
 
 export type GsTileLodSelection = {
@@ -18,6 +20,10 @@ export type GsTileLodSelection = {
   effectiveMaximumErrorPixels: number;
   selectedExactNodes: number;
   selectedProxyNodes: number;
+  selectedFullDepthNodes: number;
+  selectedShallowLeafNodes: number;
+  selectedInternalNodes: number;
+  selectedLeafDepthCounts: number[];
   maximumSelectedProxyScreenRadiusPixels: number;
   budgetLimited: boolean;
   unresolvedMaximumErrorPixels: number;
@@ -217,7 +223,7 @@ export const selectGsTileLod = (
     projections.set(node.id, projected);
     return projected;
   };
-  if (!projection(root).visible) {
+  if (!projection(root).visible && !options.retainOffscreenCoverage) {
     return {
       selectedNodeIds: [],
       residentGaussians: 0,
@@ -225,6 +231,10 @@ export const selectGsTileLod = (
       effectiveMaximumErrorPixels: 0,
       selectedExactNodes: 0,
       selectedProxyNodes: 0,
+      selectedFullDepthNodes: 0,
+      selectedShallowLeafNodes: 0,
+      selectedInternalNodes: 0,
+      selectedLeafDepthCounts: [],
       maximumSelectedProxyScreenRadiusPixels: 0,
       budgetLimited: false,
       unresolvedMaximumErrorPixels: 0,
@@ -240,9 +250,10 @@ export const selectGsTileLod = (
     if (children.some((child) => !child || representationCount(child) < 1)) {
       throw new Error(`GSTile node ${node.id} has invalid LOD children`);
     }
-    return (children as GsTileNode[]).filter(
-      (child) => projection(child).visible,
-    );
+    const validChildren = children as GsTileNode[];
+    return options.retainOffscreenCoverage
+      ? validChildren
+      : validChildren.filter((child) => projection(child).visible);
   };
 
   // Cesium-style REPLACE traversal: every visible branch is evaluated against
@@ -257,18 +268,8 @@ export const selectGsTileLod = (
     let selectedProxyNodes = 0;
     let maximumSelectedProxyScreenRadiusPixels = 0;
 
-    const visit = (node: GsTileNode) => {
+    const select = (node: GsTileNode) => {
       const projected = projection(node);
-      if (!projected.visible) return;
-      const visibleChildren = childrenOf(node);
-      if (node.children && visibleChildren.length === 0) return;
-      if (
-        visibleChildren.length > 0 &&
-        projected.errorPixels > maximumErrorPixels
-      ) {
-        for (const child of visibleChildren) visit(child);
-        return;
-      }
       selected.push(node);
       residentGaussians += representationCount(node);
       if (node.children && node.lodTile) {
@@ -284,6 +285,28 @@ export const selectGsTileLod = (
         maximumSelectedErrorPixels,
         projected.errorPixels,
       );
+    };
+
+    const visit = (node: GsTileNode) => {
+      const projected = projection(node);
+      if (!projected.visible) {
+        // Keep one coarse, non-overlapping representation for every branch
+        // just outside the current frustum. A rapid zoom-out can then reveal
+        // complete (albeit coarse) geometry immediately instead of holes while
+        // a new merged GPU cut is decoded and uploaded.
+        if (options.retainOffscreenCoverage) select(node);
+        return;
+      }
+      const children = childrenOf(node);
+      if (node.children && children.length === 0) return;
+      if (
+        children.length > 0 &&
+        projected.errorPixels > maximumErrorPixels
+      ) {
+        for (const child of children) visit(child);
+        return;
+      }
+      select(node);
     };
 
     visit(root);
@@ -335,6 +358,46 @@ export const selectGsTileLod = (
   if (!selectedCut) {
     throw new Error("GSTile hierarchy cannot satisfy the resident splat budget");
   }
+  if (
+    options.includeSiblingLeaves &&
+    selectedCut.selectedProxyNodes === 0 &&
+    selectedCut.residentGaussians < options.maximumResidentGaussians
+  ) {
+    const selectedIds = new Set(selectedCut.nodes.map((node) => node.id));
+    const parentByChild = new Map<string, GsTileNode>();
+    for (const parent of manifest.nodes) {
+      for (const childId of parent.children ?? []) parentByChild.set(childId, parent);
+    }
+    const candidates = new Map<string, GsTileNode>();
+    for (const selected of selectedCut.nodes) {
+      const parent = parentByChild.get(selected.id);
+      if (!parent) continue;
+      for (const siblingId of parent.children ?? []) {
+        const sibling = nodes.get(siblingId);
+        if (
+          sibling &&
+          !sibling.children &&
+          sibling.tile &&
+          !selectedIds.has(sibling.id)
+        ) {
+          candidates.set(sibling.id, sibling);
+        }
+      }
+    }
+    for (const sibling of [...candidates.values()].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    )) {
+      const count = representationCount(sibling);
+      if (
+        selectedCut.residentGaussians + count >
+        options.maximumResidentGaussians
+      ) continue;
+      selectedCut.nodes.push(sibling);
+      selectedIds.add(sibling.id);
+      selectedCut.residentGaussians += count;
+      selectedCut.selectedExactNodes += 1;
+    }
+  }
 
   const selectedNodes = selectedCut.nodes
     .sort((left, right) => {
@@ -343,6 +406,24 @@ export const selectGsTileLod = (
         projection(left).screenRadiusPixels;
       return priority || left.id.localeCompare(right.id);
     });
+  const maximumManifestDepth = Math.max(
+    ...manifest.nodes.map((node) => Math.max(node.id.length - 1, 0)),
+  );
+  const selectedFullDepthNodes = selectedNodes.filter(
+    (node) => !node.children && node.id.length - 1 >= maximumManifestDepth,
+  ).length;
+  const selectedShallowLeafNodes = selectedNodes.filter(
+    (node) => !node.children && node.id.length - 1 < maximumManifestDepth,
+  ).length;
+  const selectedInternalNodes = selectedNodes.filter(
+    (node) => Boolean(node.children?.length),
+  ).length;
+  const selectedLeafDepthCounts = Array<number>(maximumManifestDepth + 1).fill(0);
+  for (const node of selectedNodes) {
+    if (node.children?.length) continue;
+    const depth = Math.max(node.id.length - 1, 0);
+    selectedLeafDepthCounts[depth] += 1;
+  }
   return {
     selectedNodeIds: selectedNodes.map((node) => node.id),
     residentGaussians: selectedCut.residentGaussians,
@@ -350,6 +431,10 @@ export const selectGsTileLod = (
     effectiveMaximumErrorPixels,
     selectedExactNodes: selectedCut.selectedExactNodes,
     selectedProxyNodes: selectedCut.selectedProxyNodes,
+    selectedFullDepthNodes,
+    selectedShallowLeafNodes,
+    selectedInternalNodes,
+    selectedLeafDepthCounts,
     maximumSelectedProxyScreenRadiusPixels:
       selectedCut.maximumSelectedProxyScreenRadiusPixels,
     budgetLimited,

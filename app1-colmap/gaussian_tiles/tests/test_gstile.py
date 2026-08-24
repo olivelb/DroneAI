@@ -18,6 +18,7 @@ from gaussian_tiles.format import PACK_HEADER_SIZE, encode_pack
 from gaussian_tiles.tiler import (
     _adaptive_moment_lod_proxy,
     _gaussian_render_bounds,
+    _invisible_giant_mask,
     _moment_matched_lod_proxy,
     _opacity_design_matrix,
     _proxy_support_error,
@@ -82,6 +83,73 @@ def _write_ply(path: Path, records: np.ndarray) -> None:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_invisible_giant_filter_is_directionally_conservative() -> None:
+    records = _records(4)
+    for name in ("scale_0", "scale_1", "scale_2"):
+        records[name] = np.log(0.01)
+    records["opacity"] = -10.0
+    for index in range(15):
+        records[f"opacity_sh_{index}"] = 0.0
+
+    records[0]["scale_0"] = np.log(0.10)  # giant and invisible: remove
+    records[1]["scale_0"] = np.log(0.10)  # giant but visible: retain
+    records[1]["opacity"] = 0.0
+    records[3]["scale_0"] = np.log(0.10)  # directional SH may make it visible
+    records[3]["opacity_sh_0"] = 20.0
+
+    np.testing.assert_array_equal(
+        _invisible_giant_mask(records, 0.05, 0.05),
+        np.array([True, False, False, False]),
+    )
+
+
+@pytest.mark.parametrize(
+    "options",
+    (
+        GsTileBuildOptions(invisible_gaussian_scale_threshold=0.0),
+        GsTileBuildOptions(invisible_gaussian_scale_threshold=np.inf),
+        GsTileBuildOptions(visibility_opacity_threshold=0.0),
+        GsTileBuildOptions(visibility_opacity_threshold=1.0),
+    ),
+)
+def test_invisible_giant_filter_rejects_invalid_thresholds(
+    options: GsTileBuildOptions,
+) -> None:
+    with pytest.raises(ValueError, match="threshold"):
+        options.validate()
+
+
+def test_bundle_filters_only_invisible_giants_before_partition(tmp_path: Path) -> None:
+    source = tmp_path / "source.ply"
+    records = _records(2_500)
+    records["opacity"] = 0.0
+    for index in range(15):
+        records[f"opacity_sh_{index}"] = 0.0
+    records[:10]["scale_0"] = np.log(0.10)
+    records[:10]["opacity"] = -10.0
+    _write_ply(source, records)
+
+    result = build_gstile_bundle(
+        source,
+        tmp_path / "filtered",
+        options=GsTileBuildOptions(
+            leaf_size=1_024,
+            chunk_records=1_024,
+            invisible_gaussian_scale_threshold=0.05,
+            visibility_opacity_threshold=0.05,
+        ),
+    )
+    manifest = json.loads(result.manifest_path.read_text("ascii"))
+    validate_manifest(manifest)
+
+    assert result.input_gaussian_count == 2_500
+    assert result.gaussian_count == 2_490
+    assert result.filtered_gaussian_count == 10
+    assert manifest["source"]["inputGaussianCount"] == 2_500
+    assert manifest["source"]["gaussianCount"] == 2_490
+    assert manifest["statistics"]["filteredGaussianCount"] == 10
 
 
 def test_baseline_pack_preserves_dronegs_fields_with_reported_error() -> None:
