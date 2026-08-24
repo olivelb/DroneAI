@@ -378,6 +378,10 @@ Conserver le cut complet précédent jusqu'au succès.
     nœud déjà nécessaire à l'arène alimente aussi `GSplatData`, supprimant les
     scans `getCenters()` et `calcAabb()` redondants sans augmenter le handoff
     de 176 octets/splat.
+22. Le packing des transformations utilise les écritures natives
+    `Float16Array` lorsqu'elles sont disponibles, avec un fallback PlayCanvas
+    exact. Cela remplace sept conversions JavaScript float32→float16 par splat
+    sans allocation ni copie supplémentaire.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -581,6 +585,33 @@ Les tests comparent bit à bit 4 096 centres décodés avec
 65 536 valeurs, ainsi que les bornes des deux représentations. La qualification
 complète passe 27 fichiers et 151 tests, le typecheck, le lint et le build local
 et BIGZEN. Le contrôle visuel humain est validé conforme au PLY original.
+
+### Qualification du packing natif Float16Array — Saint-Étienne v4c
+
+Le chemin rapide écrit directement les composantes quaternion et échelles dans
+des vues `Float16Array` superposées aux textures `transformA` et `transformB`.
+Les positions restent identiques bit à bit. L'arrondi IEEE natif peut différer
+du convertisseur PlayCanvas, qui passe d'abord par float32, mais le test
+différentiel sur 65 536 splats borne chaque composante à **un ULP float16
+maximum**. Le fallback sans `Float16Array` reste identique mot à mot à
+PlayCanvas.
+
+Le microbenchmark A/B dans le même processus mesure 3,534 ms pour le fallback
+et 2,786 ms pour le chemin natif par bloc de 65 536 splats, soit **1,27×** ou
+**−21,2 %**.
+
+Trois chargements Chrome froids du cut complet donnent :
+
+| variante | transform médian | ressource médiane | commit médian | Q96 médian | LOD médian |
+|---|---:|---:|---:|---:|---:|
+| centres interleavés + bornes partagées | 0,769 s | 1,128 s | 1,817 s | 3,275 s | 14,070 s |
+| packing natif `Float16Array` | **0,486 s** | **0,795 s** | **1,480 s** | **3,121 s** | **13,717 s** |
+
+Le gain médian atteint **−36,8 % sur les transformations**, **−29,5 % sur la
+ressource**, **−18,5 % sur le commit** et **−2,5 % sur le LOD total**. La suite
+complète passe avec 27 fichiers et 151 tests, ainsi que typecheck, lint et build
+production local et BIGZEN. Le contrôle visuel humain est validé conforme au
+PLY original.
 
 ## Sources primaires
 

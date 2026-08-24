@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { packGsTileNativeTransforms } from "./native-transform";
 
 describe("GSTile native transform packing", () => {
-  it("matches PlayCanvas word-for-word without per-splat math objects", () => {
+  it("keeps positions exact and half-floats within one PlayCanvas ULP", () => {
     const count = 65_536;
     let state = 0x9e3779b9;
     const random = () => {
@@ -75,8 +75,42 @@ describe("GSTile native transform packing", () => {
       FloatPacking.float2Half,
     );
 
-    expect(actualA).toEqual(expectedA);
-    expect(actualB).toEqual(expectedB);
+    let positionDifferences = 0;
+    let maxHalfDistance = 0;
+    const compareHalf = (actual: number, expected: number) => {
+      const distance = Math.abs(actual - expected);
+      maxHalfDistance = Math.max(maxHalfDistance, distance);
+    };
+    for (let splat = 0; splat < count; splat += 1) {
+      const offset = splat * 4;
+      for (let axis = 0; axis < 3; axis += 1) {
+        if (actualA[offset + axis] !== expectedA[offset + axis]) {
+          positionDifferences += 1;
+        }
+      }
+      compareHalf(actualA[offset + 3] & 0xffff, expectedA[offset + 3] & 0xffff);
+      compareHalf(actualA[offset + 3] >>> 16, expectedA[offset + 3] >>> 16);
+      for (let component = 0; component < 4; component += 1) {
+        compareHalf(
+          actualB[offset + component],
+          expectedB[offset + component],
+        );
+      }
+    }
+    expect(positionDifferences).toBe(0);
+    expect(maxHalfDistance).toBeLessThanOrEqual(1);
+
+    const fallbackA = new Uint32Array(count * 4 + 8);
+    const fallbackB = new Uint16Array(count * 4 + 8);
+    packGsTileNativeTransforms(
+      { position, logScale, rotation },
+      fallbackA,
+      fallbackB,
+      FloatPacking.float2Half,
+      null,
+    );
+    expect(fallbackA).toEqual(expectedA);
+    expect(fallbackB).toEqual(expectedB);
 
     const centerStream = new Float32Array(count * 3);
     for (let splat = 0; splat < count; splat += 1) {
@@ -102,8 +136,8 @@ describe("GSTile native transform packing", () => {
       FloatPacking.float2Half,
     );
 
-    expect(interleavedA).toEqual(expectedA);
-    expect(interleavedB).toEqual(expectedB);
+    expect(interleavedA).toEqual(actualA);
+    expect(interleavedB).toEqual(actualB);
   });
 
   it("rejects inconsistent stream shapes", () => {
