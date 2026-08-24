@@ -131,7 +131,7 @@ work-buffer ciblerait le mauvais segment.
 |---|---|---|---|---|
 | B1 | P0 | Le mode fidèle `merged` rechargeait et redécodait tous les nœuds du nouveau cut ; la seule ressource résidente était `__merged__`, donc les nœuds signalés comme réutilisés ne l'étaient pas côté CPU/GPU. | Pause proportionnelle au cut complet, même pour une petite variation de caméra. | **Corrigé** : arène GPU persistante, offsets stables et allocation multi-spans des seuls nouveaux nœuds. |
 | B2 | P0 | SHA, décodage Q96 et création de ressources s'exécutent sur le thread UI. Le `setTimeout(0)` permet l'annulation entre packs mais chaque pack reste une longue tâche synchrone. | Jank d'entrée et frames manquées pendant le raffinement. | Partiellement réduit : pipeline columnar direct 1,90× et 2,28 Go transitoires évités ; Worker/WASM à faire. |
-| B3 | P0 | L'opacité directionnelle dépend de la caméra dans un `workBufferModifier`, mais les mises à jour de caméra appellent `#updateOpacityCameraUniform(false)`. Le work buffer n'est réécrit qu'après le debounce LOD. | Opacité temporairement périmée pendant la navigation, puis réupload global coûteux. | Confirmé ; déplacer l'évaluation au shader par frame ou vers un pass GPU ciblé. |
+| B3 | P0 | L'opacité directionnelle dépend de la caméra dans un `workBufferModifier`. L'audit initial supposait que `#updateOpacityCameraUniform(false)` laissait le work-buffer périmé jusqu'au debounce. | Risque supposé d'opacité périmée et de réupload global coûteux. | **Diagnostic corrigé** : `colorUpdateAngle = 0` déclenche déjà le pass GPU color-only exact à chaque translation. Deux invalidations globales redondantes au debounce et au commit ont été supprimées. |
 | B4 | P1 | Le debounce LOD fixe ajoutait 650 ms après le dernier événement d'interaction. | Impression de lag avant tout fetch/décodage. | **Corrigé : 120 ms configurable**, validation stricte 0–5 000 ms. |
 | B5 | P1 | Le préflight LOD réserve `N × 96 × maximum_depth`, soit une borne adversariale sans rapport avec l'arbre spatial habituel. | Refus prématuré de builds valides à grande échelle. | Confirmé ; modèle mesuré + garde dynamique à implémenter. |
 | B6 | P1 | `_bounds` créait une matrice float64 `N×3` à chaque chunk et niveau ; chaque pack était relu pour SHA et rescanné pour CRC après encodage. | Allocation, pression cache et I/O `O(N log N)` amplifiées. | **Corrigé**, bundle bit-identique, tiler médian -29,4 %. |
@@ -341,6 +341,10 @@ Conserver le cut complet précédent jusqu'au succès.
     séquentiellement dans les trous, et les spans adjacents sont coalescés avant
     de configurer le renderer. La fragmentation ne provoque plus de compaction
     ni de reconstruction du cut complet.
+15. Les changements de caméra ne marquent plus explicitement tout le
+    work-buffer sale au démarrage du debounce puis au commit. PlayCanvas assure
+    déjà la mise à jour utile par son pass color-only avec seuil angulaire nul ;
+    la formule SH3 et la cadence exacte pendant la translation sont inchangées.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -382,6 +386,18 @@ dans les vues initiale et tournée, sans erreur renderer GSTile. La comparaison
 visuelle humaine dans Chrome a ensuite été déclarée conforme au PLY original :
 la gate perceptuelle de cette phase est passée.
 
+### Expérience de packing direct rejetée
+
+Un encodeur bit-compatible avec `GSplatResource` a été prototypé pour écrire
+directement couleurs, transformations, SH3 et opacités dans les textures de
+l'arène. Le test différentiel comparait tous les mots float16/uint32 et les
+streams float32. Le premier parcours mesurait 10,591 s de packing ; une boucle
+SH fixe RGB×15 l'a réduit à 8,190 s, mais PlayCanvas reste plus rapide sur ce
+corpus, autour de 6,0–6,3 s. Le prototype a donc été retiré, conformément à la
+gate de performance. La piste restante est de fusionner le packing dans le
+décodage Q96 ou de l'exécuter en Worker/WASM : un second parcours JavaScript de
+45 coefficients par splat ne peut pas gagner face au chemin moteur actuel.
+
 ## Sources primaires
 
 - WebSplatter, papier et code officiel : https://arxiv.org/abs/2602.03207 et
@@ -411,7 +427,8 @@ la gate perceptuelle de cette phase est passée.
 1. Ajouter télémétrie fetch/SHA/decode/columnar/upload/sort/raster et long-task.
 2. Répéter les essais appariés Chrome sur un corpus de caméras figé et publier
    médiane, p95, long tasks, mémoire CPU/VRAM et différences d'image.
-3. Prototyper un Worker propriétaire du cache brut, puis comparer TS et WASM.
+3. Prototyper un Worker propriétaire du cache brut et un décodage Q96→streams
+   packés en un seul parcours, puis comparer TypeScript, WASM et PlayCanvas.
 4. Instrumenter le nombre de spans, les octets réellement copiés et le temps
    de reconstruction du manager unifié, puis figer un parcours caméra répétable.
 5. Construire un prototype external-sort Morton sur une copie immuable du PLY.

@@ -365,6 +365,9 @@ export const configureHighQualityGsplatRendering = (
 ) => {
   settings.dataFormat = values.dataFormat;
   settings.renderer = values.renderer;
+  // Directional opacity depends on the camera position. A zero threshold makes
+  // PlayCanvas run its color-only work-buffer pass for every non-zero camera
+  // translation; geometry and transforms remain untouched.
   settings.colorUpdateAngle = 0;
   // DroneGS `fastgs` exports already encode the training-time footprint in
   // each Gaussian and explicitly disable compensated anti-aliasing. The
@@ -1047,7 +1050,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       );
     }
     this.#cameraDirty = false;
-    this.#updateOpacityCameraUniform(false);
+    this.#updateOpacityCameraUniform();
     this.#scheduleLodUpdate();
     this.#requestRender();
   }
@@ -2499,7 +2502,6 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       this.#lodSelectionKey = key;
       this.#pendingNodes = 0;
       this.#lodState = selection.budgetLimited ? "budget-limited" : "steady";
-      this.#updateOpacityCameraUniform();
       // Publish an arena cut in the same task that mutates its textures. This
       // keeps the old work-buffer from indexing new arena contents when rAF is
       // throttled and removes a full-frame transition lag in active tabs. One
@@ -2546,7 +2548,6 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     if (this.#lodUpdateTimer !== null) clearTimeout(this.#lodUpdateTimer);
     this.#lodUpdateTimer = setTimeout(() => {
       this.#lodUpdateTimer = null;
-      this.#updateOpacityCameraUniform();
       this.#requestRender();
       void this.#synchronizeLod(signal).catch((error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError")
@@ -2835,15 +2836,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       basis.up[2],
     );
     this.#cameraDirty = false;
-    this.#updateOpacityCameraUniform(false);
+    this.#updateOpacityCameraUniform();
     this.#scheduleLodUpdate();
     this.#requestRender();
   }
 
-  #updateOpacityCameraUniform(rewriteWorkBuffer = true) {
-    const pc = this.#pc;
+  #updateOpacityCameraUniform() {
     const camera = this.#camera;
-    if (!pc || !camera) return;
+    if (!camera) return;
     const position = camera.getPosition();
     const value = coordinateFrameCameraPosition(
       [position.x, position.y, position.z],
@@ -2851,9 +2851,6 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     );
     for (const entity of this.#entities) {
       entity.gsplat?.setParameter("uDroneCameraPosition", value);
-      if (rewriteWorkBuffer && entity.gsplat) {
-        entity.gsplat.workBufferUpdate = pc.WORKBUFFER_UPDATE_ONCE;
-      }
     }
   }
 
