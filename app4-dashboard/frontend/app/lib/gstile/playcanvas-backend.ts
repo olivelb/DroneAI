@@ -15,7 +15,10 @@ import {
 } from "./contracts";
 import { resolveGsTilePackUrl } from "./contracts";
 import {
+  allocateDecodedGsTile,
+  copyDecodedGsTile,
   decodeGsTilePackTile,
+  decodeSha256VerifiedGsTilePackTile,
   gsTileOpacityStreams,
   gsTileToPlyProperties,
   type DecodedGsTile,
@@ -44,6 +47,42 @@ type PreparedTile = {
   origin: Vec3;
   node: GsTileNode;
   byteLength: number;
+};
+type DestroyableGsplatManager = { destroy: () => void };
+type ResettableGsplatLayerData = {
+  gsplatManager?: DestroyableGsplatManager | null;
+  gsplatManagerShadow?: DestroyableGsplatManager | null;
+};
+type ResettableGsplatDirector = {
+  camerasMap: Map<
+    unknown,
+    { layersMap: Map<unknown, ResettableGsplatLayerData> }
+  >;
+};
+
+/**
+ * Destroy every unified GSplat manager so the next PlayCanvas frame rebuilds
+ * its world from the layer's current placements. This is required after an
+ * atomic replacement: PlayCanvas 2.21 can otherwise keep rendering the last
+ * sorted world even though the layer already contains the new placement.
+ */
+export const resetPlayCanvasGsplatManagers = (
+  director: ResettableGsplatDirector | null | undefined,
+) => {
+  const destroyed = new Set<DestroyableGsplatManager>();
+  for (const cameraData of director?.camerasMap.values() ?? []) {
+    for (const layerData of cameraData.layersMap.values()) {
+      for (const key of ["gsplatManager", "gsplatManagerShadow"] as const) {
+        const manager = layerData[key];
+        if (manager && !destroyed.has(manager)) {
+          manager.destroy();
+          destroyed.add(manager);
+        }
+        layerData[key] = null;
+      }
+    }
+  }
+  return destroyed.size;
 };
 export type LodTransitionGroup = {
   addNodeIds: string[];
@@ -197,17 +236,86 @@ export const prioritizeLodLoads = (
   return ordered;
 };
 
+export type GsTileGpuAssembly = "tiled" | "merged" | "incremental";
+export type GsTileOpacityMode =
+  | "base"
+  | "directional"
+  | "directional-no-reveal";
+export type GsTileSortMode = "gpu" | "cpu";
 
 export type PlayCanvasResidentBackendOptions = {
   /** Hard safety gate. Hierarchical LOD must be used beyond this resident baseline. */
   maximumResidentGaussians?: number;
+  initialResidentGaussians?: number;
   maximumProjectedErrorPixels?: number;
   background?: [number, number, number];
+  verticalFovDegrees?: number;
+  transformPrecision?: "packed" | "float32";
+  maximumGaussianScale?: number;
+  includeSiblingLeaves?: boolean;
+  retainOffscreenCoverage?: boolean;
+  opacityMode?: GsTileOpacityMode;
+  sortMode?: GsTileSortMode;
+  radialSorting?: boolean;
+  referencePlyUrl?: string;
+  referencePlyParts?: number;
+  referencePlyTransformMode?: "native" | "full-stream";
+  referencePlyOpacityMode?: "native" | "directional";
+  referencePlyConstructionMode?: "loader" | "manual";
+  debugTiles?: "off" | "lod" | "id";
+  gpuAssembly?: GsTileGpuAssembly;
 };
+
+/** Keep the exact monolithic renderer as the safe production default. */
+export const gstileGpuAssembly = (
+  requested: string | null | undefined,
+): GsTileGpuAssembly =>
+  requested === "tiled" || requested === "incremental"
+    ? requested
+    : "merged";
+
+export const gstileOpacityMode = (
+  requested: string | null | undefined,
+): GsTileOpacityMode => {
+  if (requested === "base") return "base";
+  if (requested === "directional-no-reveal") {
+    return "directional-no-reveal";
+  }
+  return "directional";
+};
+
+const gstileOpacityModeUniform = (mode: GsTileOpacityMode) =>
+  mode === "base" ? 0 : mode === "directional" ? 1 : 2;
+
+export const gstileSortMode = (
+  requested: string | null | undefined,
+): GsTileSortMode => (requested === "cpu" ? "cpu" : "gpu");
+
+/** Selection identity is set-based; screen-priority ordering is not content. */
+export const gstileLodSelectionKey = (nodeIds: readonly string[]) =>
+  [...nodeIds]
+    .sort((left, right) => left.localeCompare(right))
+    .join("\0");
+
+export const gstileVerticalFovDegrees = (
+  requested: string | number | null | undefined,
+) => {
+  if (requested === null || requested === undefined || requested === "") {
+    return 42;
+  }
+  const value = typeof requested === "number" ? requested : Number(requested);
+  return Number.isFinite(value) ? Math.min(Math.max(value, 20), 80) : 42;
+};
+
+/** Match PlayCanvas' validated PLY loader unless float32 streams are explicit. */
+export const gstileTransformPrecision = (
+  requested: string | null | undefined,
+): "packed" | "float32" => (requested === "float32" ? "float32" : "packed");
 
 type GsplatQualitySettings = {
   antiAlias: boolean;
   alphaClip: number;
+  alphaClipForward: number;
   colorUpdateAngle: number;
   dataFormat: string;
   minContribution: number;
@@ -231,6 +339,7 @@ export const configureHighQualityGsplatRendering = (
   settings.minContribution = 0.05;
   settings.minPixelSize = 0.5;
   settings.alphaClip = 1 / 255;
+  settings.alphaClipForward = 1 / 255;
   // This viewer uses an ordinary perspective camera which orbits by changing
   // position. PlayCanvas documents radial sorting for cubemap/fisheye views;
   // directional depth sorting is more accurate during camera translation.
@@ -244,6 +353,7 @@ export const configureHighQualityGsplatRendering = (
 // 7.5M while retaining shared-memory headroom for transient cut replacement.
 // Source size is deliberately independent: a 100M bundle remains out-of-core.
 const DEFAULT_MAXIMUM_RESIDENT_GAUSSIANS = 7_500_000;
+const DEFAULT_INITIAL_RESIDENT_GAUSSIANS = 1_250_000;
 const DEFAULT_MAXIMUM_PROJECTED_ERROR_PIXELS = 2;
 const OPACITY_STREAM_NAMES = [
   "droneOpacity0",
@@ -251,6 +361,34 @@ const OPACITY_STREAM_NAMES = [
   "droneOpacity2",
   "droneOpacity3",
 ] as const;
+const FULL_ROTATION_STREAM = "droneRotationFull";
+const FULL_SCALE_STREAM = "droneScaleFull";
+const REFERENCE_FULL_TRANSFORM_MODIFIER_GLSL = /* glsl */ `
+void modifySplatCenter(inout vec3 center) {}
+void modifySplatRotationScale(
+    vec3 originalCenter,
+    vec3 modifiedCenter,
+    inout vec4 rotation,
+    inout vec3 scale
+) {
+    rotation = loadDroneRotationFull().yzwx;
+    scale = loadDroneScaleFull().xyz;
+}
+void modifySplatColor(vec3 center, inout vec4 color) {}
+`;
+const REFERENCE_FULL_TRANSFORM_MODIFIER_WGSL = /* wgsl */ `
+fn modifySplatCenter(center: ptr<function, vec3f>) {}
+fn modifySplatRotationScale(
+    originalCenter: vec3f,
+    modifiedCenter: vec3f,
+    rotation: ptr<function, vec4f>,
+    scale: ptr<function, vec3f>
+) {
+    (*rotation) = loadDroneRotationFull().yzwx;
+    (*scale) = loadDroneScaleFull().xyz;
+}
+fn modifySplatColor(center: vec3f, color: ptr<function, vec4f>) {}
+`;
 
 const DEFAULT_VIEW_FRAME: GaussianViewFrame = {
   kind: "facade",
@@ -396,7 +534,10 @@ export const panOrbitTarget = (
   ];
 };
 
-export const lodProxyCoverage = (node: GsTileNode, inflateReplacementProxy = true) => {
+export const lodProxyCoverage = (
+  node: GsTileNode,
+  inflateReplacementProxy = true,
+) => {
   const representation = node.tile ?? node.lodTile;
   const isProxy = node.tile === undefined && node.lodTile !== undefined;
   if (!representation || !isProxy || !inflateReplacementProxy) {
@@ -426,12 +567,89 @@ const releasePlyPropertyStorage = (data: import("playcanvas").GSplatData) => {
   }
 };
 
+type DebugTileMode = "off" | "lod" | "id";
+
+const hsvToRgb = (hue: number, saturation: number, value: number): Vec3 => {
+  const chroma = value * saturation;
+  const sector = (((hue % 1) + 1) % 1) * 6;
+  const intermediate = chroma * (1 - Math.abs((sector % 2) - 1));
+  const offset = value - chroma;
+  const [red, green, blue] =
+    sector < 1
+      ? [chroma, intermediate, 0]
+      : sector < 2
+        ? [intermediate, chroma, 0]
+        : sector < 3
+          ? [0, chroma, intermediate]
+          : sector < 4
+            ? [0, intermediate, chroma]
+            : sector < 5
+              ? [intermediate, 0, chroma]
+              : [chroma, 0, intermediate];
+  return [red + offset, green + offset, blue + offset];
+};
+
+const hashTileId = (id: string) => {
+  let hash = 2166136261;
+  for (let index = 0; index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+};
+
+export const debugTileColor = (
+  node: Pick<GsTileNode, "id" | "children">,
+  mode: DebugTileMode,
+  minimumLeafDepth: number,
+  maximumDepth: number,
+): Vec3 => {
+  if (mode === "off") return [1, 1, 1];
+  if (mode === "lod") {
+    const depth = Math.max(node.id.length - 1, 0);
+    if (node.children?.length) {
+      // Red is reserved exclusively for a selected hierarchy proxy.
+      return [1, 0.01, 0.01];
+    }
+    // Leaves use a non-red yellow-to-violet ramp by absolute tree depth.
+    const span = Math.max(maximumDepth - minimumLeafDepth, 1);
+    const progress = Math.min(
+      Math.max((depth - minimumLeafDepth) / span, 0),
+      1,
+    );
+    return hsvToRgb(0.16 + progress * 0.62, 0.86, 1);
+  }
+  const nodeId = node.id;
+  const hash = hashTileId(nodeId);
+  return hsvToRgb(
+    (hash % 4093) / 4093,
+    0.72 + (((hash >>> 12) & 255) / 255) * 0.23,
+    0.88 + (((hash >>> 20) & 255) / 255) * 0.12,
+  );
+};
+
 export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   readonly id = "playcanvas-webgpu-resident-exact-v1";
 
   readonly #maximumResidentGaussians: number;
+  readonly #initialResidentGaussians: number;
   readonly #maximumProjectedErrorPixels: number;
   readonly #background: [number, number, number];
+  readonly #initialVerticalFovDegrees: number;
+  readonly #useFloat32Transforms: boolean;
+  readonly #maximumGaussianScale: number;
+  readonly #includeSiblingLeaves: boolean;
+  readonly #retainOffscreenCoverage: boolean;
+  readonly #opacityMode: GsTileOpacityMode;
+  readonly #sortMode: GsTileSortMode;
+  readonly #radialSorting: boolean;
+  readonly #referencePlyUrl: string | null;
+  readonly #referencePlyParts: number;
+  readonly #referencePlyTransformMode: "native" | "full-stream";
+  readonly #referencePlyOpacityMode: "native" | "directional";
+  readonly #referencePlyConstructionMode: "loader" | "manual";
+  readonly #debugTiles: DebugTileMode;
+  readonly #gpuAssembly: GsTileGpuAssembly;
   #pc: Pc | null = null;
   #app: PcApplication | null = null;
   #camera: PcEntity | null = null;
@@ -448,6 +666,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #effectiveMaximumErrorPixels = 0;
   #selectedExactNodes = 0;
   #selectedProxyNodes = 0;
+  #selectedFullDepthNodes = 0;
+  #selectedShallowLeafNodes = 0;
+  #selectedInternalNodes = 0;
+  #selectedLeafDepthCounts: number[] = [];
   #maximumSelectedProxyScreenRadiusPixels = 0;
   #lodState: GaussianRenderStatistics["lodState"] = "steady";
   #lastTimestampMs: number | null = null;
@@ -477,15 +699,65 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #viewportWidth = 1;
   #viewportHeight = 1;
   #lodUsesMomentMatchedProxies = false;
+  #minimumLodLeafDepth = 0;
+  #maximumLodDepth = 0;
   #verifiedPackBuffers = new WeakSet<ArrayBuffer>();
+  #forceWorkBufferRewriteFrames = 0;
+  #renderFramesRemaining = 1;
+  #lodTotalMs: number | null = null;
+  #lodLoadMs: number | null = null;
+  #lodCommitMs: number | null = null;
+  #lodAddedGaussians = 0;
+  #lodRemovedGaussians = 0;
+  #lodReusedGaussians = 0;
+  #debugTraceEnabled = false;
+  #debugSnapshotElement: HTMLScriptElement | null = null;
+  #lastDebugSnapshotTimestampMs = -Infinity;
 
   constructor(options: PlayCanvasResidentBackendOptions = {}) {
+    this.#debugTraceEnabled =
+      typeof location !== "undefined" &&
+      new URLSearchParams(location.search).get("dev") === "1";
     this.#maximumResidentGaussians =
       options.maximumResidentGaussians ?? DEFAULT_MAXIMUM_RESIDENT_GAUSSIANS;
+    this.#initialResidentGaussians = Math.min(
+      options.initialResidentGaussians ?? DEFAULT_INITIAL_RESIDENT_GAUSSIANS,
+      this.#maximumResidentGaussians,
+    );
     this.#maximumProjectedErrorPixels =
       options.maximumProjectedErrorPixels ??
       DEFAULT_MAXIMUM_PROJECTED_ERROR_PIXELS;
     this.#background = options.background ?? [0.035, 0.055, 0.05];
+    this.#initialVerticalFovDegrees = gstileVerticalFovDegrees(
+      options.verticalFovDegrees,
+    );
+    this.#useFloat32Transforms = options.transformPrecision === "float32";
+    this.#maximumGaussianScale =
+      options.maximumGaussianScale ?? Number.MAX_VALUE;
+    this.#includeSiblingLeaves = options.includeSiblingLeaves ?? false;
+    this.#retainOffscreenCoverage = options.retainOffscreenCoverage ?? true;
+    this.#opacityMode = options.opacityMode ?? "directional";
+    this.#sortMode = options.sortMode ?? "gpu";
+    this.#radialSorting = options.radialSorting ?? false;
+    this.#referencePlyUrl = options.referencePlyUrl ?? null;
+    this.#referencePlyParts = options.referencePlyParts ?? 1;
+    this.#referencePlyTransformMode =
+      options.referencePlyTransformMode ?? "native";
+    this.#referencePlyOpacityMode = options.referencePlyOpacityMode ?? "native";
+    this.#referencePlyConstructionMode =
+      options.referencePlyConstructionMode ?? "loader";
+    this.#debugTiles = options.debugTiles ?? "off";
+    // A single merged GSplat resource is the fidelity baseline. PlayCanvas'
+    // unified multi-resource path can retain stale allocation data across LOD
+    // replacements, which presents as tile-aligned oversized/blurry splats.
+    this.#gpuAssembly = gstileGpuAssembly(options.gpuAssembly);
+    if (
+      !Number.isSafeInteger(this.#referencePlyParts) ||
+      this.#referencePlyParts < 1 ||
+      this.#referencePlyParts > 256
+    ) {
+      throw new Error("referencePlyParts must be an integer between 1 and 256");
+    }
     if (
       !Number.isSafeInteger(this.#maximumResidentGaussians) ||
       this.#maximumResidentGaussians < 1
@@ -493,15 +765,28 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       throw new Error("maximumResidentGaussians must be a positive integer");
     }
     if (
+      !Number.isSafeInteger(this.#initialResidentGaussians) ||
+      this.#initialResidentGaussians < 1
+    ) {
+      throw new Error("initialResidentGaussians must be a positive integer");
+    }
+    if (
       !Number.isFinite(this.#maximumProjectedErrorPixels) ||
       this.#maximumProjectedErrorPixels <= 0
     ) {
       throw new Error("maximumProjectedErrorPixels must be positive");
     }
+    if (
+      !Number.isFinite(this.#maximumGaussianScale) ||
+      this.#maximumGaussianScale <= 0
+    ) {
+      throw new Error("maximumGaussianScale must be positive and finite");
+    }
   }
 
   async initialize(canvas: HTMLCanvasElement) {
-    if (this.#app) throw new Error("PlayCanvas GSTile backend is already initialized");
+    if (this.#app)
+      throw new Error("PlayCanvas GSTile backend is already initialized");
     if (!("gpu" in navigator)) {
       throw new GaussianBackendUnavailable(
         "Le viewer GSTile haute qualité nécessite WebGPU.",
@@ -522,10 +807,17 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
 
     const app = new pc.Application(canvas, { graphicsDevice: device });
+    if (this.#debugTraceEnabled && device.gpuProfiler) {
+      device.gpuProfiler.enabled = true;
+    }
     configureHighQualityGsplatRendering(app.scene.gsplat, {
       dataFormat: pc.GSPLATDATA_LARGE,
-      renderer: pc.GSPLAT_RENDERER_RASTER_GPU_SORT,
+      renderer:
+        this.#sortMode === "cpu"
+          ? pc.GSPLAT_RENDERER_RASTER_CPU_SORT
+          : pc.GSPLAT_RENDERER_RASTER_GPU_SORT,
     });
+    app.scene.gsplat.radialSorting = this.#radialSorting;
 
     const camera = new pc.Entity("GSTile camera");
     camera.addComponent("camera", {
@@ -536,7 +828,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       ),
       nearClip: 0.01,
       farClip: 1_000_000,
-      fov: 55,
+      fov: this.#initialVerticalFovDegrees,
     });
     app.root.addChild(camera);
 
@@ -544,6 +836,19 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#app = app;
     this.#camera = camera;
     this.#canvas = canvas;
+    if (this.#debugTraceEnabled) {
+      (
+        globalThis as typeof globalThis & {
+          __gstileDebugSnapshot?: () => unknown;
+        }
+      ).__gstileDebugSnapshot = () => this.#debugSnapshot();
+      const snapshotElement = document.createElement("script");
+      snapshotElement.id = "gstile-debug-snapshot";
+      snapshotElement.type = "application/json";
+      snapshotElement.textContent = "{}";
+      document.body.appendChild(snapshotElement);
+      this.#debugSnapshotElement = snapshotElement;
+    }
     this.#installOrbitInput(canvas);
   }
 
@@ -557,9 +862,13 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   ) {
     const pc = this.#pc;
     const app = this.#app;
-    if (!pc || !app) throw new Error("PlayCanvas GSTile backend is not initialized");
+    if (!pc || !app)
+      throw new Error("PlayCanvas GSTile backend is not initialized");
     const hasLod = isGsTileLodProfile(manifest.profile);
-    if (!hasLod && manifest.source.gaussianCount > this.#maximumResidentGaussians) {
+    if (
+      !hasLod &&
+      manifest.source.gaussianCount > this.#maximumResidentGaussians
+    ) {
       throw new GaussianBackendUnavailable(
         `Le profil résident est limité à ${this.#maximumResidentGaussians.toLocaleString()} splats; ` +
           `${manifest.source.gaussianCount.toLocaleString()} exigent le LOD hiérarchique.`,
@@ -581,22 +890,43 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       root.bounds.min,
       root.bounds.max,
       this.#viewFrame,
-      this.#camera?.camera?.fov ?? 55,
+      this.#camera?.camera?.fov ?? this.#initialVerticalFovDegrees,
       this.#viewportWidth / this.#viewportHeight,
     );
     this.#cameraDirty = true;
     this.#updateCameraPose();
+
+    if (this.#referencePlyUrl) {
+      await this.#loadReferencePly(
+        pc,
+        app,
+        this.#referencePlyUrl,
+        this.#referencePlyParts,
+        origin,
+        signal,
+      );
+      return;
+    }
 
     if (hasLod) {
       this.#lodUsesMomentMatchedProxies =
         manifest.profile === GSTILE_MOMENT_LOD_PROFILE ||
         manifest.profile === GSTILE_ADAPTIVE_LOD_PROFILE;
       this.#lodManifest = manifest;
+      this.#maximumLodDepth = Math.max(
+        ...manifest.nodes.map((node) => Math.max(node.id.length - 1, 0)),
+      );
+      const leafDepths = manifest.nodes
+        .filter((node) => !node.children?.length)
+        .map((node) => Math.max(node.id.length - 1, 0));
+      this.#minimumLodLeafDepth =
+        leafDepths.length > 0 ? Math.min(...leafDepths) : this.#maximumLodDepth;
       this.#lodManifestUrl = manifestUrl;
       this.#lodScheduler = scheduler;
       this.#lodPackUrls = packUrls;
       this.#lodSignal = signal;
-      await this.#synchronizeLod(signal);
+      await this.#synchronizeLod(signal, this.#initialResidentGaussians);
+      this.#scheduleLodUpdate();
       return;
     }
 
@@ -629,7 +959,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       for (const node of nodes) {
         signal.throwIfAborted();
         if (node.tile.sha256.toLowerCase() !== actualSha256) {
-          throw new Error(`GSTile node ${node.id} references an unexpected pack hash`);
+          throw new Error(
+            `GSTile node ${node.id} references an unexpected pack hash`,
+          );
         }
         const decoded = decodeGsTilePackTile(
           content,
@@ -663,11 +995,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     entity.setRotation(new pc.Quat().setFromMat4(world));
     const projectionY = camera.projection[5];
     if (entity.camera && Number.isFinite(projectionY) && projectionY > 0) {
-      entity.camera.fov = (2 * Math.atan(1 / projectionY) * 180) / Math.PI;
+      entity.camera.fov = gstileVerticalFovDegrees(
+        (2 * Math.atan(1 / projectionY) * 180) / Math.PI,
+      );
     }
     this.#cameraDirty = false;
-    this.#updateOpacityCameraUniform();
+    this.#updateOpacityCameraUniform(false);
     this.#scheduleLodUpdate();
+    this.#requestRender();
   }
 
   render(timestampMs: number): GaussianRenderStatistics {
@@ -675,13 +1010,56 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     if (!app) return this.#statistics(null);
     const start = performance.now();
     const deltaSeconds = Math.min(
-      Math.max(((this.#lastTimestampMs ?? timestampMs) - timestampMs) / -1000, 0),
+      Math.max(
+        ((this.#lastTimestampMs ?? timestampMs) - timestampMs) / -1000,
+        0,
+      ),
       0.1,
     );
     this.#lastTimestampMs = timestampMs;
     if (this.#cameraDirty) this.#updateCameraPose();
+    const pc = this.#pc;
+    const forceWorkBufferRewrite =
+      this.#forceWorkBufferRewriteFrames > 0 && pc !== null;
+    // CPU sorting is completed asynchronously by a worker. Keep advancing the
+    // PlayCanvas manager in this explicit diagnostic mode so its pending order
+    // can be applied after an atomic cut replacement. The production GPU path
+    // remains render-on-demand and therefore idle when the camera is steady.
+    if (
+      !forceWorkBufferRewrite &&
+      this.#renderFramesRemaining === 0 &&
+      this.#sortMode !== "cpu"
+    ) {
+      this.#updateDebugSnapshot(timestampMs);
+      return this.#statistics(0, false);
+    }
+    if (forceWorkBufferRewrite) {
+      for (const entity of this.#entities) {
+        if (entity.gsplat) {
+          entity.gsplat.workBufferUpdate = pc.WORKBUFFER_UPDATE_ALWAYS;
+        }
+      }
+      // This also forces PlayCanvas to rebuild the unified allocation map,
+      // rather than relying only on the placement diff generated by the cut.
+      app.scene.gsplat.dirty = true;
+    }
     app.update(deltaSeconds);
     app.render();
+    this.#updateDebugSnapshot(timestampMs);
+    this.#renderFramesRemaining = Math.max(
+      this.#renderFramesRemaining - 1,
+      0,
+    );
+    if (forceWorkBufferRewrite) {
+      this.#forceWorkBufferRewriteFrames -= 1;
+      if (this.#forceWorkBufferRewriteFrames === 0) {
+        for (const entity of this.#entities) {
+          if (entity.gsplat) {
+            entity.gsplat.workBufferUpdate = pc.WORKBUFFER_UPDATE_AUTO;
+          }
+        }
+      }
+    }
     return this.#statistics(performance.now() - start);
   }
 
@@ -701,6 +1079,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
     app.graphicsDevice.resizeCanvas(pixelWidth, pixelHeight);
     this.#scheduleLodUpdate();
+    this.#requestRender();
   }
 
   dispose() {
@@ -738,11 +1117,299 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#effectiveMaximumErrorPixels = 0;
     this.#selectedExactNodes = 0;
     this.#selectedProxyNodes = 0;
+    this.#selectedFullDepthNodes = 0;
+    this.#selectedShallowLeafNodes = 0;
+    this.#selectedInternalNodes = 0;
+    this.#selectedLeafDepthCounts = [];
     this.#maximumSelectedProxyScreenRadiusPixels = 0;
     this.#lodState = "steady";
     this.#lodUsesMomentMatchedProxies = false;
+    this.#minimumLodLeafDepth = 0;
+    this.#maximumLodDepth = 0;
     this.#coordinateOrigin = [0, 0, 0];
     this.#verifiedPackBuffers = new WeakSet<ArrayBuffer>();
+    this.#forceWorkBufferRewriteFrames = 0;
+    this.#renderFramesRemaining = 0;
+    this.#lodTotalMs = null;
+    this.#lodLoadMs = null;
+    this.#lodCommitMs = null;
+    this.#lodAddedGaussians = 0;
+    this.#lodRemovedGaussians = 0;
+    this.#lodReusedGaussians = 0;
+    if (this.#debugTraceEnabled) {
+      delete (
+        globalThis as typeof globalThis & {
+          __gstileDebugSnapshot?: () => unknown;
+        }
+      ).__gstileDebugSnapshot;
+    }
+    this.#debugSnapshotElement?.remove();
+    this.#debugSnapshotElement = null;
+    this.#lastDebugSnapshotTimestampMs = -Infinity;
+  }
+
+  async #loadReferencePly(
+    pc: Pc,
+    app: PcApplication,
+    url: string,
+    partCount: number,
+    origin: Vec3,
+    signal: AbortSignal,
+  ) {
+    const loadPart = async (part: number) => {
+      signal.throwIfAborted();
+      const partUrl = new URL(url, location.href);
+      if (partCount > 1) {
+        partUrl.searchParams.set("part", String(part));
+        partUrl.searchParams.set("parts", String(partCount));
+      }
+      const label = partCount > 1 ? ` ${part + 1}/${partCount}` : "";
+      const asset = new pc.Asset(
+        `GSTile exact cut reference${label}`,
+        "gsplat",
+        {
+          url: partUrl.toString(),
+          filename:
+            partCount > 1
+              ? `gstile-reference-${part}-of-${partCount}.ply`
+              : "gstile-reference-cut-minimal.ply",
+        },
+        { reorder: false },
+      );
+      app.assets.add(asset);
+      const resource = await new Promise<PcResource>((resolve, reject) => {
+        const cleanup = () => {
+          signal.removeEventListener("abort", abort);
+          asset.off("load", loaded);
+          asset.off("error", failed);
+        };
+        const loaded = () => {
+          cleanup();
+          const value = asset.resource as PcResource | null;
+          if (value) resolve(value);
+          else
+            reject(
+              new Error(
+                "PlayCanvas loaded a reference PLY without a GSplat resource",
+              ),
+            );
+        };
+        const failed = (error: unknown) => {
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        };
+        const abort = () => {
+          cleanup();
+          asset.unload();
+          reject(signal.reason);
+        };
+        signal.addEventListener("abort", abort, { once: true });
+        asset.once("load", loaded);
+        asset.once("error", failed);
+        app.assets.load(asset);
+      });
+      signal.throwIfAborted();
+      return { part, resource };
+    };
+
+    const loadedParts: Array<{ part: number; resource: PcResource }> = [];
+    const concurrency = Math.min(8, partCount);
+    for (let start = 0; start < partCount; start += concurrency) {
+      const batch = Array.from(
+        { length: Math.min(concurrency, partCount - start) },
+        (_, offset) => loadPart(start + offset),
+      );
+      loadedParts.push(...(await Promise.all(batch)));
+    }
+    loadedParts.sort((left, right) => left.part - right.part);
+
+    let totalSplats = 0;
+    for (const { part, resource: loaderResource } of loadedParts) {
+      const directionalOpacity =
+        this.#referencePlyOpacityMode === "directional";
+      const loaderData =
+        loaderResource.gsplatData as import("playcanvas").GSplatData;
+      const loaderProperty = (name: string) => {
+        const storage = loaderData.getProp(name);
+        if (!(storage instanceof Float32Array)) {
+          throw new Error(`Reference PLY property ${name} is unavailable`);
+        }
+        return storage;
+      };
+      let resource = loaderResource;
+      let manualData: import("playcanvas").GSplatData | null = null;
+      let manualDecoded: DecodedGsTile | null = null;
+      if (this.#referencePlyConstructionMode === "manual") {
+        const count = loaderResource.numSplats;
+        const interleave = (names: readonly string[]) => {
+          const columns = names.map(loaderProperty);
+          const result = new Float32Array(count * columns.length);
+          for (let row = 0; row < count; row += 1) {
+            for (let column = 0; column < columns.length; column += 1) {
+              result[row * columns.length + column] = columns[column][row];
+            }
+          }
+          return result;
+        };
+        manualDecoded = {
+          header: null as unknown as DecodedGsTile["header"],
+          count,
+          position: interleave(["x", "y", "z"]),
+          colorDc: interleave(["f_dc_0", "f_dc_1", "f_dc_2"]),
+          // The minimal reference fixture intentionally carries only DC color.
+          // Zero SH coefficients preserve that image while exercising the same
+          // SH3 GSplatData/GSplatResource construction path as production tiles.
+          colorSh: new Float32Array(count * 45),
+          opacityLogit: loaderProperty("opacity").slice(),
+          logScale: interleave(["scale_0", "scale_1", "scale_2"]),
+          rotation: interleave(["rot_0", "rot_1", "rot_2", "rot_3"]),
+          opacitySh: interleave(
+            Array.from(
+              { length: 15 },
+              (_, coefficient) => `opacity_sh_${coefficient}`,
+            ),
+          ),
+          sourceId: new BigUint64Array(count),
+        };
+        manualData = new pc.GSplatData([
+          {
+            name: "vertex",
+            count,
+            properties: gsTileToPlyProperties(manualDecoded),
+          },
+        ]);
+        resource = new pc.GSplatResource(app.graphicsDevice, manualData);
+      }
+      const referenceData =
+        resource.gsplatData as import("playcanvas").GSplatData;
+      const property = (name: string) => {
+        const storage = referenceData.getProp(name);
+        if (!(storage instanceof Float32Array)) {
+          throw new Error(`Reference PLY property ${name} is unavailable`);
+        }
+        return storage;
+      };
+      if (this.#referencePlyTransformMode === "full-stream") {
+        resource.format.addExtraStreams([
+          { name: FULL_ROTATION_STREAM, format: pc.PIXELFORMAT_RGBA32F },
+          { name: FULL_SCALE_STREAM, format: pc.PIXELFORMAT_RGBA32F },
+        ]);
+        const rw = property("rot_0");
+        const rx = property("rot_1");
+        const ry = property("rot_2");
+        const rz = property("rot_3");
+        const sx = property("scale_0");
+        const sy = property("scale_1");
+        const sz = property("scale_2");
+        const rotation = resource.getTexture(FULL_ROTATION_STREAM);
+        const scale = resource.getTexture(FULL_SCALE_STREAM);
+        if (!rotation || !scale) {
+          throw new Error(
+            "PlayCanvas did not allocate reference transform streams",
+          );
+        }
+        const rotationData = rotation.lock() as Float32Array;
+        const scaleData = scale.lock() as Float32Array;
+        for (let splat = 0; splat < resource.numSplats; splat += 1) {
+          const offset = splat * 4;
+          rotationData[offset] = rw[splat];
+          rotationData[offset + 1] = rx[splat];
+          rotationData[offset + 2] = ry[splat];
+          rotationData[offset + 3] = rz[splat];
+          scaleData[offset] = Math.exp(sx[splat]);
+          scaleData[offset + 1] = Math.exp(sy[splat]);
+          scaleData[offset + 2] = Math.exp(sz[splat]);
+        }
+        rotation.unlock();
+        scale.unlock();
+      }
+      if (directionalOpacity) {
+        resource.format.addExtraStreams(
+          OPACITY_STREAM_NAMES.map((name) => ({
+            name,
+            format: pc.PIXELFORMAT_RGBA32F,
+          })),
+        );
+        const manualOpacityStreams = manualDecoded
+          ? gsTileOpacityStreams(manualDecoded)
+          : null;
+        const opacityProperties = manualOpacityStreams
+          ? null
+          : [
+              property("opacity"),
+              ...Array.from({ length: 15 }, (_, coefficient) =>
+                loaderProperty(`opacity_sh_${coefficient}`),
+              ),
+            ];
+        OPACITY_STREAM_NAMES.forEach((name, streamIndex) => {
+          const texture = resource.getTexture(name);
+          if (!texture) throw new Error(`PlayCanvas did not allocate ${name}`);
+          const destination = texture.lock() as Float32Array;
+          if (manualOpacityStreams) {
+            destination.set(manualOpacityStreams[streamIndex]);
+          } else if (opacityProperties) {
+            for (let splat = 0; splat < resource.numSplats; splat += 1) {
+              const target = splat * 4;
+              for (let channel = 0; channel < 4; channel += 1) {
+                destination[target + channel] =
+                  opacityProperties[streamIndex * 4 + channel][splat];
+              }
+            }
+          }
+          texture.unlock();
+        });
+      }
+      const entity = new pc.Entity(
+        partCount > 1
+          ? `GSTile exact cut reference PLY ${part + 1}/${partCount}`
+          : "GSTile exact cut reference PLY",
+      );
+      entity.setPosition(-origin[0], -origin[1], -origin[2]);
+      entity.addComponent("gsplat", { unified: true });
+      if (!entity.gsplat)
+        throw new Error("PlayCanvas GSplat component is unavailable");
+      entity.gsplat.resource = resource;
+      if (directionalOpacity) {
+        const fullTransform = this.#referencePlyTransformMode === "full-stream";
+        entity.gsplat.setWorkBufferModifier({
+          glsl: DRONEGS_OPACITY_MODIFIER_GLSL.replace(
+            "// DRONEGS_FULL_TRANSFORM_GLSL",
+            fullTransform
+              ? "rotation = loadDroneRotationFull().yzwx;\n    scale = loadDroneScaleFull().xyz;"
+              : "",
+          ),
+          wgsl: DRONEGS_OPACITY_MODIFIER_WGSL.replace(
+            "// DRONEGS_FULL_TRANSFORM_WGSL",
+            fullTransform
+              ? "(*rotation) = loadDroneRotationFull().yzwx;\n    (*scale) = loadDroneScaleFull().xyz;"
+              : "",
+          ),
+        });
+        entity.gsplat.setParameter("uDroneLodScaleMultiplier", 1);
+        entity.gsplat.setParameter("uDroneLodMaximumScale", 1.0e20);
+        entity.gsplat.setParameter("uDroneDebugTileColor", [0, 0, 0]);
+        entity.gsplat.setParameter("uDroneDebugTileMix", 0);
+      } else if (this.#referencePlyTransformMode === "full-stream") {
+        entity.gsplat.setWorkBufferModifier({
+          glsl: REFERENCE_FULL_TRANSFORM_MODIFIER_GLSL,
+          wgsl: REFERENCE_FULL_TRANSFORM_MODIFIER_WGSL,
+        });
+      }
+      app.root.addChild(entity);
+      if (manualData) releasePlyPropertyStorage(manualData);
+      this.#entities.push(entity);
+      this.#resources.push(resource);
+      totalSplats += resource.numSplats;
+    }
+
+    this.#residentGaussians = totalSplats;
+    this.#selectedNodes = partCount;
+    this.#targetGaussians = totalSplats;
+    this.#targetNodes = partCount;
+    this.#selectedExactNodes = partCount;
+    this.#selectedFullDepthNodes = partCount;
+    this.#lodState = "steady";
+    this.#updateCameraPose();
   }
 
   #addTileResource(
@@ -764,6 +1431,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     node: GsTileNode,
     enabled: boolean,
     byteLength = 0,
+    useManifestRenderBounds = true,
   ): LoadedTile {
     const data = new pc.GSplatData([
       {
@@ -773,12 +1441,51 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       },
     ]);
     const resource = new pc.GSplatResource(app.graphicsDevice, data);
+    if (useManifestRenderBounds) {
+      // Individual GSTile resources need the producer's conservative support
+      // for interval culling. A merged cut is deliberately different: it must
+      // keep the native AABB computed from its actual splats, exactly like the
+      // known-good PLY path, because PlayCanvas also derives the GPU sort range
+      // from this AABB.
+      const renderBounds = node.renderBounds ?? node.bounds;
+      resource.aabb.center.set(
+        (renderBounds.min[0] + renderBounds.max[0]) * 0.5,
+        (renderBounds.min[1] + renderBounds.max[1]) * 0.5,
+        (renderBounds.min[2] + renderBounds.max[2]) * 0.5,
+      );
+      resource.aabb.halfExtents.set(
+        (renderBounds.max[0] - renderBounds.min[0]) * 0.5,
+        (renderBounds.max[1] - renderBounds.min[1]) * 0.5,
+        (renderBounds.max[2] - renderBounds.min[2]) * 0.5,
+      );
+    }
     resource.format.addExtraStreams(
-      OPACITY_STREAM_NAMES.map((name) => ({
+      [
+        ...OPACITY_STREAM_NAMES,
+        ...(this.#useFloat32Transforms
+          ? [FULL_ROTATION_STREAM, FULL_SCALE_STREAM]
+          : []),
+      ].map((name) => ({
         name,
         format: pc.PIXELFORMAT_RGBA32F,
       })),
     );
+    if (this.#useFloat32Transforms) {
+      const rotation = resource.getTexture(FULL_ROTATION_STREAM);
+      const scale = resource.getTexture(FULL_SCALE_STREAM);
+      if (!rotation || !scale)
+        throw new Error("PlayCanvas did not allocate full transform streams");
+      (rotation.lock() as Float32Array).set(tile.rotation);
+      rotation.unlock();
+      const linearScale = scale.lock() as Float32Array;
+      for (let record = 0; record < tile.count; record += 1) {
+        for (let axis = 0; axis < 3; axis += 1)
+          linearScale[record * 4 + axis] = Math.exp(
+            tile.logScale[record * 3 + axis],
+          );
+      }
+      scale.unlock();
+    }
     const opacityStreams = gsTileOpacityStreams(tile);
     OPACITY_STREAM_NAMES.forEach((name, index) => {
       const texture = resource.getTexture(name);
@@ -792,18 +1499,55 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     entity.enabled = enabled;
     entity.setPosition(-origin[0], -origin[1], -origin[2]);
     entity.addComponent("gsplat", { unified: true });
-    if (!entity.gsplat) throw new Error("PlayCanvas GSplat component is unavailable");
+    if (!entity.gsplat)
+      throw new Error("PlayCanvas GSplat component is unavailable");
     entity.gsplat.resource = resource;
-    entity.gsplat.setWorkBufferModifier({
-      glsl: DRONEGS_OPACITY_MODIFIER_GLSL,
-      wgsl: DRONEGS_OPACITY_MODIFIER_WGSL,
-    });
-    const coverage = lodProxyCoverage(node, !this.#lodUsesMomentMatchedProxies);
-    entity.gsplat.setParameter(
-      "uDroneLodScaleMultiplier",
-      coverage.multiplier,
+    entity.gsplat.setWorkBufferModifier(
+      this.#useFloat32Transforms
+        ? {
+            glsl: DRONEGS_OPACITY_MODIFIER_GLSL.replace(
+              "// DRONEGS_FULL_TRANSFORM_GLSL",
+              "rotation = loadDroneRotationFull().yzwx;\n    scale = loadDroneScaleFull().xyz;",
+            ),
+            wgsl: DRONEGS_OPACITY_MODIFIER_WGSL.replace(
+              "// DRONEGS_FULL_TRANSFORM_WGSL",
+              "(*rotation) = loadDroneRotationFull().yzwx;\n    (*scale) = loadDroneScaleFull().xyz;",
+            ),
+          }
+        : {
+            glsl: DRONEGS_OPACITY_MODIFIER_GLSL,
+            wgsl: DRONEGS_OPACITY_MODIFIER_WGSL,
+          },
     );
-    entity.gsplat.setParameter("uDroneLodMaximumScale", coverage.maximumScale);
+    entity.gsplat.setParameter(
+      "uDroneOpacityMode",
+      gstileOpacityModeUniform(this.#opacityMode),
+    );
+    // Incremental mode preserves each decoded resource exactly as it appears
+    // in the known-good monolithic cut. Proxy support inflation belongs to the
+    // legacy tiled renderer and is deliberately disabled here.
+    const coverage =
+      this.#gpuAssembly === "incremental"
+        ? { multiplier: 1, maximumScale: Number.POSITIVE_INFINITY }
+        : lodProxyCoverage(node, !this.#lodUsesMomentMatchedProxies);
+    entity.gsplat.setParameter("uDroneLodScaleMultiplier", coverage.multiplier);
+    entity.gsplat.setParameter(
+      "uDroneLodMaximumScale",
+      Math.min(coverage.maximumScale, this.#maximumGaussianScale),
+    );
+    entity.gsplat.setParameter(
+      "uDroneDebugTileColor",
+      debugTileColor(
+        node,
+        this.#debugTiles,
+        this.#minimumLodLeafDepth,
+        this.#maximumLodDepth,
+      ),
+    );
+    entity.gsplat.setParameter(
+      "uDroneDebugTileMix",
+      this.#debugTiles === "off" ? 0 : 0.42,
+    );
     const cameraPosition = this.#camera?.getPosition();
     if (cameraPosition) {
       entity.gsplat.setParameter(
@@ -846,7 +1590,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const loaded = this.#loadedTiles.get(nodeId);
     if (!loaded) return;
     this.#loadedTiles.delete(nodeId);
-    this.#entities = this.#entities.filter((entity) => entity !== loaded.entity);
+    this.#entities = this.#entities.filter(
+      (entity) => entity !== loaded.entity,
+    );
     this.#resources = this.#resources.filter(
       (resource) => resource !== loaded.resource,
     );
@@ -857,7 +1603,21 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     loaded.resource.destroy();
   }
 
-  #lodSelection() {
+  #resetUnifiedGsplatWorld(pc: Pc, app: PcApplication) {
+    const director = (
+      app.renderer as unknown as {
+        gsplatDirector?: ResettableGsplatDirector | null;
+      }
+    ).gsplatDirector;
+    const destroyed = resetPlayCanvasGsplatManagers(director);
+    const layer = app.scene.layers.getLayerById(
+      pc.LAYERID_WORLD,
+    ) as unknown as { gsplatPlacementsDirty: boolean } | null;
+    if (layer) layer.gsplatPlacementsDirty = true;
+    return destroyed;
+  }
+
+  #lodSelection(maximumResidentGaussians = this.#maximumResidentGaussians) {
     const manifest = this.#lodManifest;
     const camera = this.#camera;
     const canvas = this.#canvas;
@@ -877,8 +1637,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       verticalFovRadians: (camera.camera.fov * Math.PI) / 180,
       viewportWidth: Math.max(canvas.width, 1),
       viewportHeight: Math.max(canvas.height, 1),
-      maximumResidentGaussians: this.#maximumResidentGaussians,
+      maximumResidentGaussians,
       maximumProjectedErrorPixels: this.#maximumProjectedErrorPixels,
+      includeSiblingLeaves: this.#includeSiblingLeaves,
+      retainOffscreenCoverage: this.#retainOffscreenCoverage,
     });
   }
 
@@ -896,7 +1658,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const tile = node.tile ?? node.lodTile;
     if (!tile) throw new Error(`GSTile node ${node.id} has no representation`);
     const pack = manifest.packs.find((candidate) => candidate.id === tile.pack);
-    if (!pack) throw new Error(`GSTile node ${node.id} references a missing pack`);
+    if (!pack)
+      throw new Error(`GSTile node ${node.id} references a missing pack`);
     const url =
       this.#lodPackUrls?.get(pack.id) ??
       resolveGsTilePackUrl(this.#lodManifestUrl, pack.path);
@@ -916,7 +1679,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       this.#verifiedPackBuffers.add(content);
     }
     signal.throwIfAborted();
-    const decoded = decodeGsTilePackTile(
+    // Cached packs can all resolve in one microtask checkpoint. Yield one task
+    // before each synchronous Q96 decode so camera input and rendering remain
+    // responsive and an obsolete cut can be aborted between packs.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    signal.throwIfAborted();
+    const decoded = decodeSha256VerifiedGsTilePackTile(
       content,
       tile.byteOffset,
       tile.byteLength,
@@ -934,11 +1702,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     };
   }
 
-  async #synchronizeLod(signal: AbortSignal) {
+  async #synchronizeLod(
+    signal: AbortSignal,
+    maximumResidentGaussians = this.#maximumResidentGaussians,
+  ) {
     const manifest = this.#lodManifest;
-    const selection = this.#lodSelection();
+    const selection = this.#lodSelection(maximumResidentGaussians);
     if (!manifest || !selection) return;
-    const key = selection.selectedNodeIds.join("\0");
+    const key = gstileLodSelectionKey(selection.selectedNodeIds);
     this.#targetGaussians = selection.residentGaussians;
     this.#targetNodes = selection.selectedNodeIds.length;
     this.#maximumSelectedErrorPixels = Math.max(
@@ -948,6 +1719,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#effectiveMaximumErrorPixels = selection.effectiveMaximumErrorPixels;
     this.#selectedExactNodes = selection.selectedExactNodes;
     this.#selectedProxyNodes = selection.selectedProxyNodes;
+    this.#selectedFullDepthNodes = selection.selectedFullDepthNodes;
+    this.#selectedShallowLeafNodes = selection.selectedShallowLeafNodes;
+    this.#selectedInternalNodes = selection.selectedInternalNodes;
+    this.#selectedLeafDepthCounts = selection.selectedLeafDepthCounts;
     this.#maximumSelectedProxyScreenRadiusPixels =
       selection.maximumSelectedProxyScreenRadiusPixels;
     if (key === this.#lodSelectionKey) {
@@ -964,25 +1739,52 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const generation = ++this.#lodGeneration;
     this.#lodSyncController = controller;
     this.#lodPendingKey = key;
-    this.#pendingNodes = selection.selectedNodeIds.filter((nodeId) => !this.#loadedTiles.has(nodeId)).length;
+    const lodStarted = performance.now();
+    this.#pendingNodes = selection.selectedNodeIds.filter(
+      (nodeId) => !this.#loadedTiles.has(nodeId),
+    ).length;
     this.#lodState = "refining";
     const abort = () => controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
     const desired = new Set(selection.selectedNodeIds);
     const nodes = new Map(manifest.nodes.map((node) => [node.id, node]));
     const staged = new Map<string, PreparedTile>();
+    const mergedAssembly = this.#gpuAssembly === "merged";
+    const mergedOffsets = new Map<string, number>();
+    let mergedGaussianCount = 0;
+    if (mergedAssembly) {
+      for (const nodeId of selection.selectedNodeIds) {
+        const node = nodes.get(nodeId);
+        const tile = node?.tile ?? node?.lodTile;
+        if (!node || !tile) {
+          throw new Error(`GSTile merged target node ${nodeId} is missing`);
+        }
+        mergedOffsets.set(nodeId, mergedGaussianCount);
+        mergedGaussianCount += tile.recordCount;
+      }
+      if (mergedGaussianCount > this.#maximumResidentGaussians) {
+        throw new Error("GSTile merged target exceeds the resident budget");
+      }
+    }
+    let mergedDecoded = mergedAssembly
+      ? allocateDecodedGsTile(mergedGaussianCount)
+      : null;
+    let mergedByteLength = 0;
     const transitions = planLodTransitions(
       manifest,
       this.#loadedTiles.keys(),
       selection.selectedNodeIds,
     );
-    const loadNodeIds = prioritizeLodLoads(
-      transitions,
-      selection.selectedNodeIds,
-      this.#loadedTiles.keys(),
-    );
+    const loadNodeIds = mergedAssembly
+      ? selection.selectedNodeIds
+      : prioritizeLodLoads(
+          transitions,
+          selection.selectedNodeIds,
+          this.#loadedTiles.keys(),
+        );
     try {
       signal.throwIfAborted();
+      const loadStarted = performance.now();
       const loadResults = await Promise.allSettled(
         loadNodeIds.map(async (nodeId) => {
           if (this.#loadedTiles.has(nodeId)) return;
@@ -990,7 +1792,16 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           if (!node) throw new Error(`GSTile LOD node ${nodeId} is missing`);
           try {
             const loaded = await this.#loadLodTile(node, controller.signal);
-            staged.set(nodeId, loaded);
+            if (mergedDecoded) {
+              const recordOffset = mergedOffsets.get(nodeId);
+              if (recordOffset === undefined) {
+                throw new Error(`GSTile merged offset ${nodeId} is missing`);
+              }
+              copyDecodedGsTile(mergedDecoded, recordOffset, loaded.decoded);
+              mergedByteLength += loaded.byteLength;
+            } else {
+              staged.set(nodeId, loaded);
+            }
           } finally {
             if (generation === this.#lodGeneration) {
               this.#pendingNodes = Math.max(0, this.#pendingNodes - 1);
@@ -999,66 +1810,160 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         }),
       );
       const failedLoad = loadResults.find(
-        (result): result is PromiseRejectedResult => result.status === "rejected",
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected",
       );
       if (failedLoad) {
         controller.abort(failedLoad.reason);
         throw failedLoad.reason;
       }
+      this.#lodLoadMs = performance.now() - loadStarted;
       controller.signal.throwIfAborted();
       if (generation !== this.#lodGeneration) {
         throw new DOMException("Stale GSTile LOD selection", "AbortError");
       }
 
-      // A GSTile proxy has no independently blendable seam skirt. Committing
-      // ready branches progressively therefore creates a visible checkerboard
-      // of coarse and exact Gaussian representations. Keep the previous
-      // complete cut on the GPU while the next cut is decoded in CPU memory,
-      // then replace the complete cut between two rendered frames.
-      const finalPlan = completeLodTargetPlan(
-        this.#loadedTiles.keys(),
-        desired,
-        (nodeId) => this.#loadedTiles.get(nodeId)?.gaussianCount,
-        (nodeId) => staged.get(nodeId)?.decoded.count,
+      const residentSelectedIds = selection.selectedNodeIds.filter((nodeId) =>
+        this.#loadedTiles.has(nodeId),
       );
-      if (!finalPlan.complete) {
-        throw new Error("GSTile complete LOD target is not ready");
-      }
-      if (finalPlan.gaussianCount > this.#maximumResidentGaussians) {
-        throw new Error("GSTile complete LOD target exceeds the resident budget");
-      }
-      for (const nodeId of finalPlan.removeNodeIds) {
-        const loaded = this.#loadedTiles.get(nodeId);
-        if (loaded) loaded.entity.enabled = false;
-      }
-      for (const nodeId of finalPlan.removeNodeIds) this.#removeTile(nodeId);
-      for (const nodeId of finalPlan.addNodeIds) {
-        const prepared = staged.get(nodeId);
-        if (!prepared) {
-          throw new Error(`GSTile prepared target node ${nodeId} is missing`);
+      const removedNodeIds = [...this.#loadedTiles.keys()].filter(
+        (nodeId) => !desired.has(nodeId),
+      );
+      this.#lodAddedGaussians = mergedDecoded
+        ? mergedDecoded.count
+        : [...staged.values()].reduce(
+            (total, prepared) => total + prepared.decoded.count,
+            0,
+          );
+      this.#lodRemovedGaussians = removedNodeIds.reduce(
+        (total, nodeId) =>
+          total + (this.#loadedTiles.get(nodeId)?.gaussianCount ?? 0),
+        0,
+      );
+      this.#lodReusedGaussians = residentSelectedIds.reduce(
+        (total, nodeId) =>
+          total + (this.#loadedTiles.get(nodeId)?.gaussianCount ?? 0),
+        0,
+      );
+      const commitStarted = performance.now();
+
+      if (mergedAssembly) {
+        const decodedCut = mergedDecoded;
+        const pc = this.#pc;
+        const app = this.#app;
+        if (!decodedCut || !pc || !app) {
+          throw new Error("GSTile merged target is empty");
         }
-        const loaded = this.#createTileResource(
-          prepared.pc,
-          prepared.app,
-          prepared.decoded,
-          prepared.origin,
-          prepared.node,
+        const minimum: Vec3 = [Infinity, Infinity, Infinity];
+        const maximum: Vec3 = [-Infinity, -Infinity, -Infinity];
+        for (const nodeId of selection.selectedNodeIds) {
+          const node = nodes.get(nodeId);
+          if (!node) {
+            throw new Error(`GSTile merged target node ${nodeId} is missing`);
+          }
+          const bounds = node.renderBounds ?? node.bounds;
+          for (let axis = 0; axis < 3; axis += 1) {
+            minimum[axis] = Math.min(minimum[axis], bounds.min[axis]);
+            maximum[axis] = Math.max(maximum[axis], bounds.max[axis]);
+          }
+        }
+        const mergedNode: GsTileNode = {
+          id: "rmerged",
+          bounds: { min: minimum, max: maximum },
+          renderBounds: { min: minimum, max: maximum },
+          gaussianCount: decodedCut.count,
+        };
+        for (const nodeId of [...this.#loadedTiles.keys()]) {
+          const loaded = this.#loadedTiles.get(nodeId);
+          if (loaded) loaded.entity.enabled = false;
+        }
+        for (const nodeId of [...this.#loadedTiles.keys()]) {
+          this.#removeTile(nodeId);
+        }
+        // Release the old cut before allocating the next one. Keeping both
+        // complete GPU resources alive during the atomic swap exceeds laptop
+        // VRAM and spills several gigabytes into Windows shared GPU memory.
+        // No frame can be presented inside this synchronous commit.
+        this.#resetUnifiedGsplatWorld(pc, app);
+        const merged = this.#createTileResource(
+          pc,
+          app,
+          decodedCut,
+          manifest.coordinateFrame.origin,
+          mergedNode,
           false,
-          prepared.byteLength,
+          mergedByteLength,
+          false,
         );
-        loaded.entity.enabled = true;
-        this.#registerTile(nodeId, loaded);
-        staged.delete(nodeId);
+        mergedDecoded = null;
+        merged.entity.enabled = true;
+        this.#registerTile("__merged__", merged);
+        this.#selectedNodes = selection.selectedNodeIds.length;
+        staged.clear();
+      } else {
+        // A GSTile proxy has no independently blendable seam skirt. Committing
+        // ready branches progressively therefore creates a visible checkerboard
+        // of coarse and exact Gaussian representations. Keep the previous
+        // complete cut on the GPU while the next cut is decoded in CPU memory,
+        // then replace the complete cut between two rendered frames.
+        const finalPlan = completeLodTargetPlan(
+          this.#loadedTiles.keys(),
+          desired,
+          (nodeId) => this.#loadedTiles.get(nodeId)?.gaussianCount,
+          (nodeId) => staged.get(nodeId)?.decoded.count,
+        );
+        if (!finalPlan.complete) {
+          throw new Error("GSTile complete LOD target is not ready");
+        }
+        if (finalPlan.gaussianCount > this.#maximumResidentGaussians) {
+          throw new Error(
+            "GSTile complete LOD target exceeds the resident budget",
+          );
+        }
+        for (const nodeId of finalPlan.removeNodeIds) {
+          const loaded = this.#loadedTiles.get(nodeId);
+          if (loaded) loaded.entity.enabled = false;
+        }
+        for (const nodeId of finalPlan.removeNodeIds) this.#removeTile(nodeId);
+        for (const nodeId of finalPlan.addNodeIds) {
+          const prepared = staged.get(nodeId);
+          if (!prepared) {
+            throw new Error(`GSTile prepared target node ${nodeId} is missing`);
+          }
+          const loaded = this.#createTileResource(
+            prepared.pc,
+            prepared.app,
+            prepared.decoded,
+            prepared.origin,
+            prepared.node,
+            false,
+            prepared.byteLength,
+            this.#gpuAssembly !== "incremental",
+          );
+          loaded.entity.enabled = true;
+          this.#registerTile(nodeId, loaded);
+          staged.delete(nodeId);
+        }
       }
       this.#lodSelectionKey = "";
-      this.#updateOpacityCameraUniform();
       this.#lodSelectionKey = key;
       this.#pendingNodes = 0;
       this.#lodState = selection.budgetLimited ? "budget-limited" : "steady";
       this.#updateOpacityCameraUniform();
+      this.#lodCommitMs = performance.now() - commitStarted;
+      this.#lodTotalMs = performance.now() - lodStarted;
+      // Rebuild and rewrite the complete unified work buffer for three frames.
+      // A cut replacement keeps many placements alive, and PlayCanvas normally
+      // uploads only dirty allocations. Rewriting every resident placement here
+      // prevents retained tiles or recycled allocation ranges from displaying
+      // transform/covariance data belonging to a previous representation.
+      this.#forceWorkBufferRewriteFrames = mergedAssembly ? 3 : 0;
+      this.#requestRender(mergedAssembly ? 3 : 2);
     } catch (error) {
+      mergedDecoded = null;
       staged.clear();
-      if (!(error instanceof DOMException && error.name === "AbortError")) this.#lodState = "error";
+      if (!(error instanceof DOMException && error.name === "AbortError"))
+        this.#lodState = "error";
       throw error;
     } finally {
       signal.removeEventListener("abort", abort);
@@ -1072,20 +1977,228 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #scheduleLodUpdate() {
     const signal = this.#lodSignal;
     if (!this.#lodManifest || !signal || signal.aborted) return;
+    if (this.#lodSyncController && !this.#lodSyncController.signal.aborted) {
+      this.#lodSyncController.abort(
+        new DOMException("GSTile interaction superseded refinement", "AbortError"),
+      );
+      this.#lodPendingKey = "";
+      this.#pendingNodes = 0;
+      if (this.#loadedTiles.size > 0) this.#lodState = "steady";
+    }
     if (this.#lodUpdateTimer !== null) clearTimeout(this.#lodUpdateTimer);
     this.#lodUpdateTimer = setTimeout(() => {
       this.#lodUpdateTimer = null;
+      this.#updateOpacityCameraUniform();
+      this.#requestRender();
       void this.#synchronizeLod(signal).catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
+        if (error instanceof DOMException && error.name === "AbortError")
+          return;
         console.error(
           "GSTile LOD update failed; keeping the previous complete representation",
           error,
         );
       });
-    }, 250);
+    }, 650);
   }
 
-  #statistics(frameCpuMs: number | null): GaussianRenderStatistics {
+  #debugSnapshot() {
+    type DebugBlock = { offset: number; size: number };
+    type DebugSplat = {
+      resource: { id: number; numSplats: number };
+      placementId: number;
+      allocId: number;
+      activeSplats: number;
+      intervalAllocIds: number[];
+    };
+    type DebugWorld = {
+      currentVersion: number;
+      lastWorldStateVersion: number;
+      getState: (version: number) =>
+        | {
+            version: number;
+            sortedBefore: boolean;
+            fullRebuild: boolean;
+            totalActiveSplats: number;
+            textureSize: number;
+            splats: DebugSplat[];
+          }
+        | undefined;
+      _allocationMap: Map<number, DebugBlock>;
+      _allocator: {
+        capacity: number;
+        usedSize: number;
+        freeSize: number;
+        fragmentation: number;
+      };
+    };
+    type DebugManager = { world: DebugWorld };
+    type DebugLayerData = { gsplatManager?: DebugManager | null };
+    type DebugCameraData = { layersMap: Map<unknown, DebugLayerData> };
+    type DebugDirector = { camerasMap: Map<unknown, DebugCameraData> };
+    type DebugPlacement = {
+      id: number;
+      allocId: number;
+      dirtyVersion: number;
+      resource: PcResource | null;
+    };
+
+    const app = this.#app;
+    const pc = this.#pc;
+    const manifest = this.#lodManifest;
+    const selectedNodeIds = this.#lodSelectionKey
+      ? this.#lodSelectionKey.split("\0")
+      : [];
+    const nodeById = new Map(manifest?.nodes.map((node) => [node.id, node]));
+    const layer =
+      app && pc ? app.scene.layers.getLayerById(pc.LAYERID_WORLD) : null;
+    const director = (
+      app?.renderer as unknown as { gsplatDirector?: DebugDirector | null }
+    )?.gsplatDirector;
+    const worlds: Array<{
+      world: DebugWorld;
+      state: NonNullable<ReturnType<DebugWorld["getState"]>>;
+    }> = [];
+    for (const cameraData of director?.camerasMap.values() ?? []) {
+      for (const layerData of cameraData.layersMap.values()) {
+        const world = layerData.gsplatManager?.world;
+        const state = world?.getState(world.currentVersion);
+        if (world && state) worlds.push({ world, state });
+      }
+    }
+    const splatsByResource = new Map<number, DebugSplat[]>();
+    for (const { state } of worlds) {
+      for (const splat of state.splats) {
+        const values = splatsByResource.get(splat.resource.id) ?? [];
+        values.push(splat);
+        splatsByResource.set(splat.resource.id, values);
+      }
+    }
+    const allocationFor = (allocId: number) => {
+      for (const { world } of worlds) {
+        const block = world._allocationMap.get(allocId);
+        if (block) return { offset: block.offset, size: block.size };
+      }
+      return null;
+    };
+    const loaded = [...this.#loadedTiles.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([nodeId, value]) => {
+        const component = value.entity.gsplat;
+        const placement = (
+          component as unknown as { _placement?: DebugPlacement | null }
+        )?._placement;
+        const worldSplats = splatsByResource.get(value.resource.id) ?? [];
+        const allocIds = [
+          ...new Set(
+            worldSplats.flatMap((splat) =>
+              splat.intervalAllocIds.length > 0
+                ? splat.intervalAllocIds
+                : [splat.allocId],
+            ),
+          ),
+        ];
+        const node = nodeById.get(nodeId);
+        const representation = node?.tile ?? node?.lodTile;
+        return {
+          nodeId,
+          depth: nodeId.length - 1,
+          terminal: !node?.children?.length,
+          expectedCount: representation?.recordCount ?? null,
+          expectedPack: representation?.pack ?? null,
+          expectedSha256: representation?.sha256 ?? null,
+          residentCount: value.gaussianCount,
+          entityName: value.entity.name,
+          entityEnabled: value.entity.enabled,
+          resourceId: value.resource.id,
+          resourceCount: value.resource.numSplats,
+          resourceTextureSize: [
+            value.resource.textureDimensions.x,
+            value.resource.textureDimensions.y,
+          ],
+          resourceStreams: [...value.resource.streams.textures.keys()],
+          componentResourceId: component?.resource?.id ?? null,
+          placementId: placement?.id ?? null,
+          placementAllocId: placement?.allocId ?? null,
+          placementResourceId: placement?.resource?.id ?? null,
+          placementDirtyVersion: placement?.dirtyVersion ?? null,
+          presentInWorldLayer: placement
+            ? (layer?.gsplatPlacementsSet.has(placement as never) ?? false)
+            : false,
+          worldSplatCount: worldSplats.length,
+          worldActiveSplats: worldSplats.reduce(
+            (total, splat) => total + splat.activeSplats,
+            0,
+          ),
+          allocations: allocIds.map((allocId) => ({
+            allocId,
+            block: allocationFor(allocId),
+          })),
+        };
+      });
+    const loadedIds = new Set(loaded.map((entry) => entry.nodeId));
+    const selectedIds = new Set(selectedNodeIds);
+    return {
+      generatedAt: new Date().toISOString(),
+      selection: {
+        selectedNodeIds,
+        selectedCount: selectedNodeIds.length,
+        loadedCount: loaded.length,
+        missingFromLoaded: selectedNodeIds.filter((id) => !loadedIds.has(id)),
+        extraInLoaded: loaded
+          .map((entry) => entry.nodeId)
+          .filter((id) => !selectedIds.has(id)),
+      },
+      resident: {
+        gaussianCount: this.#residentGaussians,
+        resourceCount: this.#resources.length,
+        entityCount: this.#entities.length,
+        layerPlacementCount: layer?.gsplatPlacements.length ?? null,
+      },
+      performance: {
+        lodTotalMs: this.#lodTotalMs,
+        lodLoadMs: this.#lodLoadMs,
+        lodCommitMs: this.#lodCommitMs,
+        lodAddedGaussians: this.#lodAddedGaussians,
+        lodRemovedGaussians: this.#lodRemovedGaussians,
+        lodReusedGaussians: this.#lodReusedGaussians,
+        rangeScheduler: this.#lodScheduler?.statistics() ?? null,
+      },
+      worlds: worlds.map(({ world, state }) => ({
+        currentVersion: world.currentVersion,
+        lastWorldStateVersion: world.lastWorldStateVersion,
+        stateVersion: state.version,
+        sortedBefore: state.sortedBefore,
+        fullRebuild: state.fullRebuild,
+        totalActiveSplats: state.totalActiveSplats,
+        textureSize: state.textureSize,
+        splatCount: state.splats.length,
+        resourceIds: state.splats.map((splat) => splat.resource.id),
+        allocationCount: world._allocationMap.size,
+        allocatorCapacity: world._allocator.capacity,
+        allocatorUsed: world._allocator.usedSize,
+        allocatorFree: world._allocator.freeSize,
+        allocatorFragmentation: world._allocator.fragmentation,
+      })),
+      loaded,
+    };
+  }
+
+  #statistics(
+    frameCpuMs: number | null,
+    rendered = true,
+  ): GaussianRenderStatistics {
+    const gpuTimings = this.#app?.stats.gpu;
+    const frameGpuMs =
+      !rendered
+        ? 0
+        : this.#debugTraceEnabled && gpuTimings
+        ? [...gpuTimings.values()].reduce((total, value) => total + value, 0)
+        : null;
+    const workBufferUploadPercent = !rendered
+      ? 0
+      : this.#app
+      ? this.#app.stats.frame.gsplatBufferCopy
+      : null;
     return {
       lodState: this.#lodState,
       residentGaussians: this.#residentGaussians,
@@ -1098,12 +2211,44 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       effectiveMaximumErrorPixels: this.#effectiveMaximumErrorPixels,
       selectedExactNodes: this.#selectedExactNodes,
       selectedProxyNodes: this.#selectedProxyNodes,
+      selectedFullDepthNodes: this.#selectedFullDepthNodes,
+      selectedShallowLeafNodes: this.#selectedShallowLeafNodes,
+      selectedInternalNodes: this.#selectedInternalNodes,
+      selectedLeafDepthCounts: this.#selectedLeafDepthCounts,
       maximumSelectedProxyScreenRadiusPixels:
         this.#maximumSelectedProxyScreenRadiusPixels,
       maximumResidentGaussians: this.#maximumResidentGaussians,
+      verticalFovDegrees: this.#camera?.camera?.fov ?? null,
       frameCpuMs,
-      frameGpuMs: null,
+      frameGpuMs,
+      workBufferUploadPercent,
+      lodTotalMs: this.#lodTotalMs,
+      lodLoadMs: this.#lodLoadMs,
+      lodCommitMs: this.#lodCommitMs,
+      lodAddedGaussians: this.#lodAddedGaussians,
+      lodRemovedGaussians: this.#lodRemovedGaussians,
+      lodReusedGaussians: this.#lodReusedGaussians,
     };
+  }
+
+  #requestRender(frames = 2) {
+    this.#renderFramesRemaining = Math.max(
+      this.#renderFramesRemaining,
+      frames,
+    );
+  }
+
+  #updateDebugSnapshot(timestampMs: number) {
+    if (
+      !this.#debugSnapshotElement ||
+      timestampMs - this.#lastDebugSnapshotTimestampMs < 1_000
+    ) {
+      return;
+    }
+    this.#debugSnapshotElement.textContent = JSON.stringify(
+      this.#debugSnapshot(),
+    );
+    this.#lastDebugSnapshotTimestampMs = timestampMs;
   }
 
   #updateCameraPose() {
@@ -1116,15 +2261,20 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       this.#target[2] + this.#distance * basis.offset[2],
     );
     camera.lookAt(
-      this.#target[0], this.#target[1], this.#target[2],
-      basis.up[0], basis.up[1], basis.up[2],
+      this.#target[0],
+      this.#target[1],
+      this.#target[2],
+      basis.up[0],
+      basis.up[1],
+      basis.up[2],
     );
     this.#cameraDirty = false;
-    this.#updateOpacityCameraUniform();
+    this.#updateOpacityCameraUniform(false);
     this.#scheduleLodUpdate();
+    this.#requestRender();
   }
 
-  #updateOpacityCameraUniform() {
+  #updateOpacityCameraUniform(rewriteWorkBuffer = true) {
     const pc = this.#pc;
     const camera = this.#camera;
     if (!pc || !camera) return;
@@ -1135,7 +2285,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     );
     for (const entity of this.#entities) {
       entity.gsplat?.setParameter("uDroneCameraPosition", value);
-      if (entity.gsplat) {
+      if (rewriteWorkBuffer && entity.gsplat) {
         entity.gsplat.workBufferUpdate = pc.WORKBUFFER_UPDATE_ONCE;
       }
     }
@@ -1144,7 +2294,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #installOrbitInput(canvas: HTMLCanvasElement) {
     const onPointerDown = (event: PointerEvent) => {
       if (this.#pointerId !== null) return;
-      if (event.button !== 0 && event.button !== 1 && event.button !== 2) return;
+      if (event.button !== 0 && event.button !== 1 && event.button !== 2)
+        return;
       event.preventDefault();
       this.#pointerId = event.pointerId;
       this.#pointerMode =
@@ -1170,7 +2321,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           dx,
           dy,
           canvas.clientHeight,
-          this.#camera?.camera?.fov ?? 55,
+          this.#camera?.camera?.fov ?? this.#initialVerticalFovDegrees,
           this.#viewFrame,
         );
       } else {
@@ -1190,7 +2341,19 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     };
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
-      this.#distance = Math.max(0.01, this.#distance * Math.exp(event.deltaY * 0.001));
+      const camera = this.#camera?.camera;
+      if (event.altKey && camera) {
+        camera.fov = gstileVerticalFovDegrees(
+          camera.fov + event.deltaY * 0.025,
+        );
+        this.#scheduleLodUpdate();
+        this.#requestRender();
+        return;
+      }
+      this.#distance = Math.max(
+        0.01,
+        this.#distance * Math.exp(event.deltaY * 0.001),
+      );
       this.#cameraDirty = true;
     };
     const onContextMenu = (event: MouseEvent) => event.preventDefault();

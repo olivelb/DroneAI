@@ -35,6 +35,20 @@ def _parser() -> argparse.ArgumentParser:
         help="LOD proxy strategy; adaptive-moment enables V4, replacement modes preserve legacy bundles",
     )
     parser.add_argument("--chunk-records", type=int, default=131_072)
+    parser.add_argument(
+        "--filter-invisible-giant-scale",
+        type=float,
+        help=(
+            "discard splats larger than this world-space scale only when their "
+            "directional opacity is provably below the visibility threshold"
+        ),
+    )
+    parser.add_argument(
+        "--filter-visibility-opacity",
+        type=float,
+        default=0.05,
+        help="directional opacity threshold used by the invisible-giant filter",
+    )
     parser.add_argument("--temporary-root", type=Path)
     parser.add_argument("--crs")
     parser.add_argument("--origin", nargs=3, type=float, default=(0.0, 0.0, 0.0))
@@ -65,6 +79,8 @@ def main(argv: list[str] | None = None) -> int:
             coordinate_origin=tuple(arguments.origin),
             crs=arguments.crs,
             progress_callback=progress_callback,
+            invisible_gaussian_scale_threshold=arguments.filter_invisible_giant_scale,
+            visibility_opacity_threshold=arguments.filter_visibility_opacity,
         ),
     )
     print(
@@ -73,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
                 "bundle_id": result.bundle_id,
                 "manifest": str(result.manifest_path),
                 "gaussian_count": result.gaussian_count,
+                "input_gaussian_count": result.input_gaussian_count,
+                "filtered_gaussian_count": result.filtered_gaussian_count,
                 "leaf_count": result.leaf_count,
                 "pack_bytes": result.pack_bytes,
                 "maximum_quantization_error": result.maximum_errors,

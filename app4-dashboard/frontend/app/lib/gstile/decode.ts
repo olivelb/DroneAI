@@ -19,6 +19,90 @@ export type DecodedGsTile = {
   sourceId: BigUint64Array;
 };
 
+const decodedFloatFields = [
+  ["position", 3],
+  ["logScale", 3],
+  ["rotation", 4],
+  ["opacityLogit", 1],
+  ["colorDc", 3],
+  ["colorSh", 45],
+  ["opacitySh", 15],
+] as const satisfies ReadonlyArray<
+  readonly [
+    Exclude<keyof DecodedGsTile, "header" | "count" | "sourceId">,
+    number,
+  ]
+>;
+
+/** Allocate one final decoded cut before individual nodes are loaded. */
+export const allocateDecodedGsTile = (count: number): DecodedGsTile => {
+  if (!Number.isSafeInteger(count) || count < 1) {
+    throw new Error("GSTile decoded allocation count must be positive");
+  }
+  return {
+    header: {
+      version: 1,
+      headerBytes: GSTILE_PACK_HEADER_BYTES,
+      recordBytes: GSTILE_RECORD_BYTES,
+      flags: 0,
+      recordCount: count,
+      nodeHash: BigInt(0),
+      payloadCrc32: 0,
+    },
+    count,
+    position: new Float32Array(count * 3),
+    logScale: new Float32Array(count * 3),
+    rotation: new Float32Array(count * 4),
+    opacityLogit: new Float32Array(count),
+    colorDc: new Float32Array(count * 3),
+    colorSh: new Float32Array(count * 45),
+    opacitySh: new Float32Array(count * 15),
+    sourceId: new BigUint64Array(count),
+  };
+};
+
+/** Copy one decoded node into a preallocated cut without another full merge. */
+export const copyDecodedGsTile = (
+  destination: DecodedGsTile,
+  recordOffset: number,
+  source: DecodedGsTile,
+) => {
+  if (
+    !Number.isSafeInteger(recordOffset) ||
+    recordOffset < 0 ||
+    recordOffset + source.count > destination.count
+  ) {
+    throw new Error("GSTile decoded copy escapes its destination");
+  }
+  for (const [field, width] of decodedFloatFields) {
+    const sourceValues = source[field];
+    if (sourceValues.length !== source.count * width) {
+      throw new Error("GSTile decoded field width is inconsistent");
+    }
+    destination[field].set(sourceValues, recordOffset * width);
+  }
+  if (source.sourceId.length !== source.count) {
+    throw new Error("GSTile decoded source ID width is inconsistent");
+  }
+  destination.sourceId.set(source.sourceId, recordOffset);
+};
+
+/** Concatenate decoded tiles without changing any decoded field values. */
+export const mergeDecodedGsTiles = (
+  tiles: readonly DecodedGsTile[],
+): DecodedGsTile => {
+  if (tiles.length === 0) throw new Error("Cannot merge an empty GSTile cut");
+  const count = tiles.reduce((total, tile) => total + tile.count, 0);
+  const result = allocateDecodedGsTile(count);
+  result.header = { ...tiles[0].header, recordCount: count };
+  let recordOffset = 0;
+  for (const tile of tiles) {
+    copyDecodedGsTile(result, recordOffset, tile);
+    recordOffset += tile.count;
+  }
+  return result;
+};
+
 const dequantizeU16 = (value: number, minimum: number, maximum: number) =>
   minimum + (value / 65_535) * (maximum - minimum);
 
@@ -62,7 +146,10 @@ const normalizeQuaternion = (
   output[offset + 3] = z / length;
 };
 
-const validatePack = (content: ArrayBuffer) => {
+const validatePack = (
+  content: ArrayBuffer,
+  verifyPayloadCrc = true,
+) => {
   const header = decodeGsTilePackHeader(content);
   const expectedBytes =
     GSTILE_PACK_HEADER_BYTES + header.recordCount * GSTILE_RECORD_BYTES;
@@ -70,7 +157,7 @@ const validatePack = (content: ArrayBuffer) => {
     throw new Error("GSTile pack length does not match its header");
   }
   const payload = new Uint8Array(content, GSTILE_PACK_HEADER_BYTES);
-  if (crc32(payload) !== header.payloadCrc32) {
+  if (verifyPayloadCrc && crc32(payload) !== header.payloadCrc32) {
     throw new Error("GSTile payload CRC mismatch");
   }
   return header;
@@ -187,6 +274,30 @@ export const decodeGsTilePackTile = (
   quantization: GsTileQuantization,
 ) => {
   const header = validatePack(content);
+  if (byteLength !== recordCount * GSTILE_RECORD_BYTES) {
+    throw new Error("GSTile tile byte length does not match its record count");
+  }
+  return decodeRecords(
+    content,
+    header,
+    byteOffset,
+    recordCount,
+    quantization,
+  );
+};
+
+/** Decode a tile after the caller authenticated the complete pack by SHA-256. */
+export const decodeSha256VerifiedGsTilePackTile = (
+  content: ArrayBuffer,
+  byteOffset: number,
+  byteLength: number,
+  recordCount: number,
+  quantization: GsTileQuantization,
+) => {
+  // SHA-256 already authenticates every payload byte. Repeating the CRC32
+  // pass here would synchronously scan hundreds of MiB on every cached LOD
+  // reconstruction without detecting anything SHA-256 did not detect.
+  const header = validatePack(content, false);
   if (byteLength !== recordCount * GSTILE_RECORD_BYTES) {
     throw new Error("GSTile tile byte length does not match its record count");
   }

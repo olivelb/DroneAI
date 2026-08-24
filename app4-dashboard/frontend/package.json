@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "npm@10.8.2",
   "scripts": {
+    "postinstall": "node scripts/patch-playcanvas-fastgs.mjs && node scripts/patch-playcanvas-full-transform.mjs && node scripts/patch-playcanvas-incremental-world.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

@@ -8,8 +8,11 @@
  */
 export const DRONEGS_OPACITY_MODIFIER_GLSL = /* glsl */ `
 uniform vec3 uDroneCameraPosition;
+uniform float uDroneOpacityMode;
 uniform float uDroneLodScaleMultiplier;
 uniform float uDroneLodMaximumScale;
+uniform vec3 uDroneDebugTileColor;
+uniform float uDroneDebugTileMix;
 
 void modifySplatCenter(inout vec3 center) {}
 
@@ -19,6 +22,7 @@ void modifySplatRotationScale(
     inout vec4 rotation,
     inout vec3 scale
 ) {
+    // DRONEGS_FULL_TRANSFORM_GLSL
     scale = min(
         scale * uDroneLodScaleMultiplier,
         vec3(uDroneLodMaximumScale)
@@ -56,14 +60,26 @@ void modifySplatColor(vec3 center, inout vec4 color) {
     logit += c3.y * (-0.4570457994644658 * x * (4.0 * zz - xx - yy));
     logit += c3.z * ( 1.445305721320277 * z * (xx - yy));
     logit += c3.w * (-0.5900435899266435 * x * (xx - 3.0 * yy));
-    color.a = 1.0 / (1.0 + exp(-logit));
+    float baseAlpha = 1.0 / (1.0 + exp(-c0.x));
+    float directionalAlpha = 1.0 / (1.0 + exp(-logit));
+    if (uDroneOpacityMode < 0.5) {
+        color.a = baseAlpha;
+    } else if (uDroneOpacityMode < 1.5) {
+        color.a = directionalAlpha;
+    } else {
+        color.a = max(baseAlpha, directionalAlpha);
+    }
+    color.rgb = mix(color.rgb, uDroneDebugTileColor, uDroneDebugTileMix);
 }
 `;
 
 export const DRONEGS_OPACITY_MODIFIER_WGSL = /* wgsl */ `
 uniform uDroneCameraPosition: vec3f;
+uniform uDroneOpacityMode: f32;
 uniform uDroneLodScaleMultiplier: f32;
 uniform uDroneLodMaximumScale: f32;
+uniform uDroneDebugTileColor: vec3f;
+uniform uDroneDebugTileMix: f32;
 
 fn modifySplatCenter(center: ptr<function, vec3f>) {}
 
@@ -73,6 +89,7 @@ fn modifySplatRotationScale(
     rotation: ptr<function, vec4f>,
     scale: ptr<function, vec3f>
 ) {
+    // DRONEGS_FULL_TRANSFORM_WGSL
     (*scale) = min(
         (*scale) * uniform.uDroneLodScaleMultiplier,
         vec3f(uniform.uDroneLodMaximumScale)
@@ -110,6 +127,20 @@ fn modifySplatColor(center: vec3f, color: ptr<function, vec4f>) {
     logit += c3.y * (-0.4570457994644658 * x * (4.0 * zz - xx - yy));
     logit += c3.z * ( 1.445305721320277 * z * (xx - yy));
     logit += c3.w * (-0.5900435899266435 * x * (xx - 3.0 * yy));
-    (*color).a = 1.0 / (1.0 + exp(-logit));
+    let baseAlpha = 1.0 / (1.0 + exp(-c0.x));
+    let directionalAlpha = 1.0 / (1.0 + exp(-logit));
+    if (uniform.uDroneOpacityMode < 0.5) {
+        (*color).a = baseAlpha;
+    } else if (uniform.uDroneOpacityMode < 1.5) {
+        (*color).a = directionalAlpha;
+    } else {
+        (*color).a = max(baseAlpha, directionalAlpha);
+    }
+    let debugRgb = mix(
+        (*color).rgb,
+        uniform.uDroneDebugTileColor,
+        vec3f(uniform.uDroneDebugTileMix)
+    );
+    (*color) = vec4f(debugRgb, (*color).a);
 }
 `;

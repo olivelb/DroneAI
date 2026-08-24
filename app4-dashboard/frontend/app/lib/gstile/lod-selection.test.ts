@@ -358,6 +358,35 @@ describe("GSTile LOD selection", () => {
     expect(selection.residentGaussians).toBe(8_000);
   });
 
+  it("retains one coarse branch outside the frustum for instant zoom-out coverage", () => {
+    const value = manifest();
+    value.nodes[2].bounds = { min: [20, -1, -1], max: [21, 1, 1] };
+
+    const selection = selectGsTileLod(value, {
+      ...options,
+      cameraPosition: [-0.5, 0, 2],
+      verticalFovRadians: Math.PI / 6,
+      viewportWidth: 1_000,
+      viewportHeight: 1_000,
+      maximumProjectedErrorPixels: 10,
+      retainOffscreenCoverage: true,
+    });
+
+    expect(selection.selectedNodeIds).toEqual(["r0", "r1"]);
+    expect(selection.residentGaussians).toBe(16_000);
+  });
+
+  it("retains the root proxy when the complete hierarchy is outside the view", () => {
+    const selection = selectGsTileLod(manifest(), {
+      ...options,
+      cameraDirection: [0, 0, 1],
+      retainOffscreenCoverage: true,
+    });
+
+    expect(selection.selectedNodeIds).toEqual(["r"]);
+    expect(selection.residentGaussians).toBe(1_000);
+  });
+
   it("keeps a tile visible when anisotropic splat support crosses the frustum", () => {
     const value = manifest();
     value.nodes[0].renderBounds = { min: [-1, -1, -1], max: [22, 1, 1] };
