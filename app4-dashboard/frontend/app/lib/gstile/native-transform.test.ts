@@ -77,6 +77,33 @@ describe("GSTile native transform packing", () => {
 
     expect(actualA).toEqual(expectedA);
     expect(actualB).toEqual(expectedB);
+
+    const centerStream = new Float32Array(count * 3);
+    for (let splat = 0; splat < count; splat += 1) {
+      centerStream[splat * 3] = position[0][splat];
+      centerStream[splat * 3 + 1] = position[1][splat];
+      centerStream[splat * 3 + 2] = position[2][splat];
+    }
+    const interleavedA = new Uint32Array(count * 4 + 8);
+    const interleavedB = new Uint16Array(count * 4 + 8);
+    packGsTileNativeTransforms(
+      {
+        position: [
+          new Float32Array(0),
+          new Float32Array(0),
+          new Float32Array(0),
+        ],
+        centerStream,
+        logScale,
+        rotation,
+      },
+      interleavedA,
+      interleavedB,
+      FloatPacking.float2Half,
+    );
+
+    expect(interleavedA).toEqual(expectedA);
+    expect(interleavedB).toEqual(expectedB);
   });
 
   it("rejects inconsistent stream shapes", () => {

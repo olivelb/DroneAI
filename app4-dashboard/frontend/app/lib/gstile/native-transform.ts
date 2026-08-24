@@ -1,5 +1,6 @@
 export type GsTileNativeTransformColumns = {
   position: readonly Float32Array[];
+  centerStream?: Float32Array | null;
   logScale: readonly Float32Array[];
   rotation: readonly Float32Array[];
 };
@@ -11,14 +12,18 @@ export const packGsTileNativeTransforms = (
   transformB: Uint16Array,
   float2Half: (value: number) => number,
 ) => {
-  const count = columns.position[0]?.length ?? 0;
+  const count = columns.logScale[0]?.length ?? 0;
   if (
     columns.position.length !== 3 ||
     columns.logScale.length !== 3 ||
     columns.rotation.length !== 4 ||
-    [...columns.position, ...columns.logScale, ...columns.rotation].some(
+    [...columns.logScale, ...columns.rotation].some(
       (column) => column.length !== count,
     ) ||
+    (columns.centerStream
+      ? columns.centerStream.length !== count * 3 ||
+        columns.position.some((column) => column.length !== 0)
+      : columns.position.some((column) => column.length !== count)) ||
     transformA.length < count * 4 ||
     transformB.length < count * 4
   ) {
@@ -32,6 +37,7 @@ export const packGsTileNativeTransforms = (
   const [px, py, pz] = columns.position;
   const [sx, sy, sz] = columns.logScale;
   const [rw, rx, ry, rz] = columns.rotation;
+  const centers = columns.centerStream;
   for (let splat = 0; splat < count; splat += 1) {
     const offset = splat * 4;
     let x = rx[splat];
@@ -56,9 +62,14 @@ export const packGsTileNativeTransforms = (
       y = -y;
       z = -z;
     }
-    transformAFloat32[offset] = px[splat];
-    transformAFloat32[offset + 1] = py[splat];
-    transformAFloat32[offset + 2] = pz[splat];
+    const centerOffset = splat * 3;
+    transformAFloat32[offset] = centers ? centers[centerOffset] : px[splat];
+    transformAFloat32[offset + 1] = centers
+      ? centers[centerOffset + 1]
+      : py[splat];
+    transformAFloat32[offset + 2] = centers
+      ? centers[centerOffset + 2]
+      : pz[splat];
     transformA[offset + 3] = float2Half(x) | (float2Half(y) << 16);
     transformB[offset] = float2Half(Math.exp(sx[splat]));
     transformB[offset + 1] = float2Half(Math.exp(sy[splat]));

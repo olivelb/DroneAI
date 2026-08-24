@@ -1512,7 +1512,39 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const resourceStarted = performance.now();
     const properties =
       "properties" in tile ? tile.properties : gsTileToPlyProperties(tile);
-    const data = new pc.GSplatData([
+    class DroneGsMergedStagingData extends pc.GSplatData {
+      override getCenters() {
+        return "properties" in tile && tile.centerStream
+          ? tile.centerStream
+          : super.getCenters();
+      }
+
+      override calcAabb(
+        result: import("playcanvas").BoundingBox,
+        predicate?: (index: number) => boolean,
+      ) {
+        if (!("properties" in tile) || !tile.centerStream || predicate) {
+          return super.calcAabb(result, predicate);
+        }
+        if (!tile.bounds.valid) return false;
+        const { minimum, maximum } = tile.bounds;
+        result.center.set(
+          (minimum[0] + maximum[0]) * 0.5,
+          (minimum[1] + maximum[1]) * 0.5,
+          (minimum[2] + maximum[2]) * 0.5,
+        );
+        result.halfExtents.set(
+          (maximum[0] - minimum[0]) * 0.5,
+          (maximum[1] - minimum[1]) * 0.5,
+          (maximum[2] - minimum[2]) * 0.5,
+        );
+        return true;
+      }
+    }
+    const Data = "properties" in tile
+      ? DroneGsMergedStagingData
+      : pc.GSplatData;
+    const data = new Data([
       {
         name: "vertex",
         count: tile.count,
@@ -1566,6 +1598,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
                 packGsTileNativeTransforms(
                   {
                     position: [property("x"), property("y"), property("z")],
+                    centerStream: tile.centerStream,
                     logScale: [
                       property("scale_0"),
                       property("scale_1"),
@@ -2270,6 +2303,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       mergedAssembly && mergedGaussianCount > 0
         ? allocateGsTilePlayCanvasColumns(mergedGaussianCount, {
             color: true,
+            centerBounds: true,
             sh: true,
           })
         : null;
@@ -2421,6 +2455,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
               columnarCut.logScale,
               offset,
               tile.recordCount,
+              columnarCut.centerStream,
             ),
           );
           nextByteLengths.set(nodeId, mergedNodeByteLengths.get(nodeId) ?? 0);
@@ -2434,6 +2469,11 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
             return bounds;
           }),
         );
+        if (columnarCut?.centerStream) {
+          columnarCut.bounds.minimum = [...mergedBounds.min];
+          columnarCut.bounds.maximum = [...mergedBounds.max];
+          columnarCut.bounds.valid = true;
+        }
         const mergedNode: GsTileNode = {
           id: "rmerged",
           bounds: mergedBounds,

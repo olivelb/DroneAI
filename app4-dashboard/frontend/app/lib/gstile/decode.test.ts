@@ -1,4 +1,4 @@
-import { FloatPacking } from "playcanvas";
+import { FloatPacking, GSplatData } from "playcanvas";
 import { describe, expect, it } from "vitest";
 import type { GsTileQuantization } from "./contracts";
 import {
@@ -401,9 +401,39 @@ describe("GSTile pack decoder", () => {
     expect(destination.opacityLogit.length).toBe(0);
   });
 
+  it("decodes exact interleaved PlayCanvas centers in one pass", () => {
+    const count = 4_096;
+    const pack = createDeterministicRandomPack(count);
+    const decoded = decodeGsTilePack(pack, quantization);
+    const properties = gsTileToPlyProperties(decoded);
+    const reference = new GSplatData([
+      { name: "vertex", count, properties },
+    ]);
+    const destination = allocateGsTilePlayCanvasColumns(count, {
+      centerBounds: true,
+    });
+
+    decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
+      pack,
+      32,
+      count * 96,
+      count,
+      quantization,
+      destination,
+      0,
+    );
+
+    expect(destination.centerStream).toEqual(reference.getCenters());
+    expect(destination.position.every((column) => column.length === 0)).toBe(
+      true,
+    );
+    expect(destination.bounds.valid).toBe(false);
+  });
+
   it("reduces fused resource handoff storage to 176 bytes per splat", () => {
     const count = 3;
     const columns = allocateGsTilePlayCanvasColumns(count, {
+      centerBounds: true,
       color: true,
       sh: true,
     });
@@ -420,7 +450,8 @@ describe("GSTile pack decoder", () => {
         (total, stream) => total + stream.byteLength,
         0,
       ) ?? 0) +
-      (columns.colorStream?.byteLength ?? 0);
+      (columns.colorStream?.byteLength ?? 0) +
+      (columns.centerStream?.byteLength ?? 0);
 
     expect(bytes).toBe(count * 176);
   });

@@ -373,6 +373,11 @@ Conserver le cut complet précédent jusqu'au succès.
     l'opacité logit vers le stream `splatColor` RGBA16F. Les quatre propriétés
     PLY restent présentes comme marqueurs de schéma, mais le constructeur de
     ressource ne fait plus qu'une copie linéaire du stream final.
+21. Le chemin `merged` remplace les trois colonnes `x/y/z` par le tableau
+    interleavé de centres exigé par le tri PlayCanvas. Le calcul de bornes par
+    nœud déjà nécessaire à l'arène alimente aussi `GSplatData`, supprimant les
+    scans `getCenters()` et `calcAabb()` redondants sans augmenter le handoff
+    de 176 octets/splat.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -544,6 +549,39 @@ transition retour avec 7,2 M splats réutilisés mesure 310 ms au total et
 ainsi que typecheck, lint et build production. Le contrôle visuel humain dans
 Chrome est déclaré conforme au PLY original.
 
+### Qualification des centres interleavés et bornes partagées — Saint-Étienne v4c
+
+Le schéma PLY interne conserve ses marqueurs `x/y/z`, mais le chemin `merged`
+écrit les centres décodés directement dans le tableau interleavé attendu par
+PlayCanvas. Les bornes calculées pour chaque nœud lors de la préparation de
+l'arène sont réutilisées pour le `GSplatData`. La première qualification a
+échoué en mode fermé sur un second consommateur des colonnes de position dans
+le calcul des bornes de l'arène ; ce consommateur a été converti vers le flux
+interleavé et couvert par un test de non-régression avant toute mesure.
+
+| variante | Q96 médian | ressource médiane | commit médian | LOD médian |
+|---|---:|---:|---:|---:|
+| Q96 → RGBA16F | 3,194 s | 1,408 s | 2,074 s | 14,095 s |
+| centres interleavés + bornes partagées | 3,275 s | 1,128 s | 1,817 s | 14,070 s |
+
+Sur trois chargements froids, la création de ressource baisse de **19,9 %** et
+le commit de **12,4 %**. Le décodage Q96 augmente de 2,5 %, mais la somme
+Q96 + ressource baisse de **4,3 %**. Le LOD médian reste stable dans le bruit
+réseau (-0,18 %). À chaud, le commit mesuré est de 217 ms avec 6,6 M de
+splats réutilisés, puis 183 ms au retour.
+
+Un prototype exact fusionnant aussi les transformations dans Q96 a été rejeté :
+malgré un commit en baisse de 29,4 %, il augmentait le LOD médian de 2,0 %
+(14,379 s contre 14,095 s), principalement par déplacement du coût vers le
+décodage Q96. Ce résultat négatif est conservé pour éviter de réintroduire
+cette variante sans parallélisation ou écriture directe vers l'arène.
+
+Les tests comparent bit à bit 4 096 centres décodés avec
+`GSplatData.getCenters()`, les transformations interleavées et colonnaires sur
+65 536 valeurs, ainsi que les bornes des deux représentations. La qualification
+complète passe 27 fichiers et 151 tests, le typecheck, le lint et le build local
+et BIGZEN. Le contrôle visuel humain est validé conforme au PLY original.
+
 ## Sources primaires
 
 - WebSplatter, papier et code officiel : https://arxiv.org/abs/2602.03207 et
@@ -573,11 +611,10 @@ Chrome est déclaré conforme au PLY original.
 1. Ajouter télémétrie fetch/SHA/decode/columnar/upload/sort/raster et long-task.
 2. Répéter les essais appariés Chrome sur un corpus de caméras figé et publier
    médiane, p95, long tasks, mémoire CPU/VRAM et différences d'image.
-3. Étendre le décodage Q96→streams packés aux transformations seulement si le
-   calcul des centres, AABB et distances de tri peut conserver une source CPU
-   compacte sans second parcours. Comparer ensuite TypeScript, WASM et
-   PlayCanvas. Un Worker ne sera ajouté que s'il possède le cache/destination
-   ou utilise une mémoire partagée sans copie géante.
+3. Ne pas fusionner les transformations dans Q96 avec l'implémentation actuelle :
+   l'essai réduit le commit de 29,4 % mais augmente le LOD de 2,0 %. Reprendre
+   seulement avec Worker/WASM, destination partagée ou écriture directe vers
+   l'arène, et conserver la gate sur le coût total Q96 + ressource.
 4. Instrumenter le nombre de spans, les octets réellement copiés et le temps
    de reconstruction du manager unifié, puis figer un parcours caméra répétable.
 5. Construire un prototype external-sort Morton sur une copie immuable du PLY.

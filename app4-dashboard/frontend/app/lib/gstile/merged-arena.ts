@@ -112,17 +112,22 @@ export const calculateMergedArenaBounds = (
   logScale: readonly Float32Array[],
   offset: number,
   count: number,
+  centerStream: Float32Array | null = null,
 ): MergedArenaBounds => {
+  const totalCount = logScale[0]?.length ?? 0;
   if (
     position.length !== 3 ||
     logScale.length !== 3 ||
-    position.some((column) => column.length !== logScale[0]?.length) ||
-    logScale.some((column) => column.length !== position[0]?.length) ||
+    logScale.some((column) => column.length !== totalCount) ||
+    (centerStream
+      ? centerStream.length !== totalCount * 3 ||
+        position.some((column) => column.length !== 0)
+      : position.some((column) => column.length !== totalCount)) ||
     !Number.isSafeInteger(offset) ||
     offset < 0 ||
     !Number.isSafeInteger(count) ||
     count < 1 ||
-    offset + count > (position[0]?.length ?? 0)
+    offset + count > totalCount
   ) {
     throw new Error("GSTile arena AABB range or columns are invalid");
   }
@@ -130,9 +135,14 @@ export const calculateMergedArenaBounds = (
   const maximum: [number, number, number] = [-Infinity, -Infinity, -Infinity];
   let valid = false;
   for (let record = offset; record < offset + count; record += 1) {
-    const x = position[0][record];
-    const y = position[1][record];
-    const z = position[2][record];
+    const centerOffset = record * 3;
+    const x = centerStream ? centerStream[centerOffset] : position[0][record];
+    const y = centerStream
+      ? centerStream[centerOffset + 1]
+      : position[1][record];
+    const z = centerStream
+      ? centerStream[centerOffset + 2]
+      : position[2][record];
     const scale = Math.max(
       logScale[0][record],
       logScale[1][record],
