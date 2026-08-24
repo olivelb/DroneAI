@@ -30,11 +30,20 @@ import {
 } from "./playcanvas-opacity";
 import type { GsTileRangeScheduler } from "./range-source";
 import { selectGsTileLod } from "./lod-selection";
+import {
+  calculateMergedArenaBounds,
+  mergeMergedArenaBounds,
+  planLinearTextureCopies,
+  planMergedArenaSlots,
+  type MergedArenaBounds,
+  type MergedArenaSlot,
+} from "./merged-arena";
 
 type Pc = typeof import("playcanvas");
 type PcApplication = import("playcanvas").Application;
 type PcEntity = import("playcanvas").Entity;
-type PcResource = import("playcanvas").GSplatResource;
+type PcResource = import("playcanvas").GSplatResourceBase;
+type PcContainer = import("playcanvas").GSplatContainer;
 type LoadedTile = {
   entity: PcEntity;
   resource: PcResource;
@@ -56,6 +65,13 @@ type PreparedTile = {
   origin: Vec3;
   node: GsTileNode;
   byteLength: number;
+};
+type MergedArenaState = {
+  loaded: LoadedTile;
+  container: PcContainer;
+  slots: Map<string, MergedArenaSlot>;
+  bounds: Map<string, MergedArenaBounds>;
+  byteLengths: Map<string, number>;
 };
 type DestroyableGsplatManager = { destroy: () => void };
 type ResettableGsplatLayerData = {
@@ -247,9 +263,7 @@ export const prioritizeLodLoads = (
 
 export type GsTileGpuAssembly = "tiled" | "merged" | "incremental";
 export type GsTileOpacityMode =
-  | "base"
-  | "directional"
-  | "directional-no-reveal";
+  "base" | "directional" | "directional-no-reveal";
 export type GsTileSortMode = "gpu" | "cpu";
 
 export type PlayCanvasResidentBackendOptions = {
@@ -280,9 +294,7 @@ export type PlayCanvasResidentBackendOptions = {
 export const gstileGpuAssembly = (
   requested: string | null | undefined,
 ): GsTileGpuAssembly =>
-  requested === "tiled" || requested === "incremental"
-    ? requested
-    : "merged";
+  requested === "tiled" || requested === "incremental" ? requested : "merged";
 
 export const gstileOpacityMode = (
   requested: string | null | undefined,
@@ -303,9 +315,7 @@ export const gstileSortMode = (
 
 /** Selection identity is set-based; screen-priority ordering is not content. */
 export const gstileLodSelectionKey = (nodeIds: readonly string[]) =>
-  [...nodeIds]
-    .sort((left, right) => left.localeCompare(right))
-    .join("\0");
+  [...nodeIds].sort((left, right) => left.localeCompare(right)).join("\0");
 
 export const gstileVerticalFovDegrees = (
   requested: string | number | null | undefined,
@@ -324,7 +334,9 @@ export const gstileLodUpdateDelayMilliseconds = (
 ) => {
   const value = requested ?? DEFAULT_LOD_UPDATE_DELAY_MILLISECONDS;
   if (!Number.isSafeInteger(value) || value < 0 || value > 5_000) {
-    throw new Error("lodUpdateDelayMilliseconds must be an integer from 0 to 5000");
+    throw new Error(
+      "lodUpdateDelayMilliseconds must be an integer from 0 to 5000",
+    );
   }
   return value;
 };
@@ -709,6 +721,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #cameraDirty = true;
   #removeInputListeners: (() => void) | null = null;
   #loadedTiles = new Map<string, LoadedTile>();
+  #mergedArena: MergedArenaState | null = null;
+  #retiredMergedStaging: LoadedTile[] = [];
   #lodManifest: GsTileManifest | null = null;
   #lodManifestUrl = "";
   #lodScheduler: GsTileRangeScheduler | null = null;
@@ -1077,11 +1091,15 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
     app.update(deltaSeconds);
     app.render();
+    // Keep GPU-copy sources alive until the frame consuming the copied arena
+    // streams has been submitted. Destroying them during the LOD commit can
+    // invalidate deferred WebGPU work on some drivers.
+    for (const retired of this.#retiredMergedStaging) {
+      this.#destroyUnregisteredTile(retired);
+    }
+    this.#retiredMergedStaging.length = 0;
     this.#updateDebugSnapshot(timestampMs);
-    this.#renderFramesRemaining = Math.max(
-      this.#renderFramesRemaining - 1,
-      0,
-    );
+    this.#renderFramesRemaining = Math.max(this.#renderFramesRemaining - 1, 0);
     if (forceWorkBufferRewrite) {
       this.#forceWorkBufferRewriteFrames -= 1;
       if (this.#forceWorkBufferRewriteFrames === 0) {
@@ -1124,11 +1142,16 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodUpdateTimer = null;
     this.#removeInputListeners?.();
     this.#removeInputListeners = null;
+    for (const retired of this.#retiredMergedStaging) {
+      this.#destroyUnregisteredTile(retired);
+    }
+    this.#retiredMergedStaging.length = 0;
     for (const entity of this.#entities) entity.destroy();
     for (const resource of this.#resources) resource.destroy();
     this.#entities = [];
     this.#resources = [];
     this.#loadedTiles.clear();
+    this.#mergedArena = null;
     this.#camera?.destroy();
     this.#camera = null;
     this.#app?.destroy();
@@ -1551,9 +1574,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       scale.unlock();
     }
     const opacityStreams =
-      "properties" in tile
-        ? tile.opacityStreams
-        : gsTileOpacityStreams(tile);
+      "properties" in tile ? tile.opacityStreams : gsTileOpacityStreams(tile);
     OPACITY_STREAM_NAMES.forEach((name, index) => {
       const texture = resource.getTexture(name);
       if (!texture) throw new Error(`PlayCanvas did not allocate ${name}`);
@@ -1564,6 +1585,35 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const streamUploadMs = performance.now() - streamUploadStarted;
 
     const sceneAttachStarted = performance.now();
+    const entity = this.#createTileEntity(
+      pc,
+      app,
+      resource,
+      origin,
+      node,
+      enabled,
+    );
+    releasePlyPropertyStorage(data);
+    const sceneAttachMs = performance.now() - sceneAttachStarted;
+    return {
+      entity,
+      resource,
+      gaussianCount: tile.count,
+      byteLength,
+      resourceCreateMs,
+      streamUploadMs,
+      sceneAttachMs,
+    };
+  }
+
+  #createTileEntity(
+    pc: Pc,
+    app: PcApplication,
+    resource: PcResource,
+    origin: Vec3,
+    node: GsTileNode,
+    enabled: boolean,
+  ) {
     const entity = new pc.Entity(`GSTile ${node.id}`);
     entity.enabled = enabled;
     entity.setPosition(-origin[0], -origin[1], -origin[2]);
@@ -1629,17 +1679,155 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       entity.gsplat.workBufferUpdate = pc.WORKBUFFER_UPDATE_ONCE;
     }
     app.root.addChild(entity);
-    releasePlyPropertyStorage(data);
-    const sceneAttachMs = performance.now() - sceneAttachStarted;
-    return {
-      entity,
-      resource,
-      gaussianCount: tile.count,
-      byteLength,
-      resourceCreateMs,
-      streamUploadMs,
-      sceneAttachMs,
-    };
+    return entity;
+  }
+
+  #copyGsplatResourceRange(
+    source: PcResource,
+    destination: PcContainer,
+    sourceOffset: number,
+    destinationOffset: number,
+    count: number,
+  ) {
+    for (const stream of source.format.resourceStreams) {
+      const sourceTexture = source.getTexture(stream.name);
+      const destinationTexture = destination.getTexture(stream.name);
+      if (!sourceTexture || !destinationTexture) {
+        throw new Error(`GSTile arena stream ${stream.name} is unavailable`);
+      }
+      const copies = planLinearTextureCopies(
+        sourceTexture.width,
+        sourceTexture.height,
+        sourceOffset,
+        destinationTexture.width,
+        destinationTexture.height,
+        destinationOffset,
+        count,
+      );
+      for (const options of copies) {
+        if (!destinationTexture.copy(sourceTexture, options)) {
+          throw new Error(`GSTile arena stream ${stream.name} copy failed`);
+        }
+      }
+    }
+  }
+
+  #copyMergedArenaCenters(
+    columns: GsTilePlayCanvasColumns,
+    sourceOffset: number,
+    destination: PcContainer,
+    destinationOffset: number,
+    count: number,
+  ) {
+    const centers = destination.centers;
+    for (let record = 0; record < count; record += 1) {
+      const source = sourceOffset + record;
+      const target = (destinationOffset + record) * 3;
+      centers[target] = columns.position[0][source];
+      centers[target + 1] = columns.position[1][source];
+      centers[target + 2] = columns.position[2][source];
+    }
+  }
+
+  #setMergedArenaBounds(resource: PcResource, bounds: MergedArenaBounds) {
+    resource.aabb.center.set(
+      (bounds.min[0] + bounds.max[0]) * 0.5,
+      (bounds.min[1] + bounds.max[1]) * 0.5,
+      (bounds.min[2] + bounds.max[2]) * 0.5,
+    );
+    resource.aabb.halfExtents.set(
+      (bounds.max[0] - bounds.min[0]) * 0.5,
+      (bounds.max[1] - bounds.min[1]) * 0.5,
+      (bounds.max[2] - bounds.min[2]) * 0.5,
+    );
+    resource.mesh?.aabb.copy(resource.aabb);
+  }
+
+  #setMergedArenaIntervals(
+    entity: PcEntity,
+    slots: ReadonlyMap<string, MergedArenaSlot>,
+  ) {
+    if (!entity.gsplat) {
+      throw new Error("PlayCanvas GSplat component is unavailable");
+    }
+    entity.gsplat.setActiveSplatIntervals(
+      [...slots.values()]
+        .sort((left, right) => left.offset - right.offset)
+        .map((slot) => ({ start: slot.offset, count: slot.count })),
+    );
+  }
+
+  #mergedArenaSlotsAreContiguous(
+    slots: ReadonlyMap<string, MergedArenaSlot>,
+    usedSplats: number,
+  ) {
+    let cursor = 0;
+    for (const slot of [...slots.values()].sort(
+      (left, right) => left.offset - right.offset,
+    )) {
+      if (slot.offset !== cursor) return false;
+      cursor += slot.count;
+    }
+    return cursor === usedSplats;
+  }
+
+  #createMergedArenaContainer(
+    pc: Pc,
+    app: PcApplication,
+    format: import("playcanvas").GSplatFormat,
+  ) {
+    class DroneGsMergedArena extends pc.GSplatContainer {
+      override configureMaterialDefines(defines: Map<string, string>) {
+        defines.set("SH_BANDS", "3");
+      }
+
+      override configureMaterial(
+        material: import("playcanvas").ShaderMaterial,
+        workBufferModifier: { code: string; hash: number } | null,
+        formatDeclarations: string,
+      ) {
+        // GSplatContainer normally wraps the declarations in its own nested
+        // chunk. The unified WebGPU copy pass then binds a valid pipeline but
+        // writes zeroes for a GSplatResource format extended with DroneAI
+        // opacity streams. Match GSplatResourceBase's direct configuration:
+        // it preserves the exact proven SH3/read path while retaining the
+        // container's mutable capacity.
+        this.configureMaterialDefines(material.defines);
+        this.streams.syncWithFormat(this.format);
+        const chunks = this.device.isWebGPU
+          ? material.shaderChunks.wgsl
+          : material.shaderChunks.glsl;
+        chunks.set("gsplatDeclarationsVS", formatDeclarations);
+        chunks.set("gsplatReadVS", this.format.getReadCode());
+        if (workBufferModifier?.code) {
+          chunks.set("gsplatModifyVS", workBufferModifier.code);
+        }
+        for (const [name, texture] of this.streams.textures) {
+          material.setParameter(name, texture);
+        }
+        for (const [name, value] of this.parameters) {
+          material.setParameter(name, value);
+        }
+        if (this.textureDimensions.x > 0) {
+          material.setParameter("splatTextureSize", this.textureDimensions.x);
+        }
+      }
+    }
+    const container = new DroneGsMergedArena(
+      app.graphicsDevice,
+      this.#maximumResidentGaussians,
+      format,
+    );
+    (
+      container.gsplatData as unknown as {
+        shBands: number;
+      }
+    ).shBands = 3;
+    return container;
+  }
+
+  #submitGpuCopies(app: PcApplication) {
+    (app.graphicsDevice as unknown as { submit?: () => void }).submit?.();
   }
 
   #registerTile(nodeId: string, loaded: LoadedTile) {
@@ -1862,8 +2050,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodSyncController = controller;
     this.#lodPendingKey = key;
     const lodStarted = performance.now();
-    this.#pendingNodes = selection.selectedNodeIds.filter(
-      (nodeId) => !this.#loadedTiles.has(nodeId),
+    this.#pendingNodes = selection.selectedNodeIds.filter((nodeId) =>
+      this.#gpuAssembly === "merged"
+        ? !this.#mergedArena?.slots.has(nodeId)
+        : !this.#loadedTiles.has(nodeId),
     ).length;
     this.#lodState = "refining";
     const abort = () => controller.abort(signal.reason);
@@ -1873,9 +2063,33 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const staged = new Map<string, PreparedTile>();
     const mergedAssembly = this.#gpuAssembly === "merged";
     const mergedOffsets = new Map<string, number>();
+    const selectedArenaNodes = mergedAssembly
+      ? selection.selectedNodeIds.map((nodeId) => {
+          const node = nodes.get(nodeId);
+          const tile = node?.tile ?? node?.lodTile;
+          if (!node || !tile) {
+            throw new Error(`GSTile merged target node ${nodeId} is missing`);
+          }
+          return { id: nodeId, count: tile.recordCount };
+        })
+      : [];
+    const mergedPlan = mergedAssembly
+      ? planMergedArenaSlots(
+          this.#maximumResidentGaussians,
+          this.#mergedArena?.slots ?? new Map(),
+          selectedArenaNodes,
+        )
+      : null;
+    const rebuildMergedArena =
+      mergedAssembly && (!this.#mergedArena || mergedPlan?.compacted === true);
+    const mergedLoadNodeIds = mergedAssembly
+      ? rebuildMergedArena
+        ? selection.selectedNodeIds
+        : (mergedPlan?.addedNodeIds ?? [])
+      : [];
     let mergedGaussianCount = 0;
-    if (mergedAssembly) {
-      for (const nodeId of selection.selectedNodeIds) {
+    if (mergedAssembly && mergedPlan) {
+      for (const nodeId of mergedLoadNodeIds) {
         const node = nodes.get(nodeId);
         const tile = node?.tile ?? node?.lodTile;
         if (!node || !tile) {
@@ -1884,14 +2098,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         mergedOffsets.set(nodeId, mergedGaussianCount);
         mergedGaussianCount += tile.recordCount;
       }
-      if (mergedGaussianCount > this.#maximumResidentGaussians) {
-        throw new Error("GSTile merged target exceeds the resident budget");
-      }
     }
-    let mergedColumns = mergedAssembly
-      ? allocateGsTilePlayCanvasColumns(mergedGaussianCount)
-      : null;
+    let mergedColumns =
+      mergedAssembly && mergedGaussianCount > 0
+        ? allocateGsTilePlayCanvasColumns(mergedGaussianCount)
+        : null;
+    let mergedStaging: LoadedTile | null = null;
     let mergedByteLength = 0;
+    const mergedNodeByteLengths = new Map<string, number>();
     const loadTimings: LodLoadTimings = {
       fetchServiceMs: 0,
       sha256ServiceMs: 0,
@@ -1903,7 +2117,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       selection.selectedNodeIds,
     );
     const loadNodeIds = mergedAssembly
-      ? selection.selectedNodeIds
+      ? mergedLoadNodeIds
       : prioritizeLodLoads(
           transitions,
           selection.selectedNodeIds,
@@ -1914,7 +2128,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       const loadStarted = performance.now();
       const loadResults = await Promise.allSettled(
         loadNodeIds.map(async (nodeId) => {
-          if (this.#loadedTiles.has(nodeId)) return;
+          if (!mergedAssembly && this.#loadedTiles.has(nodeId)) return;
           const node = nodes.get(nodeId);
           if (!node) throw new Error(`GSTile LOD node ${nodeId} is missing`);
           try {
@@ -1923,14 +2137,15 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
               throw new Error(`GSTile merged offset ${nodeId} is missing`);
             }
             if (mergedColumns) {
-              mergedByteLength +=
-                await this.#loadLodTileIntoPlayCanvasColumns(
-                  node,
-                  controller.signal,
-                  mergedColumns,
-                  recordOffset ?? 0,
-                  loadTimings,
-                );
+              const byteLength = await this.#loadLodTileIntoPlayCanvasColumns(
+                node,
+                controller.signal,
+                mergedColumns,
+                recordOffset ?? 0,
+                loadTimings,
+              );
+              mergedNodeByteLengths.set(nodeId, byteLength);
+              mergedByteLength += byteLength;
             } else {
               const loaded = await this.#loadLodTile(
                 node,
@@ -1963,12 +2178,18 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         throw new DOMException("Stale GSTile LOD selection", "AbortError");
       }
 
-      const residentSelectedIds = selection.selectedNodeIds.filter((nodeId) =>
-        this.#loadedTiles.has(nodeId),
-      );
-      const removedNodeIds = [...this.#loadedTiles.keys()].filter(
-        (nodeId) => !desired.has(nodeId),
-      );
+      const residentSelectedIds = mergedAssembly
+        ? rebuildMergedArena
+          ? []
+          : (mergedPlan?.reusedNodeIds ?? [])
+        : selection.selectedNodeIds.filter((nodeId) =>
+            this.#loadedTiles.has(nodeId),
+          );
+      const removedNodeIds = mergedAssembly
+        ? (mergedPlan?.removedNodeIds ?? [])
+        : [...this.#loadedTiles.keys()].filter(
+            (nodeId) => !desired.has(nodeId),
+          );
       this.#lodAddedGaussians = mergedColumns
         ? mergedColumns.count
         : [...staged.values()].reduce(
@@ -1977,12 +2198,18 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           );
       this.#lodRemovedGaussians = removedNodeIds.reduce(
         (total, nodeId) =>
-          total + (this.#loadedTiles.get(nodeId)?.gaussianCount ?? 0),
+          total +
+          (mergedAssembly
+            ? (this.#mergedArena?.slots.get(nodeId)?.count ?? 0)
+            : (this.#loadedTiles.get(nodeId)?.gaussianCount ?? 0)),
         0,
       );
       this.#lodReusedGaussians = residentSelectedIds.reduce(
         (total, nodeId) =>
-          total + (this.#loadedTiles.get(nodeId)?.gaussianCount ?? 0),
+          total +
+          (mergedAssembly
+            ? (this.#mergedArena?.slots.get(nodeId)?.count ?? 0)
+            : (this.#loadedTiles.get(nodeId)?.gaussianCount ?? 0)),
         0,
       );
       const commitStarted = performance.now();
@@ -1994,56 +2221,212 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         const columnarCut = mergedColumns;
         const pc = this.#pc;
         const app = this.#app;
-        if (!columnarCut || !pc || !app) {
+        if (!mergedPlan || !pc || !app) {
           throw new Error("GSTile merged target is empty");
         }
-        const minimum: Vec3 = [Infinity, Infinity, Infinity];
-        const maximum: Vec3 = [-Infinity, -Infinity, -Infinity];
-        for (const nodeId of selection.selectedNodeIds) {
-          const node = nodes.get(nodeId);
-          if (!node) {
-            throw new Error(`GSTile merged target node ${nodeId} is missing`);
-          }
-          const bounds = node.renderBounds ?? node.bounds;
-          for (let axis = 0; axis < 3; axis += 1) {
-            minimum[axis] = Math.min(minimum[axis], bounds.min[axis]);
-            maximum[axis] = Math.max(maximum[axis], bounds.max[axis]);
-          }
+        const nextBounds = rebuildMergedArena
+          ? new Map<string, MergedArenaBounds>()
+          : new Map(this.#mergedArena?.bounds);
+        const nextByteLengths = rebuildMergedArena
+          ? new Map<string, number>()
+          : new Map(this.#mergedArena?.byteLengths);
+        for (const nodeId of mergedPlan.removedNodeIds) {
+          nextBounds.delete(nodeId);
+          nextByteLengths.delete(nodeId);
         }
+        for (const nodeId of mergedLoadNodeIds) {
+          const node = nodes.get(nodeId);
+          const tile = node?.tile ?? node?.lodTile;
+          const offset = mergedOffsets.get(nodeId);
+          if (!columnarCut || !tile || offset === undefined) {
+            throw new Error(`GSTile merged staging node ${nodeId} is missing`);
+          }
+          nextBounds.set(
+            nodeId,
+            calculateMergedArenaBounds(
+              columnarCut.position,
+              columnarCut.logScale,
+              offset,
+              tile.recordCount,
+            ),
+          );
+          nextByteLengths.set(nodeId, mergedNodeByteLengths.get(nodeId) ?? 0);
+        }
+        const mergedBounds = mergeMergedArenaBounds(
+          selection.selectedNodeIds.map((nodeId) => {
+            const bounds = nextBounds.get(nodeId);
+            if (!bounds) {
+              throw new Error(`GSTile merged AABB ${nodeId} is missing`);
+            }
+            return bounds;
+          }),
+        );
         const mergedNode: GsTileNode = {
           id: "rmerged",
-          bounds: { min: minimum, max: maximum },
-          renderBounds: { min: minimum, max: maximum },
-          gaussianCount: columnarCut.count,
+          bounds: mergedBounds,
+          renderBounds: mergedBounds,
+          gaussianCount: mergedPlan.usedSplats,
         };
-        for (const nodeId of [...this.#loadedTiles.keys()]) {
-          const loaded = this.#loadedTiles.get(nodeId);
-          if (loaded) loaded.entity.enabled = false;
+        if (columnarCut) {
+          mergedStaging = this.#createTileResource(
+            pc,
+            app,
+            columnarCut,
+            manifest.coordinateFrame.origin,
+            mergedNode,
+            false,
+            mergedByteLength,
+            false,
+          );
+          resourceCreateMs += mergedStaging.resourceCreateMs;
+          streamUploadMs += mergedStaging.streamUploadMs;
+          sceneAttachMs += mergedStaging.sceneAttachMs;
         }
-        for (const nodeId of [...this.#loadedTiles.keys()]) {
-          this.#removeTile(nodeId);
+
+        if (rebuildMergedArena) {
+          if (!mergedStaging || !columnarCut) {
+            throw new Error("GSTile merged arena staging resource is missing");
+          }
+          if (this.#mergedArena) {
+            this.#mergedArena.loaded.entity.enabled = false;
+          }
+          this.#removeTile("__merged__");
+          this.#mergedArena = null;
+          this.#resetUnifiedGsplatWorld(pc, app);
+          const containerStarted = performance.now();
+          const container = this.#createMergedArenaContainer(
+            pc,
+            app,
+            mergedStaging.resource.format,
+          );
+          resourceCreateMs += performance.now() - containerStarted;
+          for (const nodeId of selection.selectedNodeIds) {
+            const sourceOffset = mergedOffsets.get(nodeId);
+            const slot = mergedPlan.slots.get(nodeId);
+            if (sourceOffset === undefined || !slot) {
+              throw new Error(`GSTile merged arena slot ${nodeId} is missing`);
+            }
+            this.#copyGsplatResourceRange(
+              mergedStaging.resource,
+              container,
+              sourceOffset,
+              slot.offset,
+              slot.count,
+            );
+            this.#copyMergedArenaCenters(
+              columnarCut,
+              sourceOffset,
+              container,
+              slot.offset,
+              slot.count,
+            );
+          }
+          const contiguousArena = this.#mergedArenaSlotsAreContiguous(
+            mergedPlan.slots,
+            mergedPlan.usedSplats,
+          );
+          container.update(
+            contiguousArena ? mergedPlan.usedSplats : container.maxSplats,
+            true,
+          );
+          this.#setMergedArenaBounds(container, mergedBounds);
+          const attachStarted = performance.now();
+          const entity = this.#createTileEntity(
+            pc,
+            app,
+            container,
+            manifest.coordinateFrame.origin,
+            mergedNode,
+            false,
+          );
+          // PlayCanvas creates the unified placement when the entity becomes
+          // active. Enable synchronously before configuring its source ranges;
+          // no frame can be presented in the middle of this commit.
+          entity.enabled = true;
+          if (!contiguousArena) {
+            this.#setMergedArenaIntervals(entity, mergedPlan.slots);
+          }
+          sceneAttachMs += performance.now() - attachStarted;
+          this.#submitGpuCopies(app);
+          this.#retiredMergedStaging.push(mergedStaging);
+          mergedStaging = null;
+          const byteLength = [...nextByteLengths.values()].reduce(
+            (total, value) => total + value,
+            0,
+          );
+          const loaded: LoadedTile = {
+            entity,
+            resource: container,
+            gaussianCount: mergedPlan.usedSplats,
+            byteLength,
+            resourceCreateMs: 0,
+            streamUploadMs: 0,
+            sceneAttachMs: 0,
+          };
+          this.#registerTile("__merged__", loaded);
+          this.#mergedArena = {
+            loaded,
+            container,
+            slots: mergedPlan.slots,
+            bounds: nextBounds,
+            byteLengths: nextByteLengths,
+          };
+        } else {
+          const arena = this.#mergedArena;
+          if (!arena) throw new Error("GSTile merged arena is unavailable");
+          if (mergedStaging && columnarCut) {
+            for (const nodeId of mergedPlan.addedNodeIds) {
+              const sourceOffset = mergedOffsets.get(nodeId);
+              const slot = mergedPlan.slots.get(nodeId);
+              if (sourceOffset === undefined || !slot) {
+                throw new Error(
+                  `GSTile merged arena slot ${nodeId} is missing`,
+                );
+              }
+              this.#copyGsplatResourceRange(
+                mergedStaging.resource,
+                arena.container,
+                sourceOffset,
+                slot.offset,
+                slot.count,
+              );
+              this.#copyMergedArenaCenters(
+                columnarCut,
+                sourceOffset,
+                arena.container,
+                slot.offset,
+                slot.count,
+              );
+            }
+          }
+          const previousGaussians = arena.loaded.gaussianCount;
+          const previousBytes = arena.loaded.byteLength;
+          const byteLength = [...nextByteLengths.values()].reduce(
+            (total, value) => total + value,
+            0,
+          );
+          arena.container.update(arena.container.maxSplats, true);
+          this.#setMergedArenaBounds(arena.container, mergedBounds);
+          this.#setMergedArenaIntervals(arena.loaded.entity, mergedPlan.slots);
+          // PlayCanvas can clear the global streaming dirty flag before the
+          // layer reconciliation observes changed non-octree intervals. Drop
+          // only the derived unified manager so the next render rebuilds its
+          // allocation, sorter and work-buffer from the persistent arena.
+          this.#resetUnifiedGsplatWorld(pc, app);
+          this.#submitGpuCopies(app);
+          if (mergedStaging) {
+            this.#retiredMergedStaging.push(mergedStaging);
+            mergedStaging = null;
+          }
+          arena.loaded.gaussianCount = mergedPlan.usedSplats;
+          arena.loaded.byteLength = byteLength;
+          arena.slots = mergedPlan.slots;
+          arena.bounds = nextBounds;
+          arena.byteLengths = nextByteLengths;
+          this.#residentGaussians += mergedPlan.usedSplats - previousGaussians;
+          this.#residentBytes += byteLength - previousBytes;
         }
-        // Release the old cut before allocating the next one. Keeping both
-        // complete GPU resources alive during the atomic swap exceeds laptop
-        // VRAM and spills several gigabytes into Windows shared GPU memory.
-        // No frame can be presented inside this synchronous commit.
-        this.#resetUnifiedGsplatWorld(pc, app);
-        const merged = this.#createTileResource(
-          pc,
-          app,
-          columnarCut,
-          manifest.coordinateFrame.origin,
-          mergedNode,
-          false,
-          mergedByteLength,
-          false,
-        );
-        resourceCreateMs += merged.resourceCreateMs;
-        streamUploadMs += merged.streamUploadMs;
-        sceneAttachMs += merged.sceneAttachMs;
         mergedColumns = null;
-        merged.entity.enabled = true;
-        this.#registerTile("__merged__", merged);
         this.#selectedNodes = selection.selectedNodeIds.length;
         staged.clear();
       } else {
@@ -2102,17 +2485,22 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       this.#pendingNodes = 0;
       this.#lodState = selection.budgetLimited ? "budget-limited" : "steady";
       this.#updateOpacityCameraUniform();
+      // Publish an arena cut in the same task that mutates its textures. This
+      // keeps the old work-buffer from indexing new arena contents when rAF is
+      // throttled and removes a full-frame transition lag in active tabs. One
+      // forced rebuild is sufficient because the placement and interval setter
+      // both mark the unified world dirty.
+      this.#forceWorkBufferRewriteFrames = mergedAssembly ? 1 : 0;
+      this.#requestRender(mergedAssembly ? 1 : 2);
+      if (mergedAssembly) this.render(performance.now());
       this.#lodCommitMs = performance.now() - commitStarted;
       this.#lodTotalMs = performance.now() - lodStarted;
-      // Rebuild and rewrite the complete unified work buffer for three frames.
-      // A cut replacement keeps many placements alive, and PlayCanvas normally
-      // uploads only dirty allocations. Rewriting every resident placement here
-      // prevents retained tiles or recycled allocation ranges from displaying
-      // transform/covariance data belonging to a previous representation.
-      this.#forceWorkBufferRewriteFrames = mergedAssembly ? 3 : 0;
-      this.#requestRender(mergedAssembly ? 3 : 2);
     } catch (error) {
       mergedColumns = null;
+      if (mergedStaging) {
+        this.#destroyUnregisteredTile(mergedStaging);
+        mergedStaging = null;
+      }
       staged.clear();
       if (!(error instanceof DOMException && error.name === "AbortError"))
         this.#lodState = "error";
@@ -2131,7 +2519,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     if (!this.#lodManifest || !signal || signal.aborted) return;
     if (this.#lodSyncController && !this.#lodSyncController.signal.aborted) {
       this.#lodSyncController.abort(
-        new DOMException("GSTile interaction superseded refinement", "AbortError"),
+        new DOMException(
+          "GSTile interaction superseded refinement",
+          "AbortError",
+        ),
       );
       this.#lodPendingKey = "";
       this.#pendingNodes = 0;
@@ -2346,17 +2737,16 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     rendered = true,
   ): GaussianRenderStatistics {
     const gpuTimings = this.#app?.stats.gpu;
-    const frameGpuMs =
-      !rendered
-        ? 0
-        : this.#debugTraceEnabled && gpuTimings
+    const frameGpuMs = !rendered
+      ? 0
+      : this.#debugTraceEnabled && gpuTimings
         ? [...gpuTimings.values()].reduce((total, value) => total + value, 0)
         : null;
     const workBufferUploadPercent = !rendered
       ? 0
       : this.#app
-      ? this.#app.stats.frame.gsplatBufferCopy
-      : null;
+        ? this.#app.stats.frame.gsplatBufferCopy
+        : null;
     return {
       lodState: this.#lodState,
       residentGaussians: this.#residentGaussians,
@@ -2396,10 +2786,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   }
 
   #requestRender(frames = 2) {
-    this.#renderFramesRemaining = Math.max(
-      this.#renderFramesRemaining,
-      frames,
-    );
+    this.#renderFramesRemaining = Math.max(this.#renderFramesRemaining, frames);
   }
 
   #updateDebugSnapshot(timestampMs: number) {

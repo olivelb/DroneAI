@@ -10,6 +10,8 @@ COPY app4-dashboard/frontend/scripts/patch-playcanvas-full-transform.mjs \
     ./scripts/patch-playcanvas-full-transform.mjs
 COPY app4-dashboard/frontend/scripts/patch-playcanvas-incremental-world.mjs \
     ./scripts/patch-playcanvas-incremental-world.mjs
+COPY app4-dashboard/frontend/scripts/patch-playcanvas-container-intervals.mjs \
+    ./scripts/patch-playcanvas-container-intervals.mjs
 RUN npm ci
 
 COPY app4-dashboard/frontend/ ./
