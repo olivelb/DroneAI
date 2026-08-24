@@ -355,6 +355,11 @@ Conserver le cut complet précédent jusqu'au succès.
     et traite les 45 coefficients SH couleur par groupes de trois. Un test
     différentiel compare bit à bit les 59 propriétés et quatre streams sur
     4 096 records pseudo-aléatoires.
+17. Le staging fusionné surcharge uniquement `updateTransformData` pour lire
+    directement les colonnes GSTile. Il produit les mêmes mots PlayCanvas
+    `transformA` RGBA32U et `transformB` RGBA16F sans créer ni muter un `Vec3`,
+    `Quat` et itérateur par splat. Les autres ressources et tous les shaders
+    conservent le chemin moteur standard.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -425,6 +430,33 @@ les 6,29 s de construction `GSplatResource`. Sur la transition chaude, Q96
 mesure 371–387 ms contre environ 400 ms auparavant ; 6,6 M splats sont déjà
 réutilisés, donc le packing PlayCanvas des nouveaux splats reste le premier
 coût du commit. Les captures automatisées initiale et tournée sont complètes.
+
+### Qualification du packing natif de transformations — Saint-Étienne v4c
+
+Le packer PlayCanvas de référence matérialise un itérateur fermé sur onze
+colonnes, lit trois objets mathématiques par splat, normalise un `Quat`, calcule
+trois exponentielles puis convertit en float16. Le chemin GSTile effectue les
+mêmes opérations scalaires directement sur les colonnes finales. Un test sur
+65 536 quaternions Q96 normalisés compare mot pour mot les buffers RGBA32U et
+RGBA16F de référence, padding texture compris.
+
+Trois runs Chrome froids appariés donnent :
+
+| variante | ressource, runs | médiane ressource | médiane commit |
+|---|---|---:|---:|
+| PlayCanvas standard | 6,382 / 6,278 / 5,951 s | 6,278 s | 6,964 s |
+| packing GSTile direct | 5,227 / 5,175 / 5,192 s | **5,192 s** | **5,877 s** |
+
+Le gain est de **−17,3 %** sur la construction de ressource et **−15,6 %** sur
+le commit froid, soit environ 1,09 s gagnée. Une transition tournée mesure
+755 ms de ressource et 849 ms de commit avec 6,6 M splats réutilisés ; la
+capture automatisée est complète.
+
+Deux variantes ont été rejetées séparément : désactiver la copie CPU des
+centres économise environ 89 Mo mais dégrade la médiane ressource de 1,4 % ;
+supprimer la seconde normalisation quaternion, pourtant float16-identique sur
+le corpus, dégrade la médiane de 1,3 %. Le JIT réel prime donc sur la seule
+réduction du nombre apparent d'opérations.
 
 ## Sources primaires
 

@@ -39,6 +39,7 @@ import {
   type MergedArenaBounds,
   type MergedArenaSlot,
 } from "./merged-arena";
+import { packGsTileNativeTransforms } from "./native-transform";
 
 type Pc = typeof import("playcanvas");
 type PcApplication = import("playcanvas").Application;
@@ -1508,7 +1509,54 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         properties,
       },
     ]);
-    const resource = new pc.GSplatResource(app.graphicsDevice, data);
+    const Resource =
+      "properties" in tile
+        ? class DroneGsMergedStagingResource extends pc.GSplatResource {
+            override updateTransformData(
+              gsplatData: import("playcanvas").GSplatData,
+            ) {
+              const property = (name: string) => {
+                const storage = gsplatData.getProp(name);
+                if (!(storage instanceof Float32Array)) {
+                  throw new Error(`GSTile transform property ${name} is missing`);
+                }
+                return storage;
+              };
+              const transformA = this.getTexture("transformA");
+              const transformB = this.getTexture("transformB");
+              if (!transformA || !transformB) {
+                throw new Error("GSTile native transform streams are missing");
+              }
+              const outputA = transformA.lock() as Uint32Array;
+              const outputB = transformB.lock() as Uint16Array;
+              try {
+                packGsTileNativeTransforms(
+                  {
+                    position: [property("x"), property("y"), property("z")],
+                    logScale: [
+                      property("scale_0"),
+                      property("scale_1"),
+                      property("scale_2"),
+                    ],
+                    rotation: [
+                      property("rot_0"),
+                      property("rot_1"),
+                      property("rot_2"),
+                      property("rot_3"),
+                    ],
+                  },
+                  outputA,
+                  outputB,
+                  pc.FloatPacking.float2Half,
+                );
+              } finally {
+                transformA.unlock();
+                transformB.unlock();
+              }
+            }
+          }
+        : pc.GSplatResource;
+    const resource = new Resource(app.graphicsDevice, data);
     const resourceCreateMs = performance.now() - resourceStarted;
     const streamUploadStarted = performance.now();
     if (useManifestRenderBounds) {
