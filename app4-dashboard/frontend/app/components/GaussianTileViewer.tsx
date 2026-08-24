@@ -180,10 +180,17 @@ export default function GaussianTileViewer({
           descriptor?.recommendedView,
         );
         if (controller.signal.aborted) return;
+        // Present the completed cut immediately. requestAnimationFrame can be
+        // delayed for a backgrounded Chrome tab, which otherwise leaves a
+        // ready GPU resource behind an empty canvas until the browser wakes.
+        const initialStatistics = backend.render(performance.now());
+        setStatistics(initialStatistics);
+        lastDiagnostics = performance.now();
         setStatus("Prêt");
         animation = requestAnimationFrame(frame);
       } catch (reason) {
         if (controller.signal.aborted) return;
+        console.error("GSTile viewer initialization failed", reason);
         setStatus("Échec");
         setError(reason instanceof Error ? reason.message : String(reason));
       }

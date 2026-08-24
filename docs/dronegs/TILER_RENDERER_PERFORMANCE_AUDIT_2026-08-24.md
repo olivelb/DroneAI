@@ -319,6 +319,51 @@ Conserver le cut complet précédent jusqu'au succès.
 9. La télémétrie sépare fetch service, SHA-256, Q96, construction ressource,
    streams et scène dans le contrat, le HUD et le snapshot debug. Elle établit
    que le packing `GSplatResource` représente environ 95 % du commit actuel.
+10. Une arène `GSplatContainer` de capacité fixe conserve les offsets des
+    nœuds stables, copie les nouveaux streams par commandes GPU row-bounded et
+    n'expose qu'une ressource/entité au renderer. Les AABB utilisent exactement
+    la formule PlayCanvas `centre ± 2·exp(max(log_scale))`.
+11. Le patch PlayCanvas 2.21.4 versionné ajoute des intervalles non-octree
+    publics, leur allocation contiguë dans le work-buffer et leur réupload
+    complet lorsque les IDs d'octree sont absents. Il est idempotent,
+    fail-closed, couvert par cinq tests et appliqué aux builds prod/debug/profilé
+    ainsi qu'aux déclarations TypeScript.
+12. `GSplatContainer.configureMaterial` est remplacé localement par le chemin
+    direct déjà validé de `GSplatResourceBase`. L'indirection de chunk du
+    container produisait un pipeline WebGPU valide mais un work-buffer nul avec
+    le format SH3 enrichi des streams d'opacité DroneAI.
+13. Chaque commit d'arène réinitialise uniquement le manager unifié dérivé et
+    publie immédiatement une frame. Cela empêche l'ancien index de lire les
+    nouveaux texels lorsque `requestAnimationFrame` est ralenti et supprime une
+    frame de latence de transition.
+
+### Qualification arène GPU persistante — Saint-Étienne v4c
+
+Trois runs Chrome propres, 7 435 345 splats, 356 nœuds, SH3 et opacité
+directionnelle :
+
+| run | total LOD | load | commit | état renderer |
+|---|---:|---:|---:|---|
+| arena16 | 18,906 s | 12,046 s | 6,851 s | complet, 1 ressource |
+| arena17 | 19,881 s | 12,899 s | 6,847 s | complet, 1 ressource |
+| arena18 | 20,275 s | 13,164 s | 7,016 s | complet, 1 ressource |
+
+Médiane : 19,881 s, soit -1,46 % face à la médiane fusionnée précédente de
+20,176 s. Le faible gain initial est cohérent : le passage du cut grossier au
+cut final ne réutilise que 292 922 splats et le packing du staging
+`GSplatResource` reste dominant (~6,3 s).
+
+Une rotation de caméra a mis en évidence la limite suivante : le nouveau cut
+de 7 487 153 splats dispose d'assez d'espace libre total, mais pas d'un trou
+contigu assez grand. Le plan actuel compacte alors toute l'arène : 0 splat
+réutilisé, 12,912 s total, 5,022 s load et 7,876 s commit. L'optimisation
+prioritaire suivante est donc l'allocation d'un nœud sur plusieurs spans, ou
+une compaction GPU avec scratch borné, afin de conserver les ~6,6 M splats
+communs sans nouveau décodage/packing.
+
+La validation automatisée confirme une façade complète et un world state de
+7 435 345 splats sans erreur renderer. La comparaison visuelle humaine avec le
+PLY original reste la gate avant merge.
 
 ## Sources primaires
 
@@ -335,6 +380,11 @@ Conserver le cut complet précédent jusqu'au succès.
 - PlayCanvas Streamed SOG et performance :
   https://developer.playcanvas.com/user-manual/gaussian-splatting/formats/streamed-sog/
   et https://developer.playcanvas.com/user-manual/gaussian-splatting/building/performance/
+- API officielle `GSplatContainer` PlayCanvas 2.21.4 :
+  https://api.playcanvas.com/engine/classes/GSplatContainer.html
+- Sources et notes de version PlayCanvas :
+  https://github.com/playcanvas/engine et
+  https://github.com/playcanvas/engine/releases
 - Construction d'octree out-of-core :
   https://diglib.eg.org/items/62d4fdab-2dd4-4e8c-8bb6-b84d0d17a785
 - WebGPU Recommendation : https://www.w3.org/TR/webgpu/
@@ -345,7 +395,8 @@ Conserver le cut complet précédent jusqu'au succès.
 2. Répéter les essais appariés Chrome sur un corpus de caméras figé et publier
    médiane, p95, long tasks, mémoire CPU/VRAM et différences d'image.
 3. Prototyper un Worker propriétaire du cache brut, puis comparer TS et WASM.
-4. Prototyper l'arène GPU persistante derrière `GaussianRenderBackend`.
+4. Fractionner les nœuds de l'arène persistante sur plusieurs spans libres,
+   avec invariants d'absence de recouvrement et tests de fragmentation.
 5. Construire un prototype external-sort Morton sur une copie immuable du PLY.
 6. Geler avec l'équipe le corpus de caméras et les seuils scientifiques avant
    toute optimisation de proxy.
