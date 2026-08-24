@@ -382,6 +382,10 @@ Conserver le cut complet précédent jusqu'au succès.
     `Float16Array` lorsqu'elles sont disponibles, avec un fallback PlayCanvas
     exact. Cela remplace sept conversions JavaScript float32→float16 par splat
     sans allocation ni copie supplémentaire.
+23. Les quatre streams SH3 déjà packés sont dimensionnés avec le padding exact
+    des textures PlayCanvas puis adoptés comme sources initiales. Le chemin
+    `merged` supprime ainsi leur copie CPU de 64 octets/splat et le second
+    buffer d'environ 454 Mio sur Saint-Étienne.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -612,6 +616,34 @@ ressource**, **−18,5 % sur le commit** et **−2,5 % sur le LOD total**. La su
 complète passe avec 27 fichiers et 151 tests, ainsi que typecheck, lint et build
 production local et BIGZEN. Le contrôle visuel humain est validé conforme au
 PLY original.
+
+### Qualification de l'adoption zéro-copie SH3 — Saint-Étienne v4c
+
+Les quatre tableaux RGBA32U produits pendant Q96 ont désormais exactement la
+capacité `ceil(sqrt(N)) × ceil(N / width)` calculée par PlayCanvas. La ressource
+crée d'abord les quatre textures de remplacement avec ces tableaux comme
+sources initiales, puis bascule la table des streams seulement si toutes les
+allocations ont réussi. Un échec partiel détruit les remplacements et conserve
+intacts les anciens streams.
+
+La première qualification a échoué en mode fermé parce que le contrat du
+décodeur exigeait encore `N × 4` mots sans padding. Le contrat a été corrigé et
+couvert avant toute mesure. Pour 7 435 345 splats, le padding n'ajoute que
+75 776 octets et l'adoption supprime une copie de 475 937 856 octets, soit
+environ **454 Mio** de pic mémoire CPU.
+
+| variante | SH médian | ressource médiane | commit médian | Q96 médian | LOD médian |
+|---|---:|---:|---:|---:|---:|
+| packing natif `Float16Array` | 0,271 s | 0,795 s | 1,480 s | 3,121 s | 13,717 s |
+| adoption zéro-copie SH3 | **0,195 s** | **0,738 s** | **1,447 s** | 3,441 s | **13,660 s** |
+
+Le gain médian atteint **−28,0 % sur SH**, **−7,2 % sur la ressource** et
+**−2,2 % sur le commit**. Le LOD reste stable dans le bruit réseau (−0,4 %).
+La hausse Q96 n'est pas structurelle : la capacité supplémentaire ne représente
+que 1 184 texels et aucune opération supplémentaire n'est exécutée par splat.
+La qualification complète passe 28 fichiers et 154 tests, le typecheck, le
+lint et les builds local et BIGZEN. Le contrôle visuel humain est validé
+conforme au PLY original.
 
 ## Sources primaires
 

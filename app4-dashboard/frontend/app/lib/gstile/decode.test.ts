@@ -15,6 +15,7 @@ import {
   mergeDecodedGsTiles,
 } from "./decode";
 import { packGsTileNativeSh } from "./native-sh";
+import { gsTileTextureElementCapacity } from "./native-streams";
 
 const quantization: GsTileQuantization = {
   position: { min: [10, 20, 30], max: [20, 40, 60] },
@@ -430,7 +431,7 @@ describe("GSTile pack decoder", () => {
     expect(destination.bounds.valid).toBe(false);
   });
 
-  it("reduces fused resource handoff storage to 176 bytes per splat", () => {
+  it("keeps the fused handoff at 176 bytes per splat plus texture padding", () => {
     const count = 3;
     const columns = allocateGsTilePlayCanvasColumns(count, {
       centerBounds: true,
@@ -453,7 +454,9 @@ describe("GSTile pack decoder", () => {
       (columns.colorStream?.byteLength ?? 0) +
       (columns.centerStream?.byteLength ?? 0);
 
-    expect(bytes).toBe(count * 176);
+    const shPaddingBytes =
+      (gsTileTextureElementCapacity(count) - count) * 64;
+    expect(bytes).toBe(count * 176 + shPaddingBytes);
   });
 
   it("rejects a direct decode outside the preallocated cut", () => {

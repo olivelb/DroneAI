@@ -41,6 +41,7 @@ import {
 } from "./merged-arena";
 import { packGsTileNativeTransforms } from "./native-transform";
 import { packGsTileNativeSh } from "./native-sh";
+import { adoptGsTileNativeRgba32Streams } from "./native-streams";
 
 type Pc = typeof import("playcanvas");
 type PcApplication = import("playcanvas").Application;
@@ -1632,24 +1633,29 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
                 "splatSH_8to11",
                 "splatSH_12to15",
               ] as const;
-              const textures = names.map((name) => this.getTexture(name));
-              if (textures.some((texture) => !texture)) {
-                throw new Error("GSTile native SH3 streams are missing");
-              }
-              const streams = textures.map((texture) =>
-                texture!.lock(),
-              ) as unknown as [
-                Uint32Array,
-                Uint32Array,
-                Uint32Array,
-                Uint32Array,
-              ];
               try {
                 if (tile.shStreams) {
-                  streams.forEach((stream, index) =>
-                    stream.set(tile.shStreams![index]),
+                  adoptGsTileNativeRgba32Streams(
+                    this.streams,
+                    this.format,
+                    names,
+                    tile.shStreams,
                   );
-                } else {
+                  return;
+                }
+                const textures = names.map((name) => this.getTexture(name));
+                if (textures.some((texture) => !texture)) {
+                  throw new Error("GSTile native SH3 streams are missing");
+                }
+                const streams = textures.map((texture) =>
+                  texture!.lock(),
+                ) as unknown as [
+                  Uint32Array,
+                  Uint32Array,
+                  Uint32Array,
+                  Uint32Array,
+                ];
+                try {
                   const properties = Array.from(
                     { length: 45 },
                     (_, coefficient) => {
@@ -1665,11 +1671,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
                     },
                   );
                   packGsTileNativeSh(properties, streams);
+                } finally {
+                  textures.forEach((texture) => texture!.unlock());
                 }
               } finally {
-                textures.forEach((texture) => texture!.unlock());
+                resourceStageMs.sh += performance.now() - started;
               }
-              resourceStageMs.sh += performance.now() - started;
             }
           }
         : pc.GSplatResource;

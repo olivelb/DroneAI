@@ -11,6 +11,7 @@ import {
   type GsTileNativeShStreams,
 } from "./native-sh";
 import { packGsTileNativeColorRecord } from "./native-color";
+import { gsTileTextureElementCapacity } from "./native-streams";
 
 export type DecodedGsTile = {
   header: GsTilePackHeader;
@@ -164,7 +165,9 @@ const validatePlayCanvasColumnRange = (
       destination.colorSh.some((column) => column.length !== destination.count)) ||
     (destination.shStreams !== null &&
       destination.shStreams.some(
-        (stream) => stream.length !== destination.count * 4,
+        (stream) =>
+          stream.length !==
+          gsTileTextureElementCapacity(destination.count) * 4,
       ))
   ) {
     throw new Error("GSTile PlayCanvas SH width is inconsistent");
@@ -265,12 +268,13 @@ export const allocateGsTilePlayCanvasColumns = (
     new Float32Array(count * 4),
   ];
   const colorStream = packing.color ? new Uint16Array(count * 4) : null;
+  const textureStreamLength = gsTileTextureElementCapacity(count) * 4;
   const shStreams: GsTileNativeShStreams | null = packing.sh
     ? [
-        new Uint32Array(count * 4),
-        new Uint32Array(count * 4),
-        new Uint32Array(count * 4),
-        new Uint32Array(count * 4),
+        new Uint32Array(textureStreamLength),
+        new Uint32Array(textureStreamLength),
+        new Uint32Array(textureStreamLength),
+        new Uint32Array(textureStreamLength),
       ]
     : null;
   const centerStream = packing.centerBounds

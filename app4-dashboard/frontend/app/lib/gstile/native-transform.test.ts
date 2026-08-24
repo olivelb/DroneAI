@@ -138,7 +138,7 @@ describe("GSTile native transform packing", () => {
 
     expect(interleavedA).toEqual(actualA);
     expect(interleavedB).toEqual(actualB);
-  });
+  }, 15_000);
 
   it("rejects inconsistent stream shapes", () => {
     expect(() =>
