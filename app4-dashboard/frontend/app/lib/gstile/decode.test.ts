@@ -1,3 +1,4 @@
+import { FloatPacking } from "playcanvas";
 import { describe, expect, it } from "vitest";
 import type { GsTileQuantization } from "./contracts";
 import {
@@ -305,7 +306,7 @@ describe("GSTile pack decoder", () => {
       expected[2].subarray(4),
       expected[3].subarray(4),
     ]);
-    const destination = allocateGsTilePlayCanvasColumns(2, true);
+    const destination = allocateGsTilePlayCanvasColumns(2, { sh: true });
 
     decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
       pack,
@@ -355,9 +356,57 @@ describe("GSTile pack decoder", () => {
     expect(decodedBytes + columnBytes).toBe(count * 604);
   });
 
-  it("reduces fused SH handoff storage to 184 bytes per splat", () => {
+  it("packs authenticated Q96 base color directly into exact PlayCanvas RGBA16F", () => {
+    const count = 4_096;
+    const pack = createDeterministicRandomPack(count);
+    const decoded = decodeGsTilePack(pack, quantization);
+    const properties = gsTileToPlyProperties(decoded);
+    const [red, green, blue] = properties
+      .slice(3, 6)
+      .map((property) => property.storage);
+    const opacity = properties[6].storage;
+    const expected = new Uint16Array(count * 4);
+    const shC0 = 0.28209479177387814;
+    for (let splat = 0; splat < count; splat += 1) {
+      const offset = splat * 4;
+      expected[offset] = FloatPacking.float2Half(red[splat] * shC0 + 0.5);
+      expected[offset + 1] = FloatPacking.float2Half(
+        green[splat] * shC0 + 0.5,
+      );
+      expected[offset + 2] = FloatPacking.float2Half(
+        blue[splat] * shC0 + 0.5,
+      );
+      expected[offset + 3] = FloatPacking.float2Half(
+        1 / (1 + Math.exp(-opacity[splat])),
+      );
+    }
+    const destination = allocateGsTilePlayCanvasColumns(count, {
+      color: true,
+    });
+
+    decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
+      pack,
+      32,
+      count * 96,
+      count,
+      quantization,
+      destination,
+      0,
+    );
+
+    expect(destination.colorStream).toEqual(expected);
+    expect(destination.colorDc.every((column) => column.length === 0)).toBe(
+      true,
+    );
+    expect(destination.opacityLogit.length).toBe(0);
+  });
+
+  it("reduces fused resource handoff storage to 176 bytes per splat", () => {
     const count = 3;
-    const columns = allocateGsTilePlayCanvasColumns(count, true);
+    const columns = allocateGsTilePlayCanvasColumns(count, {
+      color: true,
+      sh: true,
+    });
     const bytes =
       columns.properties.reduce(
         (total, property) => total + property.storage.byteLength,
@@ -370,9 +419,10 @@ describe("GSTile pack decoder", () => {
       (columns.shStreams?.reduce(
         (total, stream) => total + stream.byteLength,
         0,
-      ) ?? 0);
+      ) ?? 0) +
+      (columns.colorStream?.byteLength ?? 0);
 
-    expect(bytes).toBe(count * 184);
+    expect(bytes).toBe(count * 176);
   });
 
   it("rejects a direct decode outside the preallocated cut", () => {

@@ -1527,7 +1527,20 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
               gsplatData: import("playcanvas").GSplatData,
             ) {
               const started = performance.now();
-              super.updateColorData(gsplatData);
+              if (tile.colorStream) {
+                const texture = this.getTexture("splatColor");
+                if (!texture) {
+                  throw new Error("GSTile native color stream is missing");
+                }
+                const stream = texture.lock() as Uint16Array;
+                try {
+                  stream.set(tile.colorStream);
+                } finally {
+                  texture.unlock();
+                }
+              } else {
+                super.updateColorData(gsplatData);
+              }
               resourceStageMs.color += performance.now() - started;
             }
 
@@ -2255,7 +2268,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
     let mergedColumns =
       mergedAssembly && mergedGaussianCount > 0
-        ? allocateGsTilePlayCanvasColumns(mergedGaussianCount, true)
+        ? allocateGsTilePlayCanvasColumns(mergedGaussianCount, {
+            color: true,
+            sh: true,
+          })
         : null;
     let mergedStaging: LoadedTile | null = null;
     let mergedByteLength = 0;

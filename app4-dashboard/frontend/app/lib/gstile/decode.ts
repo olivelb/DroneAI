@@ -10,6 +10,7 @@ import {
   packGsTileNativeShRecord,
   type GsTileNativeShStreams,
 } from "./native-sh";
+import { packGsTileNativeColorRecord } from "./native-color";
 
 export type DecodedGsTile = {
   header: GsTilePackHeader;
@@ -55,7 +56,13 @@ export type GsTilePlayCanvasColumns = GsTilePlyColumns & {
   count: number;
   properties: GsTilePlyProperty[];
   opacityStreams: GsTileOpacityStreams;
+  colorStream: Uint16Array | null;
   shStreams: GsTileNativeShStreams | null;
+};
+
+export type GsTilePlayCanvasPacking = {
+  color?: boolean;
+  sh?: boolean;
 };
 
 const decodedFloatFields = [
@@ -109,7 +116,6 @@ const validatePlayCanvasColumnRange = (
   }
   const groups: ReadonlyArray<readonly [Float32Array[], number]> = [
     [destination.position, 3],
-    [destination.colorDc, 3],
     [destination.logScale, 3],
     [destination.rotation, 4],
   ];
@@ -120,6 +126,18 @@ const validatePlayCanvasColumnRange = (
     ) {
       throw new Error("GSTile PlayCanvas column width is inconsistent");
     }
+  }
+  const colorColumnLength = destination.colorStream ? 0 : destination.count;
+  if (
+    destination.colorDc.length !== 3 ||
+    destination.colorDc.some(
+      (column) => column.length !== colorColumnLength,
+    ) ||
+    destination.opacityLogit.length !== colorColumnLength ||
+    (destination.colorStream !== null &&
+      destination.colorStream.length !== destination.count * 4)
+  ) {
+    throw new Error("GSTile PlayCanvas color width is inconsistent");
   }
   if (
     destination.colorSh.length !== 45 ||
@@ -133,7 +151,6 @@ const validatePlayCanvasColumnRange = (
     throw new Error("GSTile PlayCanvas SH width is inconsistent");
   }
   if (
-    destination.opacityLogit.length !== destination.count ||
     destination.opacityStreams.length !== 4 ||
     destination.opacityStreams.some(
       (stream) => stream.length !== destination.count * 4,
@@ -203,7 +220,7 @@ const gsTilePlyPropertiesFromColumns = (
 /** Allocate the final column-major CPU cut consumed by PlayCanvas. */
 export const allocateGsTilePlayCanvasColumns = (
   count: number,
-  packShDuringDecode = false,
+  packing: GsTilePlayCanvasPacking = {},
 ): GsTilePlayCanvasColumns => {
   if (!Number.isSafeInteger(count) || count < 1) {
     throw new Error("GSTile PlayCanvas column count must be positive");
@@ -211,11 +228,13 @@ export const allocateGsTilePlayCanvasColumns = (
   const columns = (width: number) =>
     Array.from({ length: width }, () => new Float32Array(count));
   const position = columns(3);
-  const colorDc = columns(3);
-  const opacityLogit = new Float32Array(count);
+  const colorDc = packing.color
+    ? Array.from({ length: 3 }, () => new Float32Array(0))
+    : columns(3);
+  const opacityLogit = new Float32Array(packing.color ? 0 : count);
   const logScale = columns(3);
   const rotation = columns(4);
-  const colorSh = packShDuringDecode
+  const colorSh = packing.sh
     ? Array.from({ length: 45 }, () => new Float32Array(0))
     : columns(45);
   const opacityStreams: GsTileOpacityStreams = [
@@ -224,7 +243,8 @@ export const allocateGsTilePlayCanvasColumns = (
     new Float32Array(count * 4),
     new Float32Array(count * 4),
   ];
-  const shStreams: GsTileNativeShStreams | null = packShDuringDecode
+  const colorStream = packing.color ? new Uint16Array(count * 4) : null;
+  const shStreams: GsTileNativeShStreams | null = packing.sh
     ? [
         new Uint32Array(count * 4),
         new Uint32Array(count * 4),
@@ -245,6 +265,7 @@ export const allocateGsTilePlayCanvasColumns = (
     ...plyColumns,
     properties: gsTilePlyPropertiesFromColumns(plyColumns),
     opacityStreams,
+    colorStream,
     shStreams,
   };
 };
@@ -487,6 +508,7 @@ const decodeRecordsIntoPlayCanvasColumns = (
     colorDc,
     colorSh,
     opacityStreams,
+    colorStream,
     shStreams,
   } = destination;
   const shScratch = shStreams ? createGsTileNativeShScratch() : null;
@@ -505,9 +527,6 @@ const decodeRecordsIntoPlayCanvasColumns = (
         quantization.logScale.min[axis],
         quantization.logScale.max[axis],
       );
-      colorDc[axis][targetRecord] =
-        view.getInt16(base + 22 + axis * 2, true) *
-        quantization.colorDcScale[axis];
     }
     const w = view.getInt16(base + 12, true) / 32_767;
     const x = view.getInt16(base + 14, true) / 32_767;
@@ -518,12 +537,34 @@ const decodeRecordsIntoPlayCanvasColumns = (
     rotation[1][targetRecord] = x / quaternionLength;
     rotation[2][targetRecord] = y / quaternionLength;
     rotation[3][targetRecord] = z / quaternionLength;
-    const baseOpacity = dequantizeU16(
+    const baseOpacity = Math.fround(dequantizeU16(
       view.getUint16(base + 20, true),
       quantization.opacityLogit.min,
       quantization.opacityLogit.max,
-    );
-    opacityLogit[targetRecord] = baseOpacity;
+    ));
+    if (colorStream) {
+      packGsTileNativeColorRecord(
+        colorStream,
+        targetRecord,
+        Math.fround(
+          view.getInt16(base + 22, true) * quantization.colorDcScale[0],
+        ),
+        Math.fround(
+          view.getInt16(base + 24, true) * quantization.colorDcScale[1],
+        ),
+        Math.fround(
+          view.getInt16(base + 26, true) * quantization.colorDcScale[2],
+        ),
+        baseOpacity,
+      );
+    } else {
+      opacityLogit[targetRecord] = baseOpacity;
+      for (let axis = 0; axis < 3; axis += 1) {
+        colorDc[axis][targetRecord] =
+          view.getInt16(base + 22 + axis * 2, true) *
+          quantization.colorDcScale[axis];
+      }
+    }
     const opacityOffset = targetRecord * 4;
     const opacityScale = quantization.opacityShScale;
     opacityStreams[0][opacityOffset] = baseOpacity;
