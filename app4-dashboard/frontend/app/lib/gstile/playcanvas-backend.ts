@@ -32,6 +32,7 @@ import type { GsTileRangeScheduler } from "./range-source";
 import { selectGsTileLod } from "./lod-selection";
 import {
   calculateMergedArenaBounds,
+  mergedArenaActiveSpans,
   mergeMergedArenaBounds,
   planLinearTextureCopies,
   planMergedArenaSlots,
@@ -1729,6 +1730,36 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
   }
 
+  #copyMergedArenaNode(
+    source: PcResource,
+    columns: GsTilePlayCanvasColumns,
+    sourceOffset: number,
+    destination: PcContainer,
+    slot: MergedArenaSlot,
+  ) {
+    let sourceCursor = sourceOffset;
+    for (const span of slot.spans) {
+      this.#copyGsplatResourceRange(
+        source,
+        destination,
+        sourceCursor,
+        span.offset,
+        span.count,
+      );
+      this.#copyMergedArenaCenters(
+        columns,
+        sourceCursor,
+        destination,
+        span.offset,
+        span.count,
+      );
+      sourceCursor += span.count;
+    }
+    if (sourceCursor !== sourceOffset + slot.count) {
+      throw new Error("GSTile merged arena slot span count does not match");
+    }
+  }
+
   #setMergedArenaBounds(resource: PcResource, bounds: MergedArenaBounds) {
     resource.aabb.center.set(
       (bounds.min[0] + bounds.max[0]) * 0.5,
@@ -1751,9 +1782,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       throw new Error("PlayCanvas GSplat component is unavailable");
     }
     entity.gsplat.setActiveSplatIntervals(
-      [...slots.values()]
-        .sort((left, right) => left.offset - right.offset)
-        .map((slot) => ({ start: slot.offset, count: slot.count })),
+      mergedArenaActiveSpans(slots).map((span) => ({
+        start: span.offset,
+        count: span.count,
+      })),
     );
   }
 
@@ -1761,14 +1793,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     slots: ReadonlyMap<string, MergedArenaSlot>,
     usedSplats: number,
   ) {
-    let cursor = 0;
-    for (const slot of [...slots.values()].sort(
-      (left, right) => left.offset - right.offset,
-    )) {
-      if (slot.offset !== cursor) return false;
-      cursor += slot.count;
-    }
-    return cursor === usedSplats;
+    const spans = mergedArenaActiveSpans(slots);
+    return (
+      spans.length === 1 &&
+      spans[0].offset === 0 &&
+      spans[0].count === usedSplats
+    );
   }
 
   #createMergedArenaContainer(
@@ -2080,8 +2110,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           selectedArenaNodes,
         )
       : null;
-    const rebuildMergedArena =
-      mergedAssembly && (!this.#mergedArena || mergedPlan?.compacted === true);
+    const rebuildMergedArena = mergedAssembly && !this.#mergedArena;
     const mergedLoadNodeIds = mergedAssembly
       ? rebuildMergedArena
         ? selection.selectedNodeIds
@@ -2306,19 +2335,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
             if (sourceOffset === undefined || !slot) {
               throw new Error(`GSTile merged arena slot ${nodeId} is missing`);
             }
-            this.#copyGsplatResourceRange(
+            this.#copyMergedArenaNode(
               mergedStaging.resource,
-              container,
-              sourceOffset,
-              slot.offset,
-              slot.count,
-            );
-            this.#copyMergedArenaCenters(
               columnarCut,
               sourceOffset,
               container,
-              slot.offset,
-              slot.count,
+              slot,
             );
           }
           const contiguousArena = this.#mergedArenaSlotsAreContiguous(
@@ -2383,19 +2405,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
                   `GSTile merged arena slot ${nodeId} is missing`,
                 );
               }
-              this.#copyGsplatResourceRange(
+              this.#copyMergedArenaNode(
                 mergedStaging.resource,
-                arena.container,
-                sourceOffset,
-                slot.offset,
-                slot.count,
-              );
-              this.#copyMergedArenaCenters(
                 columnarCut,
                 sourceOffset,
                 arena.container,
-                slot.offset,
-                slot.count,
+                slot,
               );
             }
           }

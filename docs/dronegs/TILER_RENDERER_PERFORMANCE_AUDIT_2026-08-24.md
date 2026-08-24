@@ -129,7 +129,7 @@ work-buffer ciblerait le mauvais segment.
 
 | ID | Priorité | Constat et preuve | Impact | État |
 |---|---|---|---|---|
-| B1 | P0 | Le mode fidèle `merged` recharge et redécode tous les nœuds du nouveau cut ; la seule ressource résidente est `__merged__`, donc les nœuds signalés comme réutilisés ne le sont pas côté CPU/GPU. | Pause proportionnelle au cut complet, même pour une petite variation de caméra. | Confirmé, phase arène GPU à faire. |
+| B1 | P0 | Le mode fidèle `merged` rechargeait et redécodait tous les nœuds du nouveau cut ; la seule ressource résidente était `__merged__`, donc les nœuds signalés comme réutilisés ne l'étaient pas côté CPU/GPU. | Pause proportionnelle au cut complet, même pour une petite variation de caméra. | **Corrigé** : arène GPU persistante, offsets stables et allocation multi-spans des seuls nouveaux nœuds. |
 | B2 | P0 | SHA, décodage Q96 et création de ressources s'exécutent sur le thread UI. Le `setTimeout(0)` permet l'annulation entre packs mais chaque pack reste une longue tâche synchrone. | Jank d'entrée et frames manquées pendant le raffinement. | Partiellement réduit : pipeline columnar direct 1,90× et 2,28 Go transitoires évités ; Worker/WASM à faire. |
 | B3 | P0 | L'opacité directionnelle dépend de la caméra dans un `workBufferModifier`, mais les mises à jour de caméra appellent `#updateOpacityCameraUniform(false)`. Le work buffer n'est réécrit qu'après le debounce LOD. | Opacité temporairement périmée pendant la navigation, puis réupload global coûteux. | Confirmé ; déplacer l'évaluation au shader par frame ou vers un pass GPU ciblé. |
 | B4 | P1 | Le debounce LOD fixe ajoutait 650 ms après le dernier événement d'interaction. | Impression de lag avant tout fetch/décodage. | **Corrigé : 120 ms configurable**, validation stricte 0–5 000 ms. |
@@ -157,11 +157,11 @@ Acceptance : coefficients et ordre du cut identiques au chemin fusionné,
 absence de stale allocation, p95 commit et octets uploadés rapportés, mémoire
 VRAM bornée, aucune device loss sur la RTX 4070.
 
-État : **démarré** par la suppression des allocations/copies décodées
-intermédiaires. `GSplatContainer` et les intervalles du monde unifié ont été
-audités ; le profil réel montre 6,6–6,7 s de packing de ressource à remplacer.
-Le conteneur GPU PlayCanvas reste à prototyper derrière
-`GaussianRenderBackend`.
+État : **livré et mesuré**. L'arène `GSplatContainer` persistante, les
+intervalles non-octree et l'allocation multi-spans conservent les nœuds communs
+sans les redécoder, les repacker ni les déplacer. Sur la transition
+Saint-Étienne qui forçait une reconstruction totale, le temps passe de
+12,912 s à 1,764 s (7,3×).
 
 ### 2. Pipeline Worker/WASM pour SHA + Q96 + préparation de streams — impact très élevé
 
@@ -336,6 +336,11 @@ Conserver le cut complet précédent jusqu'au succès.
     publie immédiatement une frame. Cela empêche l'ancien index de lire les
     nouveaux texels lorsque `requestAnimationFrame` est ralenti et supprime une
     frame de latence de transition.
+14. Un nœud peut occuper plusieurs spans libres déterministes. Les spans des
+    nœuds résidents restent immuables, les nouveaux texels sont copiés
+    séquentiellement dans les trous, et les spans adjacents sont coalescés avant
+    de configurer le renderer. La fragmentation ne provoque plus de compaction
+    ni de reconstruction du cut complet.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -353,17 +358,28 @@ Médiane : 19,881 s, soit -1,46 % face à la médiane fusionnée précédente de
 cut final ne réutilise que 292 922 splats et le packing du staging
 `GSplatResource` reste dominant (~6,3 s).
 
-Une rotation de caméra a mis en évidence la limite suivante : le nouveau cut
-de 7 487 153 splats dispose d'assez d'espace libre total, mais pas d'un trou
-contigu assez grand. Le plan actuel compacte alors toute l'arène : 0 splat
-réutilisé, 12,912 s total, 5,022 s load et 7,876 s commit. L'optimisation
-prioritaire suivante est donc l'allocation d'un nœud sur plusieurs spans, ou
-une compaction GPU avec scratch borné, afin de conserver les ~6,6 M splats
-communs sans nouveau décodage/packing.
+Une rotation de caméra a d'abord mis en évidence une fragmentation critique :
+le nouveau cut de 7 487 153 splats disposait d'assez d'espace libre total, mais
+pas d'un trou contigu assez grand. Le plan mono-span compactait alors toute
+l'arène : 0 splat réutilisé, 12,912 s total, 5,022 s load et 7,876 s commit.
 
-La validation automatisée confirme une façade complète et un world state de
-7 435 345 splats sans erreur renderer. La comparaison visuelle humaine avec le
-PLY original reste la gate avant merge.
+Le plan multi-spans conserve exactement les ~6,6 M splats communs :
+
+| transition | total LOD | load | commit | réutilisés |
+|---|---:|---:|---:|---:|
+| rotation mono-span | 12,912 s | 5,022 s | 7,876 s | 0 |
+| rotation multi-spans, premier passage | **1,764 s** | **0,781 s** | **0,966 s** | 6,6 M |
+| retour | 0,461 s | 0,118 s | 0,340 s | 7,2 M |
+| rotation répétée | 1,410 s | 0,487 s | 0,915 s | 6,6 M |
+
+Le premier passage comparable est **7,3× plus rapide au total**, 6,4× sur le
+load et 8,2× sur le commit. Le run initial reste stable à 19,799 s pour
+7 435 345 splats : l'optimisation vise bien les transitions et ne dégrade pas
+le cold load. Huit tests couvrent texture copies, bornes, recouvrement,
+fragmentation et stabilité sur transitions répétées ; typecheck, lint et build
+production passent. La capture Chrome automatisée montre la façade complète
+dans les vues initiale et tournée, sans erreur renderer GSTile. La comparaison
+visuelle humaine avec le PLY original reste la gate avant merge de cette phase.
 
 ## Sources primaires
 
@@ -395,8 +411,8 @@ PLY original reste la gate avant merge.
 2. Répéter les essais appariés Chrome sur un corpus de caméras figé et publier
    médiane, p95, long tasks, mémoire CPU/VRAM et différences d'image.
 3. Prototyper un Worker propriétaire du cache brut, puis comparer TS et WASM.
-4. Fractionner les nœuds de l'arène persistante sur plusieurs spans libres,
-   avec invariants d'absence de recouvrement et tests de fragmentation.
+4. Instrumenter le nombre de spans, les octets réellement copiés et le temps
+   de reconstruction du manager unifié, puis figer un parcours caméra répétable.
 5. Construire un prototype external-sort Morton sur une copie immuable du PLY.
 6. Geler avec l'équipe le corpus de caméras et les seuils scientifiques avant
    toute optimisation de proxy.

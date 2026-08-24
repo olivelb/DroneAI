@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateMergedArenaBounds,
+  mergedArenaActiveSpans,
   mergeMergedArenaBounds,
   planLinearTextureCopies,
   planMergedArenaSlots,
@@ -118,7 +119,10 @@ describe("merged GSTile arena bounds", () => {
 
 const previous = (entries: Array<[string, number, number]>) =>
   new Map<string, MergedArenaSlot>(
-    entries.map(([id, offset, count]) => [id, { offset, count }]),
+    entries.map(([id, offset, count]) => [
+      id,
+      { spans: [{ offset, count }], count },
+    ]),
   );
 
 describe("merged GSTile arena slot planning", () => {
@@ -138,18 +142,16 @@ describe("merged GSTile arena slot planning", () => {
     );
 
     expect([...plan.slots]).toEqual([
-      ["a", { offset: 0, count: 3 }],
-      ["b", { offset: 7, count: 3 }],
-      ["new", { offset: 3, count: 4 }],
+      ["a", { spans: [{ offset: 0, count: 3 }], count: 3 }],
+      ["b", { spans: [{ offset: 7, count: 3 }], count: 3 }],
+      ["new", { spans: [{ offset: 3, count: 4 }], count: 4 }],
     ]);
     expect(plan.reusedNodeIds).toEqual(["a", "b"]);
     expect(plan.addedNodeIds).toEqual(["new"]);
     expect(plan.removedNodeIds).toEqual(["removed"]);
-    expect(plan.movedNodeIds).toEqual([]);
-    expect(plan.compacted).toBe(false);
   });
 
-  it("compacts explicitly when total free capacity is fragmented", () => {
+  it("splits new nodes across fragmented free spans without moving residents", () => {
     const plan = planMergedArenaSlots(
       10,
       previous([
@@ -166,13 +168,55 @@ describe("merged GSTile arena slot planning", () => {
     );
 
     expect([...plan.slots]).toEqual([
-      ["a", { offset: 0, count: 3 }],
-      ["b", { offset: 3, count: 3 }],
-      ["new", { offset: 6, count: 4 }],
+      ["a", { spans: [{ offset: 0, count: 3 }], count: 3 }],
+      ["b", { spans: [{ offset: 4, count: 3 }], count: 3 }],
+      [
+        "new",
+        {
+          spans: [
+            { offset: 3, count: 1 },
+            { offset: 7, count: 3 },
+          ],
+          count: 4,
+        },
+      ],
     ]);
-    expect(plan.compacted).toBe(true);
-    expect(plan.reusedNodeIds).toEqual(["a"]);
-    expect(plan.movedNodeIds).toEqual(["b"]);
+    expect(plan.reusedNodeIds).toEqual(["a", "b"]);
+    expect(mergedArenaActiveSpans(plan.slots)).toEqual([
+      { offset: 0, count: 10 },
+    ]);
+  });
+
+  it("preserves split residents through repeated full-capacity transitions", () => {
+    const selections = [
+      ["a", "b", "c", "d", "e"],
+      ["a", "c", "e", "f", "f"],
+      ["a", "e", "f", "f", "g"],
+      ["a", "e", "g", "h", "h"],
+    ].map((ids) => {
+      const counts = new Map<string, number>();
+      for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 3);
+      return [...counts].map(([id, count]) => ({ id, count }));
+    });
+    let slots = new Map<string, MergedArenaSlot>();
+    for (const selected of selections) {
+      const previousSlots = slots;
+      const plan = planMergedArenaSlots(15, previousSlots, selected);
+      for (const node of selected) {
+        if (previousSlots.has(node.id)) {
+          expect(plan.slots.get(node.id)).toEqual(previousSlots.get(node.id));
+        }
+      }
+      expect(mergedArenaActiveSpans(plan.slots)).toEqual([
+        { offset: 0, count: 15 },
+      ]);
+      expect(plan.usedSplats).toBe(15);
+      slots = plan.slots;
+    }
+    expect(slots.get("h")?.spans).toEqual([
+      { offset: 3, count: 3 },
+      { offset: 9, count: 3 },
+    ]);
   });
 
   it("rejects overlap, overflow, duplicate IDs and count drift", () => {
@@ -198,5 +242,23 @@ describe("merged GSTile arena slot planning", () => {
     expect(() =>
       planMergedArenaSlots(5, previous([["a", 0, 2]]), [{ id: "a", count: 3 }]),
     ).toThrow("changed record count");
+    expect(() =>
+      planMergedArenaSlots(
+        5,
+        new Map([
+          [
+            "a",
+            {
+              spans: [
+                { offset: 0, count: 1 },
+                { offset: 3, count: 1 },
+              ],
+              count: 3,
+            },
+          ],
+        ]),
+        [],
+      ),
+    ).toThrow("does not match");
   });
 });
