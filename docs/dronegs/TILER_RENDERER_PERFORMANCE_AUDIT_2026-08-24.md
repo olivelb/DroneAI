@@ -379,7 +379,8 @@ le cold load. Huit tests couvrent texture copies, bornes, recouvrement,
 fragmentation et stabilité sur transitions répétées ; typecheck, lint et build
 production passent. La capture Chrome automatisée montre la façade complète
 dans les vues initiale et tournée, sans erreur renderer GSTile. La comparaison
-visuelle humaine avec le PLY original reste la gate avant merge de cette phase.
+visuelle humaine dans Chrome a ensuite été déclarée conforme au PLY original :
+la gate perceptuelle de cette phase est passée.
 
 ## Sources primaires
 
