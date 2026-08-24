@@ -40,6 +40,7 @@ import {
   type MergedArenaSlot,
 } from "./merged-arena";
 import { packGsTileNativeTransforms } from "./native-transform";
+import { packGsTileNativeSh } from "./native-sh";
 
 type Pc = typeof import("playcanvas");
 type PcApplication = import("playcanvas").Application;
@@ -52,6 +53,9 @@ type LoadedTile = {
   gaussianCount: number;
   byteLength: number;
   resourceCreateMs: number;
+  resourceColorMs: number;
+  resourceTransformMs: number;
+  resourceShMs: number;
   streamUploadMs: number;
   sceneAttachMs: number;
 };
@@ -753,6 +757,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodSha256ServiceMs: number | null = null;
   #lodDecodeCpuMs: number | null = null;
   #lodResourceCreateMs: number | null = null;
+  #lodResourceColorMs: number | null = null;
+  #lodResourceTransformMs: number | null = null;
+  #lodResourceShMs: number | null = null;
   #lodStreamUploadMs: number | null = null;
   #lodSceneAttachMs: number | null = null;
   #lodAddedGaussians = 0;
@@ -1197,6 +1204,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodSha256ServiceMs = null;
     this.#lodDecodeCpuMs = null;
     this.#lodResourceCreateMs = null;
+    this.#lodResourceColorMs = null;
+    this.#lodResourceTransformMs = null;
+    this.#lodResourceShMs = null;
     this.#lodStreamUploadMs = null;
     this.#lodSceneAttachMs = null;
     this.#lodAddedGaussians = 0;
@@ -1509,12 +1519,22 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         properties,
       },
     ]);
+    const resourceStageMs = { color: 0, transform: 0, sh: 0 };
     const Resource =
       "properties" in tile
         ? class DroneGsMergedStagingResource extends pc.GSplatResource {
+            override updateColorData(
+              gsplatData: import("playcanvas").GSplatData,
+            ) {
+              const started = performance.now();
+              super.updateColorData(gsplatData);
+              resourceStageMs.color += performance.now() - started;
+            }
+
             override updateTransformData(
               gsplatData: import("playcanvas").GSplatData,
             ) {
+              const started = performance.now();
               const property = (name: string) => {
                 const storage = gsplatData.getProp(name);
                 if (!(storage instanceof Float32Array)) {
@@ -1553,6 +1573,46 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
                 transformA.unlock();
                 transformB.unlock();
               }
+              resourceStageMs.transform += performance.now() - started;
+            }
+
+            override updateSHData(
+              gsplatData: import("playcanvas").GSplatData,
+            ) {
+              const started = performance.now();
+              const properties = Array.from({ length: 45 }, (_, coefficient) => {
+                const storage = gsplatData.getProp(`f_rest_${coefficient}`);
+                if (!(storage instanceof Float32Array)) {
+                  throw new Error(
+                    `GSTile SH property f_rest_${coefficient} is missing`,
+                  );
+                }
+                return storage;
+              });
+              const names = [
+                "splatSH_1to3",
+                "splatSH_4to7",
+                "splatSH_8to11",
+                "splatSH_12to15",
+              ] as const;
+              const textures = names.map((name) => this.getTexture(name));
+              if (textures.some((texture) => !texture)) {
+                throw new Error("GSTile native SH3 streams are missing");
+              }
+              const streams = textures.map((texture) =>
+                texture!.lock(),
+              ) as unknown as [
+                Uint32Array,
+                Uint32Array,
+                Uint32Array,
+                Uint32Array,
+              ];
+              try {
+                packGsTileNativeSh(properties, streams);
+              } finally {
+                textures.forEach((texture) => texture!.unlock());
+              }
+              resourceStageMs.sh += performance.now() - started;
             }
           }
         : pc.GSplatResource;
@@ -1653,6 +1713,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       gaussianCount: tile.count,
       byteLength,
       resourceCreateMs,
+      resourceColorMs: resourceStageMs.color,
+      resourceTransformMs: resourceStageMs.transform,
+      resourceShMs: resourceStageMs.sh,
       streamUploadMs,
       sceneAttachMs,
     };
@@ -2294,6 +2357,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       );
       const commitStarted = performance.now();
       let resourceCreateMs = 0;
+      let resourceColorMs = 0;
+      let resourceTransformMs = 0;
+      let resourceShMs = 0;
       let streamUploadMs = 0;
       let sceneAttachMs = 0;
 
@@ -2359,6 +2425,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
             false,
           );
           resourceCreateMs += mergedStaging.resourceCreateMs;
+          resourceColorMs += mergedStaging.resourceColorMs;
+          resourceTransformMs += mergedStaging.resourceTransformMs;
+          resourceShMs += mergedStaging.resourceShMs;
           streamUploadMs += mergedStaging.streamUploadMs;
           sceneAttachMs += mergedStaging.sceneAttachMs;
         }
@@ -2433,6 +2502,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
             gaussianCount: mergedPlan.usedSplats,
             byteLength,
             resourceCreateMs: 0,
+            resourceColorMs: 0,
+            resourceTransformMs: 0,
+            resourceShMs: 0,
             streamUploadMs: 0,
             sceneAttachMs: 0,
           };
@@ -2536,6 +2608,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
             this.#gpuAssembly !== "incremental",
           );
           resourceCreateMs += loaded.resourceCreateMs;
+          resourceColorMs += loaded.resourceColorMs;
+          resourceTransformMs += loaded.resourceTransformMs;
+          resourceShMs += loaded.resourceShMs;
           streamUploadMs += loaded.streamUploadMs;
           sceneAttachMs += loaded.sceneAttachMs;
           loaded.entity.enabled = true;
@@ -2544,6 +2619,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         }
       }
       this.#lodResourceCreateMs = resourceCreateMs;
+      this.#lodResourceColorMs = resourceColorMs;
+      this.#lodResourceTransformMs = resourceTransformMs;
+      this.#lodResourceShMs = resourceShMs;
       this.#lodStreamUploadMs = streamUploadMs;
       this.#lodSceneAttachMs = sceneAttachMs;
       this.#lodSelectionKey = "";
@@ -2769,6 +2847,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         lodSha256ServiceMs: this.#lodSha256ServiceMs,
         lodDecodeCpuMs: this.#lodDecodeCpuMs,
         lodResourceCreateMs: this.#lodResourceCreateMs,
+        lodResourceColorMs: this.#lodResourceColorMs,
+        lodResourceTransformMs: this.#lodResourceTransformMs,
+        lodResourceShMs: this.#lodResourceShMs,
         lodStreamUploadMs: this.#lodStreamUploadMs,
         lodSceneAttachMs: this.#lodSceneAttachMs,
         lodAddedGaussians: this.#lodAddedGaussians,
@@ -2841,6 +2922,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       lodSha256ServiceMs: this.#lodSha256ServiceMs,
       lodDecodeCpuMs: this.#lodDecodeCpuMs,
       lodResourceCreateMs: this.#lodResourceCreateMs,
+      lodResourceColorMs: this.#lodResourceColorMs,
+      lodResourceTransformMs: this.#lodResourceTransformMs,
+      lodResourceShMs: this.#lodResourceShMs,
       lodStreamUploadMs: this.#lodStreamUploadMs,
       lodSceneAttachMs: this.#lodSceneAttachMs,
       lodAddedGaussians: this.#lodAddedGaussians,
