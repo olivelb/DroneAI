@@ -1,4 +1,5 @@
 import { bench, describe } from "vitest";
+import { FloatPacking } from "playcanvas";
 import type { GsTileQuantization } from "./contracts";
 import {
   allocateDecodedGsTile,
@@ -11,6 +12,7 @@ import {
   gsTileToPlyProperties,
   type DecodedGsTile,
 } from "./decode";
+import { packGsTileNativeTransforms } from "./native-transform";
 
 const recordCount = 65_536;
 const recordBytes = 96;
@@ -148,6 +150,65 @@ describe("GSTile merged PlayCanvas final CPU pipeline", () => {
       quantization,
       packedColumnDestination,
       0,
+    );
+  });
+});
+
+const transformCenterStream = new Float32Array(recordCount * 3);
+const transformLogScale = Array.from(
+  { length: 3 },
+  (_, axis) =>
+    Float32Array.from(
+      { length: recordCount },
+      (_, splat) => ((splat * (axis + 3)) % 1_024) / 128 - 6,
+    ),
+);
+const transformRotation = Array.from(
+  { length: 4 },
+  (_, axis) =>
+    Float32Array.from(
+      { length: recordCount },
+      (_, splat) => ((splat * (axis + 5)) % 2_047) / 1_024 - 1,
+    ),
+);
+const transformA = new Uint32Array(recordCount * 4);
+const transformB = new Uint16Array(recordCount * 4);
+
+describe("GSTile native transform packing", () => {
+  bench("PlayCanvas float-to-half conversion fallback", () => {
+    packGsTileNativeTransforms(
+      {
+        position: [
+          new Float32Array(0),
+          new Float32Array(0),
+          new Float32Array(0),
+        ],
+        centerStream: transformCenterStream,
+        logScale: transformLogScale,
+        rotation: transformRotation,
+      },
+      transformA,
+      transformB,
+      FloatPacking.float2Half,
+      null,
+    );
+  });
+
+  bench("native Float16Array conversion", () => {
+    packGsTileNativeTransforms(
+      {
+        position: [
+          new Float32Array(0),
+          new Float32Array(0),
+          new Float32Array(0),
+        ],
+        centerStream: transformCenterStream,
+        logScale: transformLogScale,
+        rotation: transformRotation,
+      },
+      transformA,
+      transformB,
+      FloatPacking.float2Half,
     );
   });
 });
