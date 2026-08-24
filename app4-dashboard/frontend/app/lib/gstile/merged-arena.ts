@@ -3,8 +3,13 @@ export type MergedArenaNode = {
   count: number;
 };
 
-export type MergedArenaSlot = {
+export type MergedArenaSpan = {
   offset: number;
+  count: number;
+};
+
+export type MergedArenaSlot = {
+  spans: MergedArenaSpan[];
   count: number;
 };
 
@@ -12,9 +17,7 @@ export type MergedArenaPlan = {
   slots: Map<string, MergedArenaSlot>;
   addedNodeIds: string[];
   reusedNodeIds: string[];
-  movedNodeIds: string[];
   removedNodeIds: string[];
-  compacted: boolean;
   usedSplats: number;
 };
 
@@ -176,46 +179,72 @@ const validatePreviousSlots = (
   previous: ReadonlyMap<string, MergedArenaSlot>,
   capacity: number,
 ) => {
-  const ordered = [...previous].sort(
+  const ordered: Array<readonly [string, MergedArenaSpan]> = [];
+  for (const [id, slot] of previous) {
+    if (!id) throw new Error("GSTile arena node ID must not be empty");
+    validatePositiveSafeInteger(slot.count, `GSTile arena slot ${id} count`);
+    if (slot.spans.length === 0) {
+      throw new Error(`GSTile arena slot ${id} must contain a span`);
+    }
+    let spanCount = 0;
+    for (const span of slot.spans) {
+      validatePositiveSafeInteger(
+        span.count,
+        `GSTile arena slot ${id} span count`,
+      );
+      if (!Number.isSafeInteger(span.offset) || span.offset < 0) {
+        throw new Error("GSTile arena spans have an invalid offset");
+      }
+      spanCount += span.count;
+      ordered.push([id, span]);
+    }
+    if (!Number.isSafeInteger(spanCount) || spanCount !== slot.count) {
+      throw new Error(`GSTile arena slot ${id} span count does not match`);
+    }
+  }
+  ordered.sort(
     ([leftId, left], [rightId, right]) =>
       left.offset - right.offset || leftId.localeCompare(rightId),
   );
   let end = 0;
-  for (const [id, slot] of ordered) {
-    if (!id) throw new Error("GSTile arena node ID must not be empty");
-    validatePositiveSafeInteger(slot.count, `GSTile arena slot ${id} count`);
-    if (!Number.isSafeInteger(slot.offset) || slot.offset < end) {
-      throw new Error("GSTile arena slots overlap or have an invalid offset");
+  for (const [, span] of ordered) {
+    if (span.offset < end) {
+      throw new Error("GSTile arena spans overlap");
     }
-    end = slot.offset + slot.count;
+    end = span.offset + span.count;
     if (!Number.isSafeInteger(end) || end > capacity) {
-      throw new Error("GSTile arena slot escapes its capacity");
+      throw new Error("GSTile arena span escapes its capacity");
     }
   }
 };
 
-const compactPlan = (
-  selected: readonly MergedArenaNode[],
-  capacity: number,
-) => {
-  const slots = new Map<string, MergedArenaSlot>();
-  let offset = 0;
-  for (const node of selected) {
-    slots.set(node.id, { offset, count: node.count });
-    offset += node.count;
+/** Flatten and coalesce the occupied arena spans for PlayCanvas intervals. */
+export const mergedArenaActiveSpans = (
+  slots: ReadonlyMap<string, MergedArenaSlot>,
+): MergedArenaSpan[] => {
+  const ordered = [...slots.values()]
+    .flatMap((slot) => slot.spans)
+    .sort((left, right) => left.offset - right.offset);
+  const merged: MergedArenaSpan[] = [];
+  for (const span of ordered) {
+    const previous = merged.at(-1);
+    if (!previous || previous.offset + previous.count < span.offset) {
+      merged.push({ ...span });
+    } else if (previous.offset + previous.count === span.offset) {
+      previous.count += span.count;
+    } else {
+      throw new Error("GSTile arena spans overlap");
+    }
   }
-  if (offset > capacity) {
-    throw new Error("GSTile merged arena target exceeds its capacity");
-  }
-  return slots;
+  return merged;
 };
 
 /**
  * Plan stable slots for one monolithic GPU arena.
  *
- * Existing offsets are retained whenever first-fit can place every new node.
- * Fragmentation triggers one explicit deterministic compaction instead of
- * silently overflowing or producing overlapping GPU copy ranges.
+ * Existing spans are always retained. New nodes can consume multiple free
+ * spans, avoiding a full GPU arena rebuild when total capacity is sufficient
+ * but no single free range can hold the node.
  */
 export const planMergedArenaSlots = (
   capacity: number,
@@ -253,57 +282,63 @@ export const planMergedArenaSlots = (
       (entry): entry is readonly [string, MergedArenaSlot] =>
         entry[1] !== undefined,
     );
-  const occupied = retained.sort(
-    ([leftId, left], [rightId, right]) =>
-      left.offset - right.offset || leftId.localeCompare(rightId),
-  );
-  const free: MergedArenaSlot[] = [];
+  const occupied = retained
+    .flatMap(([id, slot]) => slot.spans.map((span) => [id, span] as const))
+    .sort(
+      ([leftId, left], [rightId, right]) =>
+        left.offset - right.offset || leftId.localeCompare(rightId),
+    );
+  const free: MergedArenaSpan[] = [];
   let cursor = 0;
-  for (const [, slot] of occupied) {
-    if (slot.offset > cursor) {
-      free.push({ offset: cursor, count: slot.offset - cursor });
+  for (const [, span] of occupied) {
+    if (span.offset > cursor) {
+      free.push({ offset: cursor, count: span.offset - cursor });
     }
-    cursor = slot.offset + slot.count;
+    cursor = span.offset + span.count;
   }
   if (cursor < capacity)
     free.push({ offset: cursor, count: capacity - cursor });
 
-  let compacted = false;
-  let slots = new Map(retained);
+  const slots = new Map<string, MergedArenaSlot>(
+    retained.map(([id, slot]) => [
+      id,
+      { count: slot.count, spans: slot.spans.map((span) => ({ ...span })) },
+    ]),
+  );
   for (const node of selected) {
     if (slots.has(node.id)) continue;
-    const freeIndex = free.findIndex((slot) => slot.count >= node.count);
-    if (freeIndex < 0) {
-      compacted = true;
-      slots = compactPlan(selected, capacity);
-      break;
+    const spans: MergedArenaSpan[] = [];
+    let remaining = node.count;
+    while (remaining > 0) {
+      const range = free[0];
+      if (!range) {
+        throw new Error("GSTile merged arena free-space invariant failed");
+      }
+      const count = Math.min(remaining, range.count);
+      spans.push({ offset: range.offset, count });
+      range.offset += count;
+      range.count -= count;
+      remaining -= count;
+      if (range.count === 0) free.shift();
     }
-    const range = free[freeIndex];
-    slots.set(node.id, { offset: range.offset, count: node.count });
-    range.offset += node.count;
-    range.count -= node.count;
-    if (range.count === 0) free.splice(freeIndex, 1);
+    slots.set(node.id, { spans, count: node.count });
   }
 
   const reusedNodeIds: string[] = [];
-  const movedNodeIds: string[] = [];
   const addedNodeIds: string[] = [];
   for (const node of selected) {
     const old = previous.get(node.id);
     const next = slots.get(node.id);
     if (!next) throw new Error(`GSTile arena slot ${node.id} is missing`);
     if (!old) addedNodeIds.push(node.id);
-    else if (old.offset === next.offset) reusedNodeIds.push(node.id);
-    else movedNodeIds.push(node.id);
+    else reusedNodeIds.push(node.id);
   }
 
   return {
     slots,
     addedNodeIds,
     reusedNodeIds,
-    movedNodeIds,
     removedNodeIds: [...previous.keys()].filter((id) => !selectedIds.has(id)),
-    compacted,
     usedSplats,
   };
 };
