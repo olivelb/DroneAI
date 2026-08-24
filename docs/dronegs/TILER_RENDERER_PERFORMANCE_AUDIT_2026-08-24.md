@@ -369,6 +369,10 @@ Conserver le cut complet précédent jusqu'au succès.
     SH3. Les 45 propriétés PLY restent présentes sous forme de marqueurs vides
     pour annoncer les trois bandes à PlayCanvas, tandis que quatre streams
     RGBA32U finaux remplacent les 45 colonnes float32 temporaires.
+20. Le même chemin fusionne la conversion des trois couleurs DC et de
+    l'opacité logit vers le stream `splatColor` RGBA16F. Les quatre propriétés
+    PLY restent présentes comme marqueurs de schéma, mais le constructeur de
+    ressource ne fait plus qu'une copie linéaire du stream final.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -517,6 +521,29 @@ splats réutilisés. La suite complète passe avec 26 fichiers et 148 tests,
 ainsi que typecheck, lint et build production. Le contrôle visuel humain dans
 Chrome est déclaré conforme au PLY original.
 
+### Qualification du pipeline Q96→RGBA16F fusionné — Saint-Étienne v4c
+
+La conversion reproduit exactement les opérations PlayCanvas 2.21.4 :
+`DC × 0,28209479177387814 + 0,5`, sigmoïde du logit d'opacité, puis conversion
+float32→float16. Un test différentiel compare mot pour mot 65 536 jeux de
+valeurs pseudo-aléatoires au moteur, et un second test compare le décodage Q96
+fusionné au chemin de référence sur 4 096 records. Le handoff CPU passe de 184
+à 176 octets par splat, soit environ **59 MiB économisés** sur 7,4 M splats.
+
+Trois runs Chrome froids du même cut donnent :
+
+| variante | médiane couleur | médiane ressource | médiane commit | médiane LOD |
+|---|---:|---:|---:|---:|
+| Q96→SH3 fusionné | 0,304 s | 1,728 s | 2,493 s | 15,227 s |
+| Q96→SH3 + RGBA16F fusionnés | **0,036 s** | **1,408 s** | **2,074 s** | **14,095 s** |
+
+Le gain médian atteint **−88,2 % sur la couleur**, **−18,5 % sur la
+ressource**, **−16,8 % sur le commit** et **−7,4 % sur le LOD total**. Une
+transition retour avec 7,2 M splats réutilisés mesure 310 ms au total et
+168 ms de commit. La suite complète passe avec 27 fichiers et 150 tests,
+ainsi que typecheck, lint et build production. Le contrôle visuel humain dans
+Chrome est déclaré conforme au PLY original.
+
 ## Sources primaires
 
 - WebSplatter, papier et code officiel : https://arxiv.org/abs/2602.03207 et
@@ -546,9 +573,11 @@ Chrome est déclaré conforme au PLY original.
 1. Ajouter télémétrie fetch/SHA/decode/columnar/upload/sort/raster et long-task.
 2. Répéter les essais appariés Chrome sur un corpus de caméras figé et publier
    médiane, p95, long tasks, mémoire CPU/VRAM et différences d'image.
-3. Prototyper un décodage Q96→streams packés en un seul parcours, puis comparer
-   TypeScript, WASM et PlayCanvas. Un Worker ne sera ajouté que s'il possède le
-   cache/destination ou utilise une mémoire partagée sans copie géante.
+3. Étendre le décodage Q96→streams packés aux transformations seulement si le
+   calcul des centres, AABB et distances de tri peut conserver une source CPU
+   compacte sans second parcours. Comparer ensuite TypeScript, WASM et
+   PlayCanvas. Un Worker ne sera ajouté que s'il possède le cache/destination
+   ou utilise une mémoire partagée sans copie géante.
 4. Instrumenter le nombre de spans, les octets réellement copiés et le temps
    de reconstruction du manager unifié, puis figer un parcours caméra répétable.
 5. Construire un prototype external-sort Morton sur une copie immuable du PLY.
