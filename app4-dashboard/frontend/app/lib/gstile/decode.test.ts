@@ -13,6 +13,7 @@ import {
   gsTileToPlyProperties,
   mergeDecodedGsTiles,
 } from "./decode";
+import { packGsTileNativeSh } from "./native-sh";
 
 const quantization: GsTileQuantization = {
   position: { min: [10, 20, 30], max: [20, 40, 60] },
@@ -288,6 +289,44 @@ describe("GSTile pack decoder", () => {
     });
   });
 
+  it("packs authenticated Q96 SH directly into exact PlayCanvas streams", () => {
+    const pack = createPack();
+    const decoded = decodeGsTilePack(pack, quantization);
+    const referenceProperties = gsTileToPlyProperties(decoded);
+    const referenceSh = referenceProperties
+      .slice(-45)
+      .map((property) => property.storage);
+    const expected = [0, 1, 2, 3].map(
+      () => new Uint32Array(8),
+    ) as [Uint32Array, Uint32Array, Uint32Array, Uint32Array];
+    packGsTileNativeSh(referenceSh, [
+      expected[0].subarray(4),
+      expected[1].subarray(4),
+      expected[2].subarray(4),
+      expected[3].subarray(4),
+    ]);
+    const destination = allocateGsTilePlayCanvasColumns(2, true);
+
+    decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
+      pack,
+      32,
+      96,
+      1,
+      quantization,
+      destination,
+      1,
+    );
+
+    expect(destination.shStreams).not.toBeNull();
+    destination.shStreams?.forEach((stream, index) => {
+      expect(stream).toEqual(expected[index]);
+    });
+    expect(destination.colorSh).toHaveLength(45);
+    expect(destination.colorSh.every((column) => column.length === 0)).toBe(
+      true,
+    );
+  });
+
   it("halves peak decoded CPU storage for the merged PlayCanvas handoff", () => {
     const count = 3;
     const decoded = allocateDecodedGsTile(count);
@@ -314,6 +353,26 @@ describe("GSTile pack decoder", () => {
     expect(decodedBytes).toBe(count * 304);
     expect(columnBytes).toBe(count * 300);
     expect(decodedBytes + columnBytes).toBe(count * 604);
+  });
+
+  it("reduces fused SH handoff storage to 184 bytes per splat", () => {
+    const count = 3;
+    const columns = allocateGsTilePlayCanvasColumns(count, true);
+    const bytes =
+      columns.properties.reduce(
+        (total, property) => total + property.storage.byteLength,
+        0,
+      ) +
+      columns.opacityStreams.reduce(
+        (total, stream) => total + stream.byteLength,
+        0,
+      ) +
+      (columns.shStreams?.reduce(
+        (total, stream) => total + stream.byteLength,
+        0,
+      ) ?? 0);
+
+    expect(bytes).toBe(count * 184);
   });
 
   it("rejects a direct decode outside the preallocated cut", () => {
