@@ -9,6 +9,7 @@ import {
   gstileOpacityMode,
   gstileSortMode,
   gstileLodSelectionKey,
+  gstileLodUpdateDelayMilliseconds,
   gstileTransformPrecision,
   gstileVerticalFovDegrees,
   lodTransitionCounts,
@@ -70,6 +71,19 @@ describe("GSTile LOD selection identity", () => {
     expect(gstileLodSelectionKey(["r0", "r10"])).not.toBe(
       gstileLodSelectionKey(["r0", "r11"]),
     );
+  });
+});
+
+describe("GSTile LOD update delay", () => {
+  it("starts refinement promptly after interaction settles", () => {
+    expect(gstileLodUpdateDelayMilliseconds(undefined)).toBe(120);
+    expect(gstileLodUpdateDelayMilliseconds(0)).toBe(0);
+  });
+
+  it("rejects invalid delays instead of hiding configuration errors", () => {
+    expect(() => gstileLodUpdateDelayMilliseconds(-1)).toThrow(/0 to 5000/);
+    expect(() => gstileLodUpdateDelayMilliseconds(5_001)).toThrow(/0 to 5000/);
+    expect(() => gstileLodUpdateDelayMilliseconds(1.5)).toThrow(/0 to 5000/);
   });
 });
 

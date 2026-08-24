@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { GsTileQuantization } from "./contracts";
 import {
   allocateDecodedGsTile,
+  allocateGsTilePlayCanvasColumns,
   copyDecodedGsTile,
   crc32,
   decodeGsTilePack,
   decodeSha256VerifiedGsTilePackTile,
+  decodeSha256VerifiedGsTilePackTileInto,
+  decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns,
   gsTileOpacityStreams,
   gsTileToPlyProperties,
   mergeDecodedGsTiles,
@@ -165,6 +168,121 @@ describe("GSTile pack decoder", () => {
     expect(Array.from(destination.sourceId)).toEqual(
       Array.from(reference.sourceId),
     );
+  });
+
+  it("decodes authenticated tiles directly into a preallocated cut", () => {
+    const pack = createPack();
+    const decoded = decodeGsTilePack(pack, quantization);
+    const destination = allocateDecodedGsTile(2);
+
+    decodeSha256VerifiedGsTilePackTileInto(
+      pack,
+      32,
+      96,
+      1,
+      quantization,
+      destination,
+      1,
+    );
+
+    expect(Array.from(destination.position.slice(3))).toEqual(
+      Array.from(decoded.position),
+    );
+    expect(Array.from(destination.colorSh.slice(45))).toEqual(
+      Array.from(decoded.colorSh),
+    );
+    expect(destination.sourceId[1]).toBe(decoded.sourceId[0]);
+  });
+
+  it("decodes authenticated tiles directly into the exact PlayCanvas columns", () => {
+    const pack = createPack();
+    const decoded = decodeGsTilePack(pack, quantization);
+    const referenceProperties = gsTileToPlyProperties(decoded);
+    const referenceOpacity = gsTileOpacityStreams(decoded);
+    const destination = allocateGsTilePlayCanvasColumns(2);
+
+    decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
+      pack,
+      32,
+      96,
+      1,
+      quantization,
+      destination,
+      1,
+    );
+
+    expect(destination.properties.map(({ name }) => name)).toEqual(
+      referenceProperties.map(({ name }) => name),
+    );
+    destination.properties.forEach((property, index) => {
+      expect(property.storage[0]).toBe(0);
+      expect(property.storage[1]).toBe(
+        referenceProperties[index].storage[0],
+      );
+    });
+    destination.opacityStreams.forEach((stream, index) => {
+      expect(Array.from(stream.slice(0, 4))).toEqual([0, 0, 0, 0]);
+      expect(Array.from(stream.slice(4, 8))).toEqual(
+        Array.from(referenceOpacity[index]),
+      );
+    });
+    expect("sourceId" in destination).toBe(false);
+  });
+
+  it("halves peak decoded CPU storage for the merged PlayCanvas handoff", () => {
+    const count = 3;
+    const decoded = allocateDecodedGsTile(count);
+    const columns = allocateGsTilePlayCanvasColumns(count);
+    const decodedBytes =
+      decoded.position.byteLength +
+      decoded.logScale.byteLength +
+      decoded.rotation.byteLength +
+      decoded.opacityLogit.byteLength +
+      decoded.colorDc.byteLength +
+      decoded.colorSh.byteLength +
+      decoded.opacitySh.byteLength +
+      decoded.sourceId.byteLength;
+    const columnBytes =
+      columns.properties.reduce(
+        (total, property) => total + property.storage.byteLength,
+        0,
+      ) +
+      columns.opacityStreams.reduce(
+        (total, stream) => total + stream.byteLength,
+        0,
+      );
+
+    expect(decodedBytes).toBe(count * 304);
+    expect(columnBytes).toBe(count * 300);
+    expect(decodedBytes + columnBytes).toBe(count * 604);
+  });
+
+  it("rejects a direct decode outside the preallocated cut", () => {
+    expect(() =>
+      decodeSha256VerifiedGsTilePackTileInto(
+        createPack(),
+        32,
+        96,
+        1,
+        quantization,
+        allocateDecodedGsTile(1),
+        1,
+      ),
+    ).toThrow("escapes its destination");
+  });
+
+  it("rejects a columnar decode outside the preallocated cut", () => {
+    expect(() =>
+      decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
+        createPack(),
+        32,
+        96,
+        1,
+        quantization,
+        allocateGsTilePlayCanvasColumns(1),
+        1,
+      ),
+    ).toThrow("escapes its destination");
   });
 
   it("rejects a decoded copy outside the preallocated cut", () => {

@@ -155,10 +155,29 @@ def _chunks(
 
 
 def _bounds(records: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    xyz = np.column_stack((records["x"], records["y"], records["z"])).astype(np.float64, copy=False)
-    if not np.all(np.isfinite(xyz)):
+    axes = tuple(np.asarray(records[name]) for name in ("x", "y", "z"))
+    if not all(np.all(np.isfinite(axis)) for axis in axes):
         raise ValueError("PLY contains non-finite Gaussian positions")
-    return xyz.min(axis=0), xyz.max(axis=0)
+    # Avoid materializing an N x 3 float64 matrix for every chunk at every
+    # hierarchy depth. The three strided reductions retain the exact bounds
+    # while keeping peak scratch memory independent of the chunk population.
+    return (
+        np.asarray([axis.min() for axis in axes], dtype=np.float64),
+        np.asarray([axis.max() for axis in axes], dtype=np.float64),
+    )
+
+
+def _copy_record_prefix(source: np.ndarray, destination: np.ndarray) -> None:
+    """Copy the common structured-record prefix with one contiguous transfer."""
+
+    if source.shape != destination.shape or source.ndim != 1:
+        raise ValueError("GSTile record copies require matching one-dimensional arrays")
+    prefix_bytes = min(source.dtype.itemsize, destination.dtype.itemsize)
+    source_bytes = source.view(np.uint8).reshape(source.shape[0], source.dtype.itemsize)
+    destination_bytes = destination.view(np.uint8).reshape(
+        destination.shape[0], destination.dtype.itemsize
+    )
+    destination_bytes[:, :prefix_bytes] = source_bytes[:, :prefix_bytes]
 
 
 def _minhash_keys(source_ids: np.ndarray) -> np.ndarray:
@@ -784,8 +803,7 @@ def _create_root_work_file(
                 raise ValueError("PLY payload ended before its declared vertex count")
             digest.update(memoryview(records).cast("B"))
             working = np.empty(count, dtype=dtype)
-            for name in layout.dtype.names or ():
-                working[name] = records[name]
+            _copy_record_prefix(records, working)
             working["source_id"] = np.arange(source_id, source_id + count, dtype="<u8")
             source_id += count
             filtered = _invisible_giant_mask(
@@ -952,8 +970,7 @@ class _GsTileTreeBuilder:
         node_id: str,
     ) -> tuple[dict[str, Any], int]:
         ply_records = np.empty(records.shape[0], dtype=self.layout.dtype)
-        for name in self.layout.dtype.names or ():
-            ply_records[name] = records[name]
+        _copy_record_prefix(records, ply_records)
         relative = Path("packs") / f"{pack_id}.gst"
         pack, errors = write_pack_atomic(
             self.bundle_tmp / relative,

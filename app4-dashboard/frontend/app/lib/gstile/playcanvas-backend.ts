@@ -15,13 +15,14 @@ import {
 } from "./contracts";
 import { resolveGsTilePackUrl } from "./contracts";
 import {
-  allocateDecodedGsTile,
-  copyDecodedGsTile,
+  allocateGsTilePlayCanvasColumns,
   decodeGsTilePackTile,
   decodeSha256VerifiedGsTilePackTile,
+  decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns,
   gsTileOpacityStreams,
   gsTileToPlyProperties,
   type DecodedGsTile,
+  type GsTilePlayCanvasColumns,
 } from "./decode";
 import {
   DRONEGS_OPACITY_MODIFIER_GLSL,
@@ -39,6 +40,14 @@ type LoadedTile = {
   resource: PcResource;
   gaussianCount: number;
   byteLength: number;
+  resourceCreateMs: number;
+  streamUploadMs: number;
+  sceneAttachMs: number;
+};
+type LodLoadTimings = {
+  fetchServiceMs: number;
+  sha256ServiceMs: number;
+  decodeCpuMs: number;
 };
 type PreparedTile = {
   pc: Pc;
@@ -264,6 +273,7 @@ export type PlayCanvasResidentBackendOptions = {
   referencePlyConstructionMode?: "loader" | "manual";
   debugTiles?: "off" | "lod" | "id";
   gpuAssembly?: GsTileGpuAssembly;
+  lodUpdateDelayMilliseconds?: number;
 };
 
 /** Keep the exact monolithic renderer as the safe production default. */
@@ -305,6 +315,18 @@ export const gstileVerticalFovDegrees = (
   }
   const value = typeof requested === "number" ? requested : Number(requested);
   return Number.isFinite(value) ? Math.min(Math.max(value, 20), 80) : 42;
+};
+
+const DEFAULT_LOD_UPDATE_DELAY_MILLISECONDS = 120;
+
+export const gstileLodUpdateDelayMilliseconds = (
+  requested: number | null | undefined,
+) => {
+  const value = requested ?? DEFAULT_LOD_UPDATE_DELAY_MILLISECONDS;
+  if (!Number.isSafeInteger(value) || value < 0 || value > 5_000) {
+    throw new Error("lodUpdateDelayMilliseconds must be an integer from 0 to 5000");
+  }
+  return value;
 };
 
 /** Match PlayCanvas' validated PLY loader unless float32 streams are explicit. */
@@ -650,6 +672,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   readonly #referencePlyConstructionMode: "loader" | "manual";
   readonly #debugTiles: DebugTileMode;
   readonly #gpuAssembly: GsTileGpuAssembly;
+  readonly #lodUpdateDelayMilliseconds: number;
   #pc: Pc | null = null;
   #app: PcApplication | null = null;
   #camera: PcEntity | null = null;
@@ -707,6 +730,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodTotalMs: number | null = null;
   #lodLoadMs: number | null = null;
   #lodCommitMs: number | null = null;
+  #lodFetchServiceMs: number | null = null;
+  #lodSha256ServiceMs: number | null = null;
+  #lodDecodeCpuMs: number | null = null;
+  #lodResourceCreateMs: number | null = null;
+  #lodStreamUploadMs: number | null = null;
+  #lodSceneAttachMs: number | null = null;
   #lodAddedGaussians = 0;
   #lodRemovedGaussians = 0;
   #lodReusedGaussians = 0;
@@ -751,6 +780,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     // unified multi-resource path can retain stale allocation data across LOD
     // replacements, which presents as tile-aligned oversized/blurry splats.
     this.#gpuAssembly = gstileGpuAssembly(options.gpuAssembly);
+    this.#lodUpdateDelayMilliseconds = gstileLodUpdateDelayMilliseconds(
+      options.lodUpdateDelayMilliseconds,
+    );
     if (
       !Number.isSafeInteger(this.#referencePlyParts) ||
       this.#referencePlyParts < 1 ||
@@ -1133,6 +1165,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodTotalMs = null;
     this.#lodLoadMs = null;
     this.#lodCommitMs = null;
+    this.#lodFetchServiceMs = null;
+    this.#lodSha256ServiceMs = null;
+    this.#lodDecodeCpuMs = null;
+    this.#lodResourceCreateMs = null;
+    this.#lodStreamUploadMs = null;
+    this.#lodSceneAttachMs = null;
     this.#lodAddedGaussians = 0;
     this.#lodRemovedGaussians = 0;
     this.#lodReusedGaussians = 0;
@@ -1426,21 +1464,26 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #createTileResource(
     pc: Pc,
     app: PcApplication,
-    tile: DecodedGsTile,
+    tile: DecodedGsTile | GsTilePlayCanvasColumns,
     origin: Vec3,
     node: GsTileNode,
     enabled: boolean,
     byteLength = 0,
     useManifestRenderBounds = true,
   ): LoadedTile {
+    const resourceStarted = performance.now();
+    const properties =
+      "properties" in tile ? tile.properties : gsTileToPlyProperties(tile);
     const data = new pc.GSplatData([
       {
         name: "vertex",
         count: tile.count,
-        properties: gsTileToPlyProperties(tile),
+        properties,
       },
     ]);
     const resource = new pc.GSplatResource(app.graphicsDevice, data);
+    const resourceCreateMs = performance.now() - resourceStarted;
+    const streamUploadStarted = performance.now();
     if (useManifestRenderBounds) {
       // Individual GSTile resources need the producer's conservative support
       // for interval culling. A merged cut is deliberately different: it must
@@ -1475,18 +1518,42 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       const scale = resource.getTexture(FULL_SCALE_STREAM);
       if (!rotation || !scale)
         throw new Error("PlayCanvas did not allocate full transform streams");
-      (rotation.lock() as Float32Array).set(tile.rotation);
+      const fullRotation = rotation.lock() as Float32Array;
+      if ("properties" in tile) {
+        for (let record = 0; record < tile.count; record += 1) {
+          for (let component = 0; component < 4; component += 1) {
+            fullRotation[record * 4 + component] =
+              tile.rotation[component][record];
+          }
+        }
+      } else {
+        fullRotation.set(tile.rotation);
+      }
       rotation.unlock();
       const linearScale = scale.lock() as Float32Array;
-      for (let record = 0; record < tile.count; record += 1) {
-        for (let axis = 0; axis < 3; axis += 1)
-          linearScale[record * 4 + axis] = Math.exp(
-            tile.logScale[record * 3 + axis],
-          );
+      if ("properties" in tile) {
+        for (let record = 0; record < tile.count; record += 1) {
+          for (let axis = 0; axis < 3; axis += 1) {
+            linearScale[record * 4 + axis] = Math.exp(
+              tile.logScale[axis][record],
+            );
+          }
+        }
+      } else {
+        for (let record = 0; record < tile.count; record += 1) {
+          for (let axis = 0; axis < 3; axis += 1) {
+            linearScale[record * 4 + axis] = Math.exp(
+              tile.logScale[record * 3 + axis],
+            );
+          }
+        }
       }
       scale.unlock();
     }
-    const opacityStreams = gsTileOpacityStreams(tile);
+    const opacityStreams =
+      "properties" in tile
+        ? tile.opacityStreams
+        : gsTileOpacityStreams(tile);
     OPACITY_STREAM_NAMES.forEach((name, index) => {
       const texture = resource.getTexture(name);
       if (!texture) throw new Error(`PlayCanvas did not allocate ${name}`);
@@ -1494,7 +1561,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       destination.set(opacityStreams[index]);
       texture.unlock();
     });
+    const streamUploadMs = performance.now() - streamUploadStarted;
 
+    const sceneAttachStarted = performance.now();
     const entity = new pc.Entity(`GSTile ${node.id}`);
     entity.enabled = enabled;
     entity.setPosition(-origin[0], -origin[1], -origin[2]);
@@ -1561,11 +1630,15 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
     app.root.addChild(entity);
     releasePlyPropertyStorage(data);
+    const sceneAttachMs = performance.now() - sceneAttachStarted;
     return {
       entity,
       resource,
       gaussianCount: tile.count,
       byteLength,
+      resourceCreateMs,
+      streamUploadMs,
+      sceneAttachMs,
     };
   }
 
@@ -1644,10 +1717,11 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     });
   }
 
-  async #loadLodTile(
+  async #fetchVerifiedLodTile(
     node: GsTileNode,
     signal: AbortSignal,
-  ): Promise<PreparedTile> {
+    timings: LodLoadTimings,
+  ) {
     const pc = this.#pc;
     const app = this.#app;
     const manifest = this.#lodManifest;
@@ -1663,13 +1737,17 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const url =
       this.#lodPackUrls?.get(pack.id) ??
       resolveGsTilePackUrl(this.#lodManifestUrl, pack.path);
+    const fetchStarted = performance.now();
     const content = await scheduler.fetch(
       url,
       { start: 0, length: pack.byteLength },
       signal,
     );
+    timings.fetchServiceMs += performance.now() - fetchStarted;
     if (!this.#verifiedPackBuffers.has(content)) {
+      const sha256Started = performance.now();
       const actualSha256 = await sha256(content);
+      timings.sha256ServiceMs += performance.now() - sha256Started;
       if (
         actualSha256 !== pack.sha256.toLowerCase() ||
         actualSha256 !== tile.sha256.toLowerCase()
@@ -1679,11 +1757,26 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       this.#verifiedPackBuffers.add(content);
     }
     signal.throwIfAborted();
+    return { pc, app, manifest, tile, pack, content };
+  }
+
+  async #yieldBeforeLodDecode(signal: AbortSignal) {
     // Cached packs can all resolve in one microtask checkpoint. Yield one task
     // before each synchronous Q96 decode so camera input and rendering remain
     // responsive and an obsolete cut can be aborted between packs.
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     signal.throwIfAborted();
+  }
+
+  async #loadLodTile(
+    node: GsTileNode,
+    signal: AbortSignal,
+    timings: LodLoadTimings,
+  ): Promise<PreparedTile> {
+    const { pc, app, manifest, tile, pack, content } =
+      await this.#fetchVerifiedLodTile(node, signal, timings);
+    await this.#yieldBeforeLodDecode(signal);
+    const decodeStarted = performance.now();
     const decoded = decodeSha256VerifiedGsTilePackTile(
       content,
       tile.byteOffset,
@@ -1691,6 +1784,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       tile.recordCount,
       tile.quantization,
     );
+    timings.decodeCpuMs += performance.now() - decodeStarted;
     signal.throwIfAborted();
     return {
       pc,
@@ -1700,6 +1794,34 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       node,
       byteLength: pack.byteLength,
     };
+  }
+
+  async #loadLodTileIntoPlayCanvasColumns(
+    node: GsTileNode,
+    signal: AbortSignal,
+    destination: GsTilePlayCanvasColumns,
+    recordOffset: number,
+    timings: LodLoadTimings,
+  ) {
+    const { tile, pack, content } = await this.#fetchVerifiedLodTile(
+      node,
+      signal,
+      timings,
+    );
+    await this.#yieldBeforeLodDecode(signal);
+    const decodeStarted = performance.now();
+    decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
+      content,
+      tile.byteOffset,
+      tile.byteLength,
+      tile.recordCount,
+      tile.quantization,
+      destination,
+      recordOffset,
+    );
+    timings.decodeCpuMs += performance.now() - decodeStarted;
+    signal.throwIfAborted();
+    return pack.byteLength;
   }
 
   async #synchronizeLod(
@@ -1766,10 +1888,15 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         throw new Error("GSTile merged target exceeds the resident budget");
       }
     }
-    let mergedDecoded = mergedAssembly
-      ? allocateDecodedGsTile(mergedGaussianCount)
+    let mergedColumns = mergedAssembly
+      ? allocateGsTilePlayCanvasColumns(mergedGaussianCount)
       : null;
     let mergedByteLength = 0;
+    const loadTimings: LodLoadTimings = {
+      fetchServiceMs: 0,
+      sha256ServiceMs: 0,
+      decodeCpuMs: 0,
+    };
     const transitions = planLodTransitions(
       manifest,
       this.#loadedTiles.keys(),
@@ -1791,15 +1918,25 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           const node = nodes.get(nodeId);
           if (!node) throw new Error(`GSTile LOD node ${nodeId} is missing`);
           try {
-            const loaded = await this.#loadLodTile(node, controller.signal);
-            if (mergedDecoded) {
-              const recordOffset = mergedOffsets.get(nodeId);
-              if (recordOffset === undefined) {
-                throw new Error(`GSTile merged offset ${nodeId} is missing`);
-              }
-              copyDecodedGsTile(mergedDecoded, recordOffset, loaded.decoded);
-              mergedByteLength += loaded.byteLength;
+            const recordOffset = mergedOffsets.get(nodeId);
+            if (mergedColumns && recordOffset === undefined) {
+              throw new Error(`GSTile merged offset ${nodeId} is missing`);
+            }
+            if (mergedColumns) {
+              mergedByteLength +=
+                await this.#loadLodTileIntoPlayCanvasColumns(
+                  node,
+                  controller.signal,
+                  mergedColumns,
+                  recordOffset ?? 0,
+                  loadTimings,
+                );
             } else {
+              const loaded = await this.#loadLodTile(
+                node,
+                controller.signal,
+                loadTimings,
+              );
               staged.set(nodeId, loaded);
             }
           } finally {
@@ -1818,6 +1955,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         throw failedLoad.reason;
       }
       this.#lodLoadMs = performance.now() - loadStarted;
+      this.#lodFetchServiceMs = loadTimings.fetchServiceMs;
+      this.#lodSha256ServiceMs = loadTimings.sha256ServiceMs;
+      this.#lodDecodeCpuMs = loadTimings.decodeCpuMs;
       controller.signal.throwIfAborted();
       if (generation !== this.#lodGeneration) {
         throw new DOMException("Stale GSTile LOD selection", "AbortError");
@@ -1829,8 +1969,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       const removedNodeIds = [...this.#loadedTiles.keys()].filter(
         (nodeId) => !desired.has(nodeId),
       );
-      this.#lodAddedGaussians = mergedDecoded
-        ? mergedDecoded.count
+      this.#lodAddedGaussians = mergedColumns
+        ? mergedColumns.count
         : [...staged.values()].reduce(
             (total, prepared) => total + prepared.decoded.count,
             0,
@@ -1846,12 +1986,15 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         0,
       );
       const commitStarted = performance.now();
+      let resourceCreateMs = 0;
+      let streamUploadMs = 0;
+      let sceneAttachMs = 0;
 
       if (mergedAssembly) {
-        const decodedCut = mergedDecoded;
+        const columnarCut = mergedColumns;
         const pc = this.#pc;
         const app = this.#app;
-        if (!decodedCut || !pc || !app) {
+        if (!columnarCut || !pc || !app) {
           throw new Error("GSTile merged target is empty");
         }
         const minimum: Vec3 = [Infinity, Infinity, Infinity];
@@ -1871,7 +2014,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           id: "rmerged",
           bounds: { min: minimum, max: maximum },
           renderBounds: { min: minimum, max: maximum },
-          gaussianCount: decodedCut.count,
+          gaussianCount: columnarCut.count,
         };
         for (const nodeId of [...this.#loadedTiles.keys()]) {
           const loaded = this.#loadedTiles.get(nodeId);
@@ -1888,14 +2031,17 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         const merged = this.#createTileResource(
           pc,
           app,
-          decodedCut,
+          columnarCut,
           manifest.coordinateFrame.origin,
           mergedNode,
           false,
           mergedByteLength,
           false,
         );
-        mergedDecoded = null;
+        resourceCreateMs += merged.resourceCreateMs;
+        streamUploadMs += merged.streamUploadMs;
+        sceneAttachMs += merged.sceneAttachMs;
+        mergedColumns = null;
         merged.entity.enabled = true;
         this.#registerTile("__merged__", merged);
         this.#selectedNodes = selection.selectedNodeIds.length;
@@ -1940,11 +2086,17 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
             prepared.byteLength,
             this.#gpuAssembly !== "incremental",
           );
+          resourceCreateMs += loaded.resourceCreateMs;
+          streamUploadMs += loaded.streamUploadMs;
+          sceneAttachMs += loaded.sceneAttachMs;
           loaded.entity.enabled = true;
           this.#registerTile(nodeId, loaded);
           staged.delete(nodeId);
         }
       }
+      this.#lodResourceCreateMs = resourceCreateMs;
+      this.#lodStreamUploadMs = streamUploadMs;
+      this.#lodSceneAttachMs = sceneAttachMs;
       this.#lodSelectionKey = "";
       this.#lodSelectionKey = key;
       this.#pendingNodes = 0;
@@ -1960,7 +2112,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       this.#forceWorkBufferRewriteFrames = mergedAssembly ? 3 : 0;
       this.#requestRender(mergedAssembly ? 3 : 2);
     } catch (error) {
-      mergedDecoded = null;
+      mergedColumns = null;
       staged.clear();
       if (!(error instanceof DOMException && error.name === "AbortError"))
         this.#lodState = "error";
@@ -1998,7 +2150,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           error,
         );
       });
-    }, 650);
+    }, this.#lodUpdateDelayMilliseconds);
   }
 
   #debugSnapshot() {
@@ -2158,6 +2310,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         lodTotalMs: this.#lodTotalMs,
         lodLoadMs: this.#lodLoadMs,
         lodCommitMs: this.#lodCommitMs,
+        lodFetchServiceMs: this.#lodFetchServiceMs,
+        lodSha256ServiceMs: this.#lodSha256ServiceMs,
+        lodDecodeCpuMs: this.#lodDecodeCpuMs,
+        lodResourceCreateMs: this.#lodResourceCreateMs,
+        lodStreamUploadMs: this.#lodStreamUploadMs,
+        lodSceneAttachMs: this.#lodSceneAttachMs,
         lodAddedGaussians: this.#lodAddedGaussians,
         lodRemovedGaussians: this.#lodRemovedGaussians,
         lodReusedGaussians: this.#lodReusedGaussians,
@@ -2225,6 +2383,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       lodTotalMs: this.#lodTotalMs,
       lodLoadMs: this.#lodLoadMs,
       lodCommitMs: this.#lodCommitMs,
+      lodFetchServiceMs: this.#lodFetchServiceMs,
+      lodSha256ServiceMs: this.#lodSha256ServiceMs,
+      lodDecodeCpuMs: this.#lodDecodeCpuMs,
+      lodResourceCreateMs: this.#lodResourceCreateMs,
+      lodStreamUploadMs: this.#lodStreamUploadMs,
+      lodSceneAttachMs: this.#lodSceneAttachMs,
       lodAddedGaussians: this.#lodAddedGaussians,
       lodRemovedGaussians: this.#lodRemovedGaussians,
       lodReusedGaussians: this.#lodReusedGaussians,

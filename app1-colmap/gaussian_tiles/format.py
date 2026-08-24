@@ -53,14 +53,6 @@ PACK_DTYPE = np.dtype(
 )
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _finite_matrix(values: np.ndarray, name: str) -> np.ndarray:
     result = np.asarray(values, dtype=np.float32)
     if result.ndim != 2 or not np.all(np.isfinite(result)):
@@ -235,6 +227,8 @@ def write_pack_atomic(
     node_id: str,
 ) -> tuple[dict[str, Any], dict[str, float]]:
     content, quantization, errors = encode_pack(records, source_ids, node_id=node_id)
+    content_sha256 = hashlib.sha256(content).hexdigest()
+    payload_crc32 = _HEADER.unpack_from(content)[-1]
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".partial")
     try:
@@ -250,8 +244,10 @@ def write_pack_atomic(
             "path": path.as_posix(),
             "byteLength": len(content),
             "recordCount": records.shape[0],
-            "sha256": _sha256(path),
-            "payloadCrc32": f"{zlib.crc32(content[PACK_HEADER_SIZE:]):08x}",
+            # The immutable bytes are already resident here. Hashing them before
+            # the write avoids reading every completed pack back from disk.
+            "sha256": content_sha256,
+            "payloadCrc32": f"{payload_crc32:08x}",
             "quantization": quantization,
         },
         errors,

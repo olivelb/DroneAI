@@ -78,6 +78,12 @@ const emptyStatistics: GaussianRenderStatistics = {
   lodTotalMs: null,
   lodLoadMs: null,
   lodCommitMs: null,
+  lodFetchServiceMs: null,
+  lodSha256ServiceMs: null,
+  lodDecodeCpuMs: null,
+  lodResourceCreateMs: null,
+  lodStreamUploadMs: null,
+  lodSceneAttachMs: null,
   lodAddedGaussians: 0,
   lodRemovedGaussians: 0,
   lodReusedGaussians: 0,
@@ -224,6 +230,12 @@ export default function GaussianTileViewer({
       data-lod-total-ms={statistics.lodTotalMs ?? ""}
       data-lod-load-ms={statistics.lodLoadMs ?? ""}
       data-lod-commit-ms={statistics.lodCommitMs ?? ""}
+      data-lod-fetch-service-ms={statistics.lodFetchServiceMs ?? ""}
+      data-lod-sha256-service-ms={statistics.lodSha256ServiceMs ?? ""}
+      data-lod-decode-cpu-ms={statistics.lodDecodeCpuMs ?? ""}
+      data-lod-resource-create-ms={statistics.lodResourceCreateMs ?? ""}
+      data-lod-stream-upload-ms={statistics.lodStreamUploadMs ?? ""}
+      data-lod-scene-attach-ms={statistics.lodSceneAttachMs ?? ""}
       data-lod-reused-gaussians={statistics.lodReusedGaussians}
     >
       <canvas ref={canvasRef} className="block h-full min-h-80 w-full" />
@@ -294,6 +306,17 @@ export default function GaussianTileViewer({
                   ` · load ${statistics.lodLoadMs.toFixed(0)}`}
                 {statistics.lodCommitMs !== null &&
                   ` · commit ${statistics.lodCommitMs.toFixed(0)}`}
+              </span>
+            )}
+            {statistics.lodDecodeCpuMs !== null && (
+              <span>
+                Σ fetch {statistics.lodFetchServiceMs?.toFixed(0)} · SHA {statistics.lodSha256ServiceMs?.toFixed(0)} · Q96 {statistics.lodDecodeCpuMs.toFixed(0)} ms
+                {statistics.lodResourceCreateMs !== null &&
+                  ` · resource ${statistics.lodResourceCreateMs.toFixed(0)}`}
+                {statistics.lodStreamUploadMs !== null &&
+                  ` · streams ${statistics.lodStreamUploadMs.toFixed(0)}`}
+                {statistics.lodSceneAttachMs !== null &&
+                  ` · scène ${statistics.lodSceneAttachMs.toFixed(0)}`}
               </span>
             )}
             {statistics.lodReusedGaussians > 0 && (
