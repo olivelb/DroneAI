@@ -301,6 +301,21 @@ const normalizedQuaternionLength = (
   return length;
 };
 
+// Q96 snorm16 components are bounded to [-1, 1], so a direct squared sum
+// cannot overflow or underflow and avoids Math.hypot's general scaling path.
+const normalizedBoundedQuaternionLength = (
+  w: number,
+  x: number,
+  y: number,
+  z: number,
+) => {
+  const length = Math.sqrt(w * w + x * x + y * y + z * z);
+  if (!Number.isFinite(length) || length <= 1e-12) {
+    throw new Error("GSTile contains an invalid quaternion");
+  }
+  return length;
+};
+
 const normalizeQuaternion = (
   output: Float32Array,
   offset: number,
@@ -468,7 +483,7 @@ const decodeRecordsIntoPlayCanvasColumns = (
     const x = view.getInt16(base + 14, true) / 32_767;
     const y = view.getInt16(base + 16, true) / 32_767;
     const z = view.getInt16(base + 18, true) / 32_767;
-    const quaternionLength = normalizedQuaternionLength(w, x, y, z);
+    const quaternionLength = normalizedBoundedQuaternionLength(w, x, y, z);
     rotation[0][targetRecord] = w / quaternionLength;
     rotation[1][targetRecord] = x / quaternionLength;
     rotation[2][targetRecord] = y / quaternionLength;
@@ -479,19 +494,47 @@ const decodeRecordsIntoPlayCanvasColumns = (
       quantization.opacityLogit.max,
     );
     opacityLogit[targetRecord] = baseOpacity;
-    opacityStreams[0][targetRecord * 4] = baseOpacity;
-    for (let coefficient = 0; coefficient < 45; coefficient += 1) {
+    const opacityOffset = targetRecord * 4;
+    const opacityScale = quantization.opacityShScale;
+    opacityStreams[0][opacityOffset] = baseOpacity;
+    opacityStreams[0][opacityOffset + 1] =
+      view.getInt8(base + 73) * opacityScale[0];
+    opacityStreams[0][opacityOffset + 2] =
+      view.getInt8(base + 74) * opacityScale[1];
+    opacityStreams[0][opacityOffset + 3] =
+      view.getInt8(base + 75) * opacityScale[2];
+    opacityStreams[1][opacityOffset] =
+      view.getInt8(base + 76) * opacityScale[3];
+    opacityStreams[1][opacityOffset + 1] =
+      view.getInt8(base + 77) * opacityScale[4];
+    opacityStreams[1][opacityOffset + 2] =
+      view.getInt8(base + 78) * opacityScale[5];
+    opacityStreams[1][opacityOffset + 3] =
+      view.getInt8(base + 79) * opacityScale[6];
+    opacityStreams[2][opacityOffset] =
+      view.getInt8(base + 80) * opacityScale[7];
+    opacityStreams[2][opacityOffset + 1] =
+      view.getInt8(base + 81) * opacityScale[8];
+    opacityStreams[2][opacityOffset + 2] =
+      view.getInt8(base + 82) * opacityScale[9];
+    opacityStreams[2][opacityOffset + 3] =
+      view.getInt8(base + 83) * opacityScale[10];
+    opacityStreams[3][opacityOffset] =
+      view.getInt8(base + 84) * opacityScale[11];
+    opacityStreams[3][opacityOffset + 1] =
+      view.getInt8(base + 85) * opacityScale[12];
+    opacityStreams[3][opacityOffset + 2] =
+      view.getInt8(base + 86) * opacityScale[13];
+    opacityStreams[3][opacityOffset + 3] =
+      view.getInt8(base + 87) * opacityScale[14];
+    const colorScale = quantization.colorShScale;
+    for (let coefficient = 0; coefficient < 45; coefficient += 3) {
       colorSh[coefficient][targetRecord] =
-        view.getInt8(base + 28 + coefficient) *
-        quantization.colorShScale[coefficient];
-    }
-    for (let coefficient = 0; coefficient < 15; coefficient += 1) {
-      const packed = coefficient + 1;
-      opacityStreams[Math.floor(packed / 4)][
-        targetRecord * 4 + (packed % 4)
-      ] =
-        view.getInt8(base + 73 + coefficient) *
-        quantization.opacityShScale[coefficient];
+        view.getInt8(base + 28 + coefficient) * colorScale[coefficient];
+      colorSh[coefficient + 1][targetRecord] =
+        view.getInt8(base + 29 + coefficient) * colorScale[coefficient + 1];
+      colorSh[coefficient + 2][targetRecord] =
+        view.getInt8(base + 30 + coefficient) * colorScale[coefficient + 2];
     }
   }
 };

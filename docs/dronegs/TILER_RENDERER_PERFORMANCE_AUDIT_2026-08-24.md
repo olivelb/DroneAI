@@ -174,8 +174,11 @@ SIMD WASM est à comparer au TypeScript JIT ; il ne sera retenu que mesuré.
 Acceptance : aucune tâche UI > 50 ms pendant un parcours froid/chaud, hash et
 coefficients identiques, annulation générationnelle, mémoire de file bornée.
 
-État : **décodage column-major final livré pour `merged`** ; Worker non
-implémenté.
+État : **décodage column-major final livré et cœur TypeScript optimisé**. Un
+Worker naïf n'est pas retenu : transférer ses colonnes imposerait une seconde
+copie d'environ 2,2 Go à 7,4 M splats, ou un double pic mémoire. La suite doit
+donc soit rendre le Worker propriétaire du cache et de la destination partagée,
+soit produire directement les streams packés sans représentation intermédiaire.
 
 ### 3. Tri/culling/raster WebGPU moderne — impact très élevé sur le frame time
 
@@ -280,7 +283,9 @@ Acceptance : parité directionnelle sur directions figées, absence d'opacité
 périmée pendant le geste, coût GPU isolé et frame p95 inférieur au chemin de
 réupload.
 
-État : bug confirmé, design à prototyper dans le patch PlayCanvas.
+État : **diagnostic corrigé et invalidations redondantes retirées**. Le seuil
+`colorUpdateAngle = 0` de PlayCanvas déclenche déjà le pass color-only exact à
+chaque translation ; aucune opacité périmée n'a été observée.
 
 ### 11. Budget adaptatif piloté par télémétrie, sans baisse de qualité stable — impact moyen
 
@@ -345,6 +350,11 @@ Conserver le cut complet précédent jusqu'au succès.
     work-buffer sale au démarrage du debounce puis au commit. PlayCanvas assure
     déjà la mise à jour utile par son pass color-only avec seuil angulaire nul ;
     la formule SH3 et la cadence exacte pendant la translation sont inchangées.
+16. Le décodeur Q96 fusionné normalise les quaternions bornés avec une somme
+    quadratique directe, déroule le packing fixe des 15 coefficients d'opacité
+    et traite les 45 coefficients SH couleur par groupes de trois. Un test
+    différentiel compare bit à bit les 59 propriétés et quatre streams sur
+    4 096 records pseudo-aléatoires.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -398,6 +408,24 @@ gate de performance. La piste restante est de fusionner le packing dans le
 décodage Q96 ou de l'exécuter en Worker/WASM : un second parcours JavaScript de
 45 coefficients par splat ne peut pas gagner face au chemin moteur actuel.
 
+### Qualification du cœur Q96 — Saint-Étienne v4c
+
+Le benchmark Vitest de 65 536 splats passe de **10,769 ms à 7,598 ms**, soit
+**1,42×**. Les essais intermédiaires ont été gardés ou rejetés séparément :
+
+- normalisation `sqrt(w²+x²+y²+z²)` bornée : 9,208 ms ;
+- packing d'opacité fixe sans division/modulo dans la boucle : 7,989 ms ;
+- boucle SH couleur déroulée par trois : 7,598 ms ;
+- vues typées à la place de `DataView` : rejetées, 11,260 ms ;
+- déroulage des trois axes : rejeté, 7,684 ms et minimum dégradé.
+
+Dans Chrome sur le cut froid de 7 435 345 splats, la somme Q96 passe de
+**3,222 s à 2,616 s**, soit **−18,8 %**. Le total reste dominé par le fetch et
+les 6,29 s de construction `GSplatResource`. Sur la transition chaude, Q96
+mesure 371–387 ms contre environ 400 ms auparavant ; 6,6 M splats sont déjà
+réutilisés, donc le packing PlayCanvas des nouveaux splats reste le premier
+coût du commit. Les captures automatisées initiale et tournée sont complètes.
+
 ## Sources primaires
 
 - WebSplatter, papier et code officiel : https://arxiv.org/abs/2602.03207 et
@@ -427,8 +455,9 @@ décodage Q96 ou de l'exécuter en Worker/WASM : un second parcours JavaScript d
 1. Ajouter télémétrie fetch/SHA/decode/columnar/upload/sort/raster et long-task.
 2. Répéter les essais appariés Chrome sur un corpus de caméras figé et publier
    médiane, p95, long tasks, mémoire CPU/VRAM et différences d'image.
-3. Prototyper un Worker propriétaire du cache brut et un décodage Q96→streams
-   packés en un seul parcours, puis comparer TypeScript, WASM et PlayCanvas.
+3. Prototyper un décodage Q96→streams packés en un seul parcours, puis comparer
+   TypeScript, WASM et PlayCanvas. Un Worker ne sera ajouté que s'il possède le
+   cache/destination ou utilise une mémoire partagée sans copie géante.
 4. Instrumenter le nombre de spans, les octets réellement copiés et le temps
    de reconstruction du manager unifié, puis figer un parcours caméra répétable.
 5. Construire un prototype external-sort Morton sur une copie immuable du PLY.

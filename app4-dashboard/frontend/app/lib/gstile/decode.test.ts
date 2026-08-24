@@ -64,6 +64,39 @@ const createPack = () => {
   return content;
 };
 
+const createDeterministicRandomPack = (recordCount: number) => {
+  const content = new ArrayBuffer(32 + recordCount * 96);
+  const bytes = new Uint8Array(content);
+  bytes.set(new TextEncoder().encode("GSTILE1\0"));
+  const view = new DataView(content);
+  view.setUint16(8, 1, true);
+  view.setUint16(10, 32, true);
+  view.setUint16(12, 96, true);
+  view.setUint16(14, 0, true);
+  view.setUint32(16, recordCount, true);
+  let state = 0x9e3779b9;
+  const randomByte = () => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    return state >>> 24;
+  };
+  for (let offset = 32; offset < content.byteLength; offset += 1) {
+    bytes[offset] = randomByte();
+  }
+  for (let record = 0; record < recordCount; record += 1) {
+    const base = 32 + record * 96;
+    if (
+      view.getInt16(base + 12, true) === 0 &&
+      view.getInt16(base + 14, true) === 0 &&
+      view.getInt16(base + 16, true) === 0 &&
+      view.getInt16(base + 18, true) === 0
+    ) {
+      view.setInt16(base + 12, 1, true);
+    }
+  }
+  view.setUint32(28, crc32(new Uint8Array(content, 32)), true);
+  return content;
+};
+
 describe("GSTile pack decoder", () => {
   it("matches the reference affine and symmetric decoding", () => {
     const decoded = decodeGsTilePack(createPack(), quantization);
@@ -227,6 +260,32 @@ describe("GSTile pack decoder", () => {
       );
     });
     expect("sourceId" in destination).toBe(false);
+  });
+
+  it("normalizes random Q96 quaternions bit-exactly in PlayCanvas columns", () => {
+    const count = 4_096;
+    const pack = createDeterministicRandomPack(count);
+    const reference = decodeGsTilePack(pack, quantization);
+    const referenceProperties = gsTileToPlyProperties(reference);
+    const referenceOpacity = gsTileOpacityStreams(reference);
+    const destination = allocateGsTilePlayCanvasColumns(count);
+
+    decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
+      pack,
+      32,
+      count * 96,
+      count,
+      quantization,
+      destination,
+      0,
+    );
+
+    destination.properties.forEach((property, index) => {
+      expect(property.storage).toEqual(referenceProperties[index].storage);
+    });
+    destination.opacityStreams.forEach((stream, index) => {
+      expect(stream).toEqual(referenceOpacity[index]);
+    });
   });
 
   it("halves peak decoded CPU storage for the merged PlayCanvas handoff", () => {
