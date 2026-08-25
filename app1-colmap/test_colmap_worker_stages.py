@@ -267,6 +267,32 @@ class TestColmapStageHelpers(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("recovery budget", warnings[0])
 
+    def test_host_image_cache_supports_auto_and_explicit_operational_limits(self):
+        params = DRONEGS_PRODUCTION_PROFILE_V1.pipeline_defaults()
+        automatic, warnings = dronegs_config.resolve_dronegs_config(
+            params,
+            facade_mode=False,
+            data_factor=DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
+        )
+        explicit, explicit_warnings = dronegs_config.resolve_dronegs_config(
+            {**params, "gs_host_image_cache_mib": "12288"},
+            facade_mode=False,
+            data_factor=DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
+        )
+
+        self.assertEqual(automatic.host_image_cache_mib, 0)
+        self.assertEqual(explicit.host_image_cache_mib, 12_288)
+        self.assertEqual(explicit.profile_id, automatic.profile_id)
+        self.assertEqual(warnings, ())
+        self.assertEqual(explicit_warnings, ())
+
+        with self.assertRaisesRegex(ValueError, "gs_host_image_cache_mib"):
+            dronegs_config.resolve_dronegs_config(
+                {**params, "gs_host_image_cache_mib": "255"},
+                facade_mode=False,
+                data_factor=DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
+            )
+
     def test_projected_initialization_overrides_apply_to_map_and_facade(self):
         params = {
             **quality_profile("normal-v3").parameters,

@@ -57,6 +57,7 @@ from gaussian_training.backends import (
     TrainingBackend,
 )
 from gaussian_training.dataset_identity import compute_dataset_identity
+from gaussian_training.host_image_cache import plan_host_image_cache
 from gaussian_training.manifest_contract import (
     load_run_manifest,
     manifest_matches_ply,
@@ -341,6 +342,7 @@ class GaussianOrthoConfig:
     dronegs_photometric_finish: int
     dronegs_photometric_mse_percent: int
     dronegs_checkpoint_every: int
+    dronegs_host_image_cache_mib: int
     dronegs_test_every: int
     dronegs_test_split: str
     dronegs_test_guard_percent: int
@@ -894,6 +896,7 @@ def execute_gaussian_training_phase(
                 "tile_mode": tile_mode_plan.effective_mode,
                 "tile_mode_plan": tile_mode_plan.as_dict(),
                 "capacity_plan": capacity_plan.as_dict(),
+                "host_image_cache_mib": config.dronegs_host_image_cache_mib,
             }
         )
     training_config = replace(
@@ -1215,6 +1218,7 @@ def train_and_merge_gaussian_models(
                 adaptive_native_crop_tiles=bool(config.resident_partitioning),
                 prefetch_depth=prefetch_depth,
                 decode_workers=decode_workers,
+                host_image_cache_mib=config.dronegs_host_image_cache_mib,
                 checkpoint_every=config.dronegs_checkpoint_every,
                 resume_from=resume_from,
                 test_every=config.dronegs_test_every,
@@ -2334,6 +2338,7 @@ def generate_gaussian_orthophoto(
     dronegs_photometric_finish: int = (DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish),
     dronegs_photometric_mse_percent: int = (DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent),
     dronegs_checkpoint_every: int = (DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every),
+    dronegs_host_image_cache_mib: int = 0,
     dronegs_test_every: int = DRONEGS_PRODUCTION_PROFILE_V1.test_every,
     dronegs_test_split: str = DRONEGS_PRODUCTION_PROFILE_V1.test_split,
     dronegs_test_guard_percent: int = (DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent),
@@ -2438,6 +2443,25 @@ def generate_gaussian_orthophoto(
     render_mode = str(render_mode).strip().lower()
     if render_mode not in {"map", "facade"}:
         raise ValueError(f"Unsupported orthophoto render mode: {render_mode}")
+    host_cache_plan = plan_host_image_cache(dronegs_host_image_cache_mib)
+    if host_cache_plan.automatic and host_cache_plan.available_mib is not None:
+        cache_message = (
+            "DroneGS host image cache auto ceiling: "
+            f"{host_cache_plan.limit_mib} MiB from "
+            f"{host_cache_plan.available_mib} MiB available, reserving "
+            f"{host_cache_plan.reserve_mib} MiB; native allocation is clamped "
+            "to the decoded image working set."
+        )
+    elif host_cache_plan.automatic:
+        cache_message = (
+            "DroneGS host image cache auto detection unavailable; "
+            f"using the {host_cache_plan.limit_mib} MiB compatibility ceiling."
+        )
+    else:
+        cache_message = (
+            f"DroneGS host image cache ceiling: {host_cache_plan.limit_mib} MiB (explicit)."
+        )
+    _report(vol_id, "GAUSS", 1, cache_message, report_fn)
 
     config = GaussianOrthoConfig(
         dense_path=dense_path,
@@ -2499,6 +2523,7 @@ def generate_gaussian_orthophoto(
         dronegs_photometric_finish=dronegs_photometric_finish,
         dronegs_photometric_mse_percent=dronegs_photometric_mse_percent,
         dronegs_checkpoint_every=dronegs_checkpoint_every,
+        dronegs_host_image_cache_mib=host_cache_plan.limit_mib,
         dronegs_test_every=dronegs_test_every,
         dronegs_test_split=dronegs_test_split,
         dronegs_test_guard_percent=dronegs_test_guard_percent,

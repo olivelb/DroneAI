@@ -1072,6 +1072,18 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "max": 50000,
         "step": 500,
     },
+    "gs_host_image_cache_mib": {
+        "label": "Host Image Cache (MiB)",
+        "description": (
+            "Decoded-image cache ceiling. Zero auto-sizes from host/cgroup memory while preserving "
+            "system headroom; DroneGS allocates at most the image working set."
+        ),
+        "type": "int",
+        "group": "Orthomosaic",
+        "min": 0,
+        "max": 65536,
+        "step": 256,
+    },
     "gs_test_every": {
         "label": "Held-out Image Interval",
         "description": "Uses every Nth image for PSNR/SSIM validation; 0 disables the split.",

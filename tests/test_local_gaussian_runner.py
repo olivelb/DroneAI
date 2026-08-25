@@ -34,6 +34,7 @@ def _arguments(**overrides):
         "canary_min_psnr": None,
         "canary_min_ssim": None,
         "checkpoint_every": None,
+        "host_image_cache_mib": None,
         "filter_enabled": None,
     }
     values.update(overrides)
@@ -227,6 +228,18 @@ def test_checkpoint_cadence_override_is_an_explicit_training_recipe():
 
     with pytest.raises(ValueError, match="checkpoint-every must be positive"):
         resolve_profile(_arguments(checkpoint_every=0))
+
+
+def test_host_image_cache_auto_is_operational_and_explicit_values_are_validated():
+    automatic = resolve_profile(_arguments(profile="balanced"))
+    explicit = resolve_profile(_arguments(profile="balanced", host_image_cache_mib=12_288))
+
+    assert automatic.host_image_cache_mib == 0
+    assert explicit.host_image_cache_mib == 12_288
+    assert explicit.profile_id == automatic.profile_id
+
+    with pytest.raises(ValueError, match="host-image-cache-mib"):
+        resolve_profile(_arguments(host_image_cache_mib=255))
 
 
 def test_projected_initialization_override_is_an_explicit_training_recipe():

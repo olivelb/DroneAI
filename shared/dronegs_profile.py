@@ -87,6 +87,7 @@ class DroneGSProductionProfile:
             "gs_photometric_finish": str(self.photometric_finish),
             "gs_photometric_mse_percent": str(self.photometric_mse_percent),
             "gs_checkpoint_every": str(self.checkpoint_every),
+            "gs_host_image_cache_mib": "0",
             "gs_test_every": str(self.test_every),
             "gs_test_split": self.test_split,
             "gs_test_guard_percent": str(self.test_guard_percent),

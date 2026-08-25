@@ -79,6 +79,7 @@ class GaussianProfile:
     capacity_targeted_growth: bool = False
     qualification_policy_id: str = DRONEGS_QUALIFICATION_POLICY_ID
     tile_mode_auto: bool = True
+    host_image_cache_mib: int = 0
 
 
 PROFILES: dict[str, GaussianProfile] = {
@@ -291,6 +292,14 @@ def parse_args() -> argparse.Namespace:
             "operational I/O/recovery trade-off and changes the run identity"
         ),
     )
+    parser.add_argument(
+        "--host-image-cache-mib",
+        type=int,
+        help=(
+            "decoded host-image cache ceiling in MiB; 0 auto-sizes from "
+            "available host/cgroup memory while preserving system headroom"
+        ),
+    )
     parser.add_argument("--canary-min-psnr", type=float)
     parser.add_argument("--canary-min-ssim", type=float)
     parser.add_argument(
@@ -448,6 +457,11 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
         raise ValueError("sh-degree-interval must be positive")
     if resolved.checkpoint_every <= 0:
         raise ValueError("checkpoint-every must be positive")
+    if (
+        resolved.host_image_cache_mib != 0
+        and not 256 <= resolved.host_image_cache_mib <= 65_536
+    ):
+        raise ValueError("host-image-cache-mib must be 0 (auto) or between 256 and 65536")
     if not 0 <= resolved.photometric_mse_percent <= 100:
         raise ValueError("photometric-mse-percent must be between 0 and 100")
     if resolved.canary_min_psnr < 0:
@@ -700,6 +714,7 @@ def main() -> int:
             dronegs_photometric_finish=profile.photometric_finish,
             dronegs_photometric_mse_percent=profile.photometric_mse_percent,
             dronegs_checkpoint_every=profile.checkpoint_every,
+            dronegs_host_image_cache_mib=profile.host_image_cache_mib,
             dronegs_test_every=profile.test_every,
             dronegs_test_split=profile.test_split,
             dronegs_test_guard_percent=profile.test_guard_percent,

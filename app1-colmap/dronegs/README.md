@@ -470,6 +470,15 @@ host-cache bound and its effective byte capacity are recorded in the run
 manifest. Changing the bound is an operational performance experiment and
 requires exact final-PLY parity before promotion.
 
+DroneAI orchestration exposes `gs_host_image_cache_mib`: `0` (the product
+default) computes a ceiling from `MemAvailable` and cgroup-v2 headroom, keeps
+25% of effective memory reserved on smaller hosts up to 16 GiB and at least
+20% on larger hosts, and
+falls back to 2048 MiB when memory discovery is unavailable. Explicit values
+from 256 through 65536 MiB remain available for controlled experiments. The
+native cache clamps this ceiling to the decoded RGB8 working set, so automatic
+mode does not preallocate the full budget.
+
 Checkpoint cadence is governed by the existing `--checkpoint-every` option.
 The performance comparator may vary it together with cache and prefetch
 tuning, but still requires the same trainer binary, scientific parameters and
