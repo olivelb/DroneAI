@@ -653,6 +653,7 @@ def get_presigned_url(
     bucket: str | None = None,
     *,
     public: bool = True,
+    response_content_encoding: str | None = None,
 ) -> str:
     """Generate a presigned GET URL for an S3 object.
 
@@ -660,10 +661,15 @@ def get_presigned_url(
     *expires* is the URL lifetime in seconds (default 1 hour).
     """
     bucket = bucket or S3_BUCKET
+    if response_content_encoding not in {None, "zstd"}:
+        raise ValueError("Unsupported presigned response content encoding")
     client = _get_public_client() if public else _get_client()
+    parameters = {"Bucket": bucket, "Key": s3_key}
+    if response_content_encoding is not None:
+        parameters["ResponseContentEncoding"] = response_content_encoding
     url = client.generate_presigned_url(
         "get_object",
-        Params={"Bucket": bucket, "Key": s3_key},
+        Params=parameters,
         ExpiresIn=expires,
     )
     return url

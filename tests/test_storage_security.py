@@ -10,6 +10,37 @@ from botocore.exceptions import ClientError
 from shared import storage
 
 
+class _PresignedGetClient:
+    def __init__(self):
+        self.arguments = None
+
+    def generate_presigned_url(self, operation, **arguments):
+        self.arguments = (operation, arguments)
+        return "https://objects.example/download"
+
+
+def test_presigned_get_can_declare_zstd_response_encoding(monkeypatch):
+    client = _PresignedGetClient()
+    monkeypatch.setattr(storage, "_get_public_client", lambda: client)
+
+    assert storage.get_presigned_url(
+        "organizations/org-a/blobs/pack",
+        expires=900,
+        response_content_encoding="zstd",
+    ) == "https://objects.example/download"
+    assert client.arguments == (
+        "get_object",
+        {
+            "Params": {
+                "Bucket": storage.S3_BUCKET,
+                "Key": "organizations/org-a/blobs/pack",
+                "ResponseContentEncoding": "zstd",
+            },
+            "ExpiresIn": 900,
+        },
+    )
+
+
 def _client_error(code: str, operation: str = "HeadObject") -> ClientError:
     return ClientError(
         {"Error": {"Code": code, "Message": "test error"}},

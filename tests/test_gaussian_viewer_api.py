@@ -11,10 +11,27 @@ from shared.artifact_manifest import ManifestBlob, ManifestFile
 
 
 viewer = importlib.import_module("app4-dashboard.api.gaussian_viewer")
+viewer_router = importlib.import_module(
+    "app4-dashboard.api.routers.mission_gaussians"
+)
 
 
-def _manifest(*, digest: str = "b" * 64) -> dict[str, object]:
-    return {
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("gzip, deflate, zstd", True),
+        ("gzip, zstd;q=0.7", True),
+        ("gzip, zstd;q=0", False),
+        ("gzip, deflate", False),
+        ("gzip, zstd;q=invalid", False),
+    ],
+)
+def test_zstd_accept_encoding_negotiation(header, expected):
+    assert viewer_router._accepts_zstd(header) is expected
+
+
+def _manifest(*, digest: str = "b" * 64, zstd: bool = False) -> dict[str, object]:
+    manifest = {
         "schema": "droneai-gstile",
         "version": 1,
         "profile": "dronegs-sh3-opacity-sh3-q96",
@@ -47,6 +64,15 @@ def _manifest(*, digest: str = "b" * 64) -> dict[str, object]:
         ],
         "statistics": {"lod": "leaf-only"},
     }
+    if zstd:
+        manifest["packs"][0]["encodings"] = {
+            "zstd": {
+                "path": "packs/pack-0.gstp.zst",
+                "byteLength": 96,
+                "sha256": "f" * 64,
+            }
+        }
+    return manifest
 
 
 def _artifact(*, recommended_view: object | None = None) -> SimpleNamespace:
@@ -63,8 +89,8 @@ def _artifact(*, recommended_view: object | None = None) -> SimpleNamespace:
     )
 
 
-def _files(digest: str = "b" * 64) -> dict[str, ManifestFile]:
-    return {
+def _files(digest: str = "b" * 64, *, zstd: bool = False) -> dict[str, ManifestFile]:
+    files = {
         "manifest.json": ManifestFile(
             path="manifest.json",
             role="viewer-manifest",
@@ -84,6 +110,17 @@ def _files(digest: str = "b" * 64) -> dict[str, ManifestFile]:
             ),
         ),
     }
+    if zstd:
+        files["packs/pack-0.gstp.zst"] = ManifestFile(
+            path="packs/pack-0.gstp.zst",
+            role="viewer-pack",
+            blob=ManifestBlob(
+                key="organizations/org-a/blobs/pack-zstd",
+                size_bytes=96,
+                checksum_sha256="f" * 64,
+            ),
+        )
+    return files
 
 
 def test_descriptor_validates_tenant_workspace_and_signs_packs(monkeypatch):
@@ -152,6 +189,39 @@ def test_descriptor_publishes_validated_recommended_view(monkeypatch):
     )
 
     assert result["recommendedView"] == recommended_view
+
+
+def test_descriptor_validates_and_signs_zstd_pack_transport(monkeypatch):
+    monkeypatch.setattr(viewer, "_latest_viewer_artifact", lambda *_args: _artifact())
+    monkeypatch.setattr(
+        viewer,
+        "resolve_workspace_files",
+        lambda *_args, **_kwargs: _files(zstd=True),
+    )
+    monkeypatch.setattr(
+        viewer.storage,
+        "get_object_bytes",
+        lambda *_args, **_kwargs: json.dumps(_manifest(zstd=True)).encode(),
+    )
+    monkeypatch.setattr(
+        viewer.storage,
+        "get_presigned_url",
+        lambda key, **_kwargs: f"https://objects.example/{key}",
+    )
+
+    result = viewer.gaussian_viewer_descriptor(
+        SimpleNamespace(),
+        SimpleNamespace(id=7, organization_id="org-a"),
+        accept_zstd=True,
+    )
+
+    assert result["packs"][0]["encodings"] == {
+        "zstd": {
+            "url": "https://objects.example/organizations/org-a/blobs/pack-zstd",
+            "byteLength": 96,
+            "sha256": "f" * 64,
+        }
+    }
 
 
 def test_descriptor_rejects_invalid_recommended_view(monkeypatch):

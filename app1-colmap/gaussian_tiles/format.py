@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
+import zstandard
 
 from shared.gstile_manifest import (
     GSTILE_PACK_HEADER_SIZE,
@@ -230,15 +231,21 @@ def write_pack_atomic(
     content_sha256 = hashlib.sha256(content).hexdigest()
     payload_crc32 = _HEADER.unpack_from(content)[-1]
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".partial")
-    try:
-        with temporary.open("xb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    _write_bytes_atomic(path, content)
+    encodings: dict[str, dict[str, Any]] = {}
+    compressed = zstandard.ZstdCompressor(
+        level=1,
+        write_checksum=True,
+        write_content_size=True,
+    ).compress(content)
+    if len(compressed) < len(content):
+        compressed_path = path.with_suffix(path.suffix + ".zst")
+        _write_bytes_atomic(compressed_path, compressed)
+        encodings["zstd"] = {
+            "path": compressed_path.as_posix(),
+            "byteLength": len(compressed),
+            "sha256": hashlib.sha256(compressed).hexdigest(),
+        }
     return (
         {
             "path": path.as_posix(),
@@ -249,9 +256,22 @@ def write_pack_atomic(
             "sha256": content_sha256,
             "payloadCrc32": f"{payload_crc32:08x}",
             "quantization": quantization,
+            **({"encodings": encodings} if encodings else {}),
         },
         errors,
     )
+
+
+def _write_bytes_atomic(path: Path, content: bytes) -> None:
+    temporary = path.with_name(path.name + ".partial")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def decode_pack(content: bytes, quantization: Mapping[str, Any]) -> dict[str, np.ndarray]:

@@ -38,6 +38,7 @@ bundle/
   manifest.json
   packs/
     <node-id>.gst
+    <node-id>.gst.zst
 ```
 
 All paths in the manifest are relative, use `/`, and must not contain `..`.
@@ -76,6 +77,12 @@ Each node has `id`, `bounds.min`, `bounds.max`, `gaussianCount`, and either
 `pack`, `byteOffset`, `byteLength`, `recordCount`, `sha256` and `quantization`.
 The current tiler writes one tile per pack and byte offset 32; readers must not
 assume this because later writers may aggregate tiles into larger packs.
+
+A pack may expose an additive `encodings.zstd` object containing `path`,
+`byteLength` and `sha256`. It is a lossless transport representation of the
+complete canonical `.gst` object, uses a zstd frame with content size and
+checksum, and is emitted only when smaller than the canonical object. Readers
+that do not support zstd ignore this field and fetch `path` unchanged.
 
 `quantization` contains the min/max or symmetric scale needed to decode every
 field. Arrays have fixed lengths: 3 for position/scale/DC, 45 for colour SH
@@ -127,6 +134,20 @@ The browser obtains the manifest through an authenticated API, then fetches
 pack ranges using `Range: bytes=start-end`. Servers must return either `206`
 with a valid `Content-Range`, or `200` only when the requested range is the full
 object. Cache keys include bundle id, pack path, byte range and SHA-256.
+
+When `encodings.zstd` is selected, the browser fetches the complete encoded
+object, decodes it before Q96 parsing, verifies the canonical pack SHA-256, and
+caches only the canonical decoded bytes. Thus encoded and unencoded clients
+share the same immutable cache identity and rendering input.
+
+Authenticated descriptors advertise the zstd URL only when the request's
+`Accept-Encoding` includes `zstd`. The signed object response declares
+`Content-Encoding: zstd`, so decompression runs in the browser networking
+stack. Encoded objects use a complete GET without `Range`, because Chromium
+rejects compressed `206 Partial Content` responses even when the requested
+range covers the complete representation. Static-bundle readers may instead
+use `DecompressionStream("zstd")`
+when available. Both paths fall back to the canonical `.gst` URL.
 
 Parents remain resident until all selected children are decoded and uploaded.
 Eviction is resource-driven, not React-state-driven. A failed child fetch must

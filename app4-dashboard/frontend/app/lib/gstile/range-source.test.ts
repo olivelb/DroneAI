@@ -32,6 +32,187 @@ describe("GSTile range source", () => {
     ).rejects.toThrow(/HTTP 200/);
   });
 
+  it("accepts HTTP 200 only for a declared full-object request", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 }),
+      ),
+    );
+    await expect(
+      fetchGsTileRange(
+        "https://example.test/r.gst",
+        { start: 0, length: 4 },
+        undefined,
+        true,
+      ),
+    ).resolves.toHaveProperty("byteLength", 4);
+  });
+
+  it("decodes a zstd transport into the canonical raw cache entry", async () => {
+    class TestDecompressionStream {
+      readonly readable: ReadableStream<Uint8Array>;
+      readonly writable: WritableStream<BufferSource>;
+
+      constructor(format: string) {
+        expect(format).toBe("zstd");
+        const transform = new TransformStream<BufferSource, Uint8Array>({
+          transform(_chunk, controller) {
+            controller.enqueue(new Uint8Array([1, 2, 3, 4]));
+          },
+        });
+        this.readable = transform.readable;
+        this.writable = transform.writable;
+      }
+    }
+    vi.stubGlobal("DecompressionStream", TestDecompressionStream);
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => {
+        void _input;
+        void _init;
+        return new Response(new Uint8Array([8, 9]), { status: 200 });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const scheduler = new GsTileRangeScheduler(1, 1024);
+    const content = await scheduler.fetch(
+      "https://example.test/r.gst.zst",
+      { start: 0, length: 4 },
+      undefined,
+      "sha256:raw",
+      {
+        url: "https://example.test/r.gst.zst",
+        byteLength: 2,
+        encoding: "zstd",
+      },
+    );
+
+    expect(Array.from(new Uint8Array(content))).toEqual([1, 2, 3, 4]);
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toEqual({ Range: "bytes=0-1" });
+    expect(scheduler.statistics()).toMatchObject({
+      networkBytes: 2,
+      decodedBytes: 4,
+      zstdResponses: 1,
+      cacheBytes: 4,
+    });
+  });
+
+  it("accepts browser-decoded HTTP zstd bytes under the raw identity", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        void _input;
+        void init;
+        return new Response(new Uint8Array([1, 2, 3, 4]), {
+          status: 200,
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const scheduler = new GsTileRangeScheduler(1, 1024);
+    const content = await scheduler.fetch(
+      "https://example.test/r.gst.zst?response-content-encoding=zstd",
+      { start: 0, length: 4 },
+      undefined,
+      "sha256:raw",
+      {
+        url: "https://example.test/r.gst.zst?response-content-encoding=zstd",
+        byteLength: 2,
+        encoding: "zstd-http",
+      },
+    );
+
+    expect(Array.from(new Uint8Array(content))).toEqual([1, 2, 3, 4]);
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toBeUndefined();
+    expect(scheduler.statistics()).toMatchObject({
+      networkBytes: 2,
+      decodedBytes: 4,
+      zstdResponses: 1,
+      cacheBytes: 4,
+      zstdFallbacks: 0,
+    });
+  });
+
+  it("retries the canonical pack once when HTTP zstd decoding is unavailable", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("content decoding failed"))
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([1, 2, 3, 4]), {
+          status: 206,
+          headers: { "Content-Range": "bytes 0-3/4" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const scheduler = new GsTileRangeScheduler(1, 1024);
+    const content = await scheduler.fetch(
+      "https://example.test/r.gst.zst",
+      { start: 0, length: 4 },
+      undefined,
+      "sha256:raw",
+      {
+        url: "https://example.test/r.gst.zst",
+        byteLength: 2,
+        encoding: "zstd-http",
+        fallbackUrl: "https://example.test/r.gst",
+      },
+    );
+
+    expect(Array.from(new Uint8Array(content))).toEqual([1, 2, 3, 4]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("https://example.test/r.gst");
+    expect(scheduler.statistics()).toMatchObject({
+      networkBytes: 4,
+      decodedBytes: 4,
+      zstdResponses: 0,
+      zstdFallbacks: 1,
+    });
+  });
+
+  it("retries the canonical pack when native zstd decoding fails", async () => {
+    class FailingDecompressionStream {
+      constructor(format: string) {
+        expect(format).toBe("zstd");
+        throw new TypeError("zstd stream unavailable");
+      }
+    }
+    vi.stubGlobal("DecompressionStream", FailingDecompressionStream);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([8, 9]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([1, 2, 3, 4]), {
+          status: 206,
+          headers: { "Content-Range": "bytes 0-3/4" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const scheduler = new GsTileRangeScheduler(1, 1024);
+    const content = await scheduler.fetch(
+      "https://example.test/r.gst.zst",
+      { start: 0, length: 4 },
+      undefined,
+      "sha256:raw",
+      {
+        url: "https://example.test/r.gst.zst",
+        byteLength: 2,
+        encoding: "zstd",
+        fallbackUrl: "https://example.test/r.gst",
+      },
+    );
+
+    expect(Array.from(new Uint8Array(content))).toEqual([1, 2, 3, 4]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("https://example.test/r.gst");
+    expect(scheduler.statistics()).toMatchObject({
+      networkBytes: 4,
+      decodedBytes: 4,
+      zstdResponses: 0,
+      zstdFallbacks: 1,
+    });
+  });
+
   it("deduplicates and caches identical tile ranges", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(new Uint8Array([1, 2, 3, 4]), {

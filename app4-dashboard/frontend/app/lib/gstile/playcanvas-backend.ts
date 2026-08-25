@@ -3,6 +3,7 @@ import type {
   GaussianViewFrame,
   GaussianRenderBackend,
   GaussianRenderStatistics,
+  GsTilePackTransportUrls,
 } from "./backend";
 import { GaussianBackendUnavailable } from "./backend";
 import {
@@ -28,7 +29,11 @@ import {
   DRONEGS_OPACITY_MODIFIER_GLSL,
   DRONEGS_OPACITY_MODIFIER_WGSL,
 } from "./playcanvas-opacity";
-import type { GsTileRangeScheduler } from "./range-source";
+import {
+  supportsGsTileZstd,
+  type GsTileNetworkTransport,
+  type GsTileRangeScheduler,
+} from "./range-source";
 import { selectGsTileLod } from "./lod-selection";
 import {
   DEFAULT_GSTILE_PREFETCH_BYTES,
@@ -81,6 +86,36 @@ type LodLoadTimings = {
   decodeCpuMs: number;
   decodeWorkerServiceMs: number;
   decodeWorkerFallbacks: number;
+};
+
+const gsTilePackTransport = (
+  manifestUrl: string,
+  pack: GsTileManifest["packs"][number],
+  signedUrls?: GsTilePackTransportUrls,
+): GsTileNetworkTransport => {
+  const zstd = pack.encodings?.zstd;
+  if (zstd && signedUrls?.zstd) {
+    return {
+      url: signedUrls.zstd,
+      byteLength: zstd.byteLength,
+      encoding: "zstd-http",
+      fallbackUrl: signedUrls.identity,
+    };
+  }
+  if (zstd && supportsGsTileZstd()) {
+    return {
+      url: resolveGsTilePackUrl(manifestUrl, zstd.path),
+      byteLength: zstd.byteLength,
+      encoding: "zstd",
+      fallbackUrl: resolveGsTilePackUrl(manifestUrl, pack.path),
+    };
+  }
+  return {
+    url:
+      signedUrls?.identity ?? resolveGsTilePackUrl(manifestUrl, pack.path),
+    byteLength: pack.byteLength,
+    encoding: "identity",
+  };
 };
 export type GsTileFrameTelemetry = {
   frameCpuMs: number | null;
@@ -845,7 +880,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodManifest: GsTileManifest | null = null;
   #lodManifestUrl = "";
   #lodScheduler: GsTileRangeScheduler | null = null;
-  #lodPackUrls: ReadonlyMap<string, string> | undefined;
+  #lodPackUrls: ReadonlyMap<string, GsTilePackTransportUrls> | undefined;
   #lodSignal: AbortSignal | null = null;
   #lodSyncController: AbortController | null = null;
   #lodPrefetchController: AbortController | null = null;
@@ -1036,7 +1071,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     manifest: GsTileManifest,
     scheduler: GsTileRangeScheduler,
     signal: AbortSignal,
-    packUrls?: ReadonlyMap<string, string>,
+    packUrls?: ReadonlyMap<string, GsTilePackTransportUrls>,
     recommendedView?: GaussianViewFrame | null,
   ) {
     const pc = this.#pc;
@@ -1124,15 +1159,19 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       signal.throwIfAborted();
       const nodes = nodesByPack.get(pack.id);
       if (!nodes?.length) continue;
-      const url =
-        packUrls?.get(pack.id) ?? resolveGsTilePackUrl(manifestUrl, pack.path);
+      const transport = gsTilePackTransport(
+        manifestUrl,
+        pack,
+        packUrls?.get(pack.id),
+      );
       const range = { start: 0, length: pack.byteLength };
       const immutableIdentity = `sha256:${pack.sha256.toLowerCase()}`;
       const content = await scheduler.fetch(
-        url,
+        transport.url,
         range,
         signal,
         immutableIdentity,
+        transport,
       );
       const actualSha256 = await sha256(content);
       if (actualSha256 !== pack.sha256.toLowerCase()) {
@@ -2271,17 +2310,20 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const pack = manifest.packs.find((candidate) => candidate.id === tile.pack);
     if (!pack)
       throw new Error(`GSTile node ${node.id} references a missing pack`);
-    const url =
-      this.#lodPackUrls?.get(pack.id) ??
-      resolveGsTilePackUrl(this.#lodManifestUrl, pack.path);
+    const transport = gsTilePackTransport(
+      this.#lodManifestUrl,
+      pack,
+      this.#lodPackUrls?.get(pack.id),
+    );
     const range = { start: 0, length: pack.byteLength };
     const immutableIdentity = `sha256:${pack.sha256.toLowerCase()}`;
     const fetchStarted = performance.now();
     const content = await scheduler.fetch(
-      url,
+      transport.url,
       range,
       signal,
       immutableIdentity,
+      transport,
     );
     timings.fetchServiceMs += performance.now() - fetchStarted;
     if (!this.#verifiedPackBuffers.has(content)) {
@@ -3020,14 +3062,17 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         planned.map(async ({ pack }) => {
           const range = { start: 0, length: pack.byteLength };
           const immutableIdentity = `sha256:${pack.sha256.toLowerCase()}`;
-          const url =
-            this.#lodPackUrls?.get(pack.id) ??
-            resolveGsTilePackUrl(this.#lodManifestUrl, pack.path);
+          const transport = gsTilePackTransport(
+            this.#lodManifestUrl,
+            pack,
+            this.#lodPackUrls?.get(pack.id),
+          );
           const content = await scheduler.fetch(
-            url,
+            transport.url,
             range,
             controller.signal,
             immutableIdentity,
+            transport,
           );
           const actualSha256 = await sha256(content);
           if (actualSha256 !== pack.sha256.toLowerCase()) {

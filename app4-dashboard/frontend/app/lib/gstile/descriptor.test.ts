@@ -79,9 +79,45 @@ const descriptor = () => ({
 describe("GSTile signed descriptor", () => {
   it("binds every manifest pack to its signed URL", () => {
     const decoded = decodeGsTileViewerDescriptor(descriptor());
-    expect(decoded.packUrls.get("r")).toBe(
-      "https://objects.example/pack?signature=test",
-    );
+    expect(decoded.packUrls.get("r")).toEqual({
+      identity: "https://objects.example/pack?signature=test",
+    });
+  });
+
+  it("binds an optional zstd transport to its manifest identity", () => {
+    const value = descriptor();
+    Object.assign(value.manifest.packs[0], { encodings: {
+      zstd: {
+        path: "packs/r.gst.zst",
+        byteLength: 96,
+        sha256: "d".repeat(64),
+      },
+    } });
+    Object.assign(value.packs[0], { encodings: {
+      zstd: {
+        url: "https://objects.example/pack.zst?signature=test",
+        byteLength: 96,
+        sha256: "d".repeat(64),
+      },
+    } });
+    expect(decodeGsTileViewerDescriptor(value).packUrls.get("r")).toEqual({
+      identity: "https://objects.example/pack?signature=test",
+      zstd: "https://objects.example/pack.zst?signature=test",
+    });
+  });
+
+  it("falls back to the signed identity URL when zstd was not negotiated", () => {
+    const value = descriptor();
+    Object.assign(value.manifest.packs[0], { encodings: {
+      zstd: {
+        path: "packs/r.gst.zst",
+        byteLength: 96,
+        sha256: "d".repeat(64),
+      },
+    } });
+    expect(decodeGsTileViewerDescriptor(value).packUrls.get("r")).toEqual({
+      identity: "https://objects.example/pack?signature=test",
+    });
   });
 
   it("accepts an optional right-handed facade view", () => {
