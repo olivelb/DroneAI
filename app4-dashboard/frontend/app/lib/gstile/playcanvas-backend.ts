@@ -81,7 +81,18 @@ export type GsTileFrameTelemetry = {
   frameCpuMs: number | null;
   frameGpuMs: number | null;
   workBufferUploadPercent: number | null;
+  gpuPasses: Array<{ name: string; durationMs: number }>;
 };
+
+export const captureGsTileGpuPassTelemetry = (
+  timings: ReadonlyMap<string, number> | null | undefined,
+) =>
+  [...(timings ?? [])]
+    .filter(
+      (entry): entry is [string, number] =>
+        entry[0].length > 0 && Number.isFinite(entry[1]) && entry[1] >= 0,
+    )
+    .map(([name, durationMs]) => ({ name, durationMs }));
 
 /** Keep the last real render sample while the on-demand renderer is idle. */
 export const retainGsTileFrameTelemetry = (
@@ -805,6 +816,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     frameCpuMs: null,
     frameGpuMs: null,
     workBufferUploadPercent: null,
+    gpuPasses: [],
   };
   #target: Vec3 = [0, 0, 0];
   #yaw = 0;
@@ -3075,6 +3087,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         lodAddedGaussians: this.#lodAddedGaussians,
         lodRemovedGaussians: this.#lodRemovedGaussians,
         lodReusedGaussians: this.#lodReusedGaussians,
+        frameGpuPasses: this.#lastRenderedFrameTelemetry.gpuPasses,
         rangeScheduler: this.#lodScheduler?.statistics() ?? null,
       },
       worlds: worlds.map(({ world, state }) => ({
@@ -3111,6 +3124,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       workBufferUploadPercent: rendered && this.#app
         ? this.#app.stats.frame.gsplatBufferCopy
         : null,
+      gpuPasses:
+        rendered && this.#debugTraceEnabled
+          ? captureGsTileGpuPassTelemetry(gpuTimings)
+          : [],
     };
     this.#lastRenderedFrameTelemetry = retainGsTileFrameTelemetry(
       this.#lastRenderedFrameTelemetry,

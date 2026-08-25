@@ -898,9 +898,36 @@ atteint 15,1 ms GPU et 12,0 ms CPU. Ces valeurs isolées ne constituent pas un
 benchmark statistique ; elles identifient toutefois le tri/raster sous mouvement
 comme prochain goulot à instrumenter. L'inspection du chemin PlayCanvas 2.21.4
 montre que les intervalles non-octree du pack fusionné partagent actuellement
-une unique sphère englobante de ressource. Le prochain prototype devra donc
-attacher des bornes conservatrices à chaque intervalle GSTile afin de permettre
-le culling GPU avant le radix sort, sans changer les splats visibles.
+une unique sphère englobante de ressource. Le prototype évalué ci-dessous
+attache des bornes conservatrices aux intervalles GSTile afin de mesurer le
+culling GPU avant le radix sort, sans changer les splats potentiellement
+visibles.
+
+### Prototype abandonné : culling GPU par bornes d'intervalles
+
+Deux variantes isolées ont étendu PlayCanvas 2.21.4 avec des sphères locales
+circonscrites aux AABB de nœuds. Le centre est d'abord quantifié en float32,
+puis le rayon est dilaté au-delà de l'arrondi ; les huit coins sont couverts par
+test. Les métadonnées manquantes, non finies, chevauchantes ou hors capacité
+échouent fermé. La première variante conserve une borne par span ; la seconde
+fusionne jusqu'à huit spans contigus et prend l'union de leurs AABB.
+
+Le protocole recharge la caméra initiale avant chaque run, attend le cut complet
+de 7,4 M splats, puis rejoue le même déplacement. Trois runs par variante donnent :
+
+| variante | GPU mouvement | commit mouvement |
+|---|---:|---:|
+| baseline fusionné `eff80c6` | **38,9 ms** | **45 ms** |
+| une borne par span `4a8cbd1` | 39,0 ms (**+0,3 %**) | 58 ms (**+28,9 %**) |
+| groupes de huit `3d18328` | 44,8 ms (**+15,2 %**) | 76 ms (**+68,9 %**) |
+
+Le culling par span est donc neutre sur le GPU et régressif au commit ; la
+borne groupée est régressive sur les deux axes. L'explication la plus probable
+est que la sélection LOD CPU a déjà exclu les nœuds hors frustum, tandis que le
+chemin par intervalles ajoute compaction et reconstruction du monde unifié.
+Les deux variantes sont abandonnées et ne sont pas fusionnées. La prochaine
+gate doit ventiler les timings GPU par projection, compaction, radix sort et
+raster avant toute nouvelle modification du renderer.
 
 ## Sources primaires
 
