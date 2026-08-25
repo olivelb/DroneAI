@@ -2,11 +2,119 @@ import { describe, expect, it } from "vitest";
 import {
   calculateMergedArenaBounds,
   mergedArenaActiveSpans,
+  mergedArenaCullIntervals,
   mergeMergedArenaBounds,
   planLinearTextureCopies,
   planMergedArenaSlots,
+  type MergedArenaBounds,
   type MergedArenaSlot,
 } from "./merged-arena";
+
+describe("merged GSTile arena culling intervals", () => {
+  it("keeps per-node bounds across sorted and fragmented spans", () => {
+    const aBounds: MergedArenaBounds = {
+      min: [-2, -1, 0],
+      max: [2, 3, 4],
+    };
+    const bBounds: MergedArenaBounds = {
+      min: [10, 11, 12],
+      max: [13, 14, 15],
+    };
+    const slots = new Map<string, MergedArenaSlot>([
+      [
+        "b",
+        {
+          spans: [
+            { offset: 7, count: 2 },
+            { offset: 2, count: 1 },
+          ],
+          count: 3,
+        },
+      ],
+      ["a", { spans: [{ offset: 3, count: 4 }], count: 4 }],
+    ]);
+
+    expect(
+      mergedArenaCullIntervals(
+        slots,
+        new Map([
+          ["a", aBounds],
+          ["b", bBounds],
+        ]),
+        1,
+      ),
+    ).toEqual([
+      { start: 2, count: 1, bounds: bBounds },
+      { start: 3, count: 4, bounds: aBounds },
+      { start: 7, count: 2, bounds: bBounds },
+    ]);
+  });
+
+  it("groups bounded contiguous spans without crossing arena gaps", () => {
+    const bounds = new Map<string, MergedArenaBounds>([
+      ["a", { min: [0, 0, 0], max: [1, 1, 1] }],
+      ["b", { min: [2, 2, 2], max: [3, 3, 3] }],
+      ["c", { min: [10, 10, 10], max: [11, 11, 11] }],
+    ]);
+    expect(
+      mergedArenaCullIntervals(
+        new Map([
+          ["a", { spans: [{ offset: 0, count: 2 }], count: 2 }],
+          ["b", { spans: [{ offset: 2, count: 3 }], count: 3 }],
+          ["c", { spans: [{ offset: 7, count: 2 }], count: 2 }],
+        ]),
+        bounds,
+        2,
+      ),
+    ).toEqual([
+      {
+        start: 0,
+        count: 5,
+        bounds: { min: [0, 0, 0], max: [3, 3, 3] },
+      },
+      {
+        start: 7,
+        count: 2,
+        bounds: { min: [10, 10, 10], max: [11, 11, 11] },
+      },
+    ]);
+  });
+
+  it("fails closed on missing, invalid or overlapping culling metadata", () => {
+    const slots = new Map<string, MergedArenaSlot>([
+      ["a", { spans: [{ offset: 0, count: 2 }], count: 2 }],
+    ]);
+    expect(() => mergedArenaCullIntervals(slots, new Map())).toThrow(
+      "are missing",
+    );
+    expect(() =>
+      mergedArenaCullIntervals(
+        slots,
+        new Map([["a", { min: [1, 0, 0], max: [0, 1, 1] }]]),
+      ),
+    ).toThrow("are invalid");
+    expect(() =>
+      mergedArenaCullIntervals(
+        new Map([
+          ["a", { spans: [{ offset: 0, count: 2 }], count: 2 }],
+          ["b", { spans: [{ offset: 1, count: 2 }], count: 2 }],
+        ]),
+        new Map([
+          ["a", { min: [0, 0, 0], max: [1, 1, 1] }],
+          ["b", { min: [0, 0, 0], max: [1, 1, 1] }],
+        ]),
+      ),
+    ).toThrow("overlap");
+    expect(() =>
+      mergedArenaCullIntervals(
+        new Map([
+          ["a", { spans: [{ offset: -1, count: 2 }], count: 2 }],
+        ]),
+        new Map([["a", { min: [0, 0, 0], max: [1, 1, 1] }]]),
+      ),
+    ).toThrow("interval is invalid");
+  });
+});
 
 describe("merged GSTile arena texture copies", () => {
   it("splits linear ranges at both source and destination row boundaries", () => {

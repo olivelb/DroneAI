@@ -35,6 +35,12 @@ export type MergedArenaBounds = {
   max: [number, number, number];
 };
 
+export type MergedArenaCullInterval = {
+  start: number;
+  count: number;
+  bounds: MergedArenaBounds;
+};
+
 const validatePositiveSafeInteger = (value: number, label: string) => {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new Error(`${label} must be a positive safe integer`);
@@ -247,6 +253,94 @@ export const mergedArenaActiveSpans = (
     }
   }
   return merged;
+};
+
+/** Keep node ownership while flattening spans for conservative GPU culling. */
+export const mergedArenaCullIntervals = (
+  slots: ReadonlyMap<string, MergedArenaSlot>,
+  bounds: ReadonlyMap<string, MergedArenaBounds>,
+  maximumSourceIntervalsPerGroup = 8,
+): MergedArenaCullInterval[] => {
+  validatePositiveSafeInteger(
+    maximumSourceIntervalsPerGroup,
+    "GSTile arena culling group size",
+  );
+  const intervals: Array<
+    MergedArenaCullInterval & { sourceIntervals: number }
+  > = [];
+  for (const [nodeId, slot] of slots) {
+    const nodeBounds = bounds.get(nodeId);
+    if (!nodeBounds) {
+      throw new Error(`GSTile arena culling bounds ${nodeId} are missing`);
+    }
+    for (let axis = 0; axis < 3; axis += 1) {
+      if (
+        !Number.isFinite(nodeBounds.min[axis]) ||
+        !Number.isFinite(nodeBounds.max[axis]) ||
+        nodeBounds.min[axis] > nodeBounds.max[axis]
+      ) {
+        throw new Error(`GSTile arena culling bounds ${nodeId} are invalid`);
+      }
+    }
+    for (const span of slot.spans) {
+      if (
+        !Number.isSafeInteger(span.offset) ||
+        span.offset < 0 ||
+        !Number.isSafeInteger(span.count) ||
+        span.count < 1
+      ) {
+        throw new Error("GSTile arena culling interval is invalid");
+      }
+      intervals.push({
+        start: span.offset,
+        count: span.count,
+        bounds: {
+          min: [...nodeBounds.min],
+          max: [...nodeBounds.max],
+        },
+        sourceIntervals: 1,
+      });
+    }
+  }
+  intervals.sort((left, right) => left.start - right.start);
+  let previousEnd = 0;
+  for (const interval of intervals) {
+    if (interval.start < previousEnd) {
+      throw new Error("GSTile arena culling intervals overlap");
+    }
+    previousEnd = interval.start + interval.count;
+  }
+  const grouped: Array<
+    MergedArenaCullInterval & { sourceIntervals: number }
+  > = [];
+  for (const interval of intervals) {
+    const previous = grouped.at(-1);
+    if (
+      previous &&
+      previous.start + previous.count === interval.start &&
+      previous.sourceIntervals < maximumSourceIntervalsPerGroup
+    ) {
+      previous.count += interval.count;
+      previous.sourceIntervals += 1;
+      for (let axis = 0; axis < 3; axis += 1) {
+        previous.bounds.min[axis] = Math.min(
+          previous.bounds.min[axis],
+          interval.bounds.min[axis],
+        );
+        previous.bounds.max[axis] = Math.max(
+          previous.bounds.max[axis],
+          interval.bounds.max[axis],
+        );
+      }
+    } else {
+      grouped.push(interval);
+    }
+  }
+  return grouped.map(({ start, count, bounds: groupBounds }) => ({
+    start,
+    count,
+    bounds: groupBounds,
+  }));
 };
 
 /**

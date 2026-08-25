@@ -33,6 +33,7 @@ import { selectGsTileLod } from "./lod-selection";
 import {
   calculateMergedArenaBounds,
   mergedArenaActiveSpans,
+  mergedArenaCullIntervals,
   mergeMergedArenaBounds,
   planLinearTextureCopies,
   planMergedArenaSlots,
@@ -2090,15 +2091,13 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #setMergedArenaIntervals(
     entity: PcEntity,
     slots: ReadonlyMap<string, MergedArenaSlot>,
+    bounds: ReadonlyMap<string, MergedArenaBounds>,
   ) {
     if (!entity.gsplat) {
       throw new Error("PlayCanvas GSplat component is unavailable");
     }
     entity.gsplat.setActiveSplatIntervals(
-      mergedArenaActiveSpans(slots).map((span) => ({
-        start: span.offset,
-        count: span.count,
-      })),
+      mergedArenaCullIntervals(slots, bounds),
     );
   }
 
@@ -2704,9 +2703,11 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           // active. Enable synchronously before configuring its source ranges;
           // no frame can be presented in the middle of this commit.
           entity.enabled = true;
-          if (!contiguousArena) {
-            this.#setMergedArenaIntervals(entity, mergedPlan.slots);
-          }
+          this.#setMergedArenaIntervals(
+            entity,
+            mergedPlan.slots,
+            nextBounds,
+          );
           sceneAttachMs += performance.now() - attachStarted;
           const byteLength = [...nextByteLengths.values()].reduce(
             (total, value) => total + value,
@@ -2763,7 +2764,11 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           );
           arena.container.update(arena.container.maxSplats, true);
           this.#setMergedArenaBounds(arena.container, mergedBounds);
-          this.#setMergedArenaIntervals(arena.loaded.entity, mergedPlan.slots);
+          this.#setMergedArenaIntervals(
+            arena.loaded.entity,
+            mergedPlan.slots,
+            nextBounds,
+          );
           // PlayCanvas can clear the global streaming dirty flag before the
           // layer reconciliation observes changed non-octree intervals. Drop
           // only the derived unified manager so the next render rebuilds its
