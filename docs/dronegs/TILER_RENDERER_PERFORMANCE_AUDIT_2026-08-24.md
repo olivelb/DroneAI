@@ -710,6 +710,39 @@ qui rend le gain de commit interprétable. La suite complète passe 28 fichiers
 et 157 tests, le lint, le typecheck et les builds local et BIGZEN. Le contrôle
 visuel humain est validé conforme au PLY original.
 
+### Qualification de la promotion directe de l'arène — Saint-Étienne v4c
+
+Le premier cut crée désormais une `GSplatResource` directement à la capacité
+GPU maximale, mais ne packe que son préfixe actif. Cette même ressource reçoit
+ensuite l'interface mutable `maxSplats/update` de l'arène persistante. Le chemin
+supprime donc la petite ressource de staging initiale, la seconde création
+d'entité et toutes ses copies texture vers le conteneur. Les raffinements
+suivants gardent les slots, copies GPU partielles et intervalles existants.
+
+PlayCanvas conservant les niveaux `TypedArray` des textures de données après
+upload, le candidat les libère immédiatement après le premier rendu soumis. À
+la capacité de 7 500 000 splats (7 502 121 texels avec padding), cela libère
+exactement **1 200 339 360 octets**, soit environ **1,118 Gio**, sans modifier
+les textures GPU. Un test de contrat vérifie que seules les sources typées sont
+libérées et que le compteur actif reste borné par la capacité.
+
+Le protocole garde le même onglet Chrome, un warm-up exclu par build et l'ordre
+candidat → baseline `befbebe` → candidat. Les trois derniers runs candidats
+incluent la libération CPU post-upload :
+
+| variante | streams médian | ressource médiane | commit médian | load médian | LOD médian |
+|---|---:|---:|---:|---:|---:|
+| candidat, premier passage | **0,078 s** | **0,550 s** | **1,080 s** | **11,067 s** | **12,086 s** |
+| baseline `befbebe` | 0,191 s | 0,705 s | 1,287 s | 12,778 s | 14,077 s |
+| candidat final, sources CPU libérées | **0,068 s** | **0,544 s** | **1,054 s** | **12,000 s** | **13,064 s** |
+
+Face au baseline, le candidat final gagne **−64,4 % sur `streams`**, **−22,8 %
+sur la ressource** et **−18,1 % sur le commit**. Le LOD total baisse de 7,2 %,
+mais 6,1 points suivent le bruit du load ; seul le gain interne de commit est
+attribué à cette phase. La suite complète passe 28 fichiers et 161 tests, le
+lint, le typecheck et les builds de production local et BIGZEN. Le contrôle
+visuel humain est validé conforme au PLY original.
+
 ## Sources primaires
 
 - WebSplatter, papier et code officiel : https://arxiv.org/abs/2602.03207 et

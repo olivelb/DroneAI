@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   completeLodTargetPlan,
+  configurePlayCanvasGsplatArenaResource,
   configureHighQualityGsplatRendering,
   coordinateFrameCameraPosition,
   fitOrbitDistance,
@@ -17,6 +18,7 @@ import {
   orbitCameraBasis,
   planLodTransitions,
   prioritizeLodLoads,
+  releasePlayCanvasTextureCpuSources,
   resetPlayCanvasGsplatManagers,
   panOrbitTarget,
 } from "./playcanvas-backend";
@@ -142,6 +144,65 @@ describe("PlayCanvas unified world reset", () => {
 
   it("is a no-op before PlayCanvas creates a director", () => {
     expect(resetPlayCanvasGsplatManagers(null)).toBe(0);
+  });
+});
+
+describe("PlayCanvas promoted GSTile arena", () => {
+  it("changes only the active count and centers version", () => {
+    const resource = { centersVersion: 4 };
+    const data = { numSplats: 10 };
+    const arena = configurePlayCanvasGsplatArenaResource(
+      resource,
+      data,
+      10,
+      6,
+    );
+
+    expect(arena).toBe(resource);
+    expect(arena.maxSplats).toBe(10);
+    expect(data.numSplats).toBe(6);
+    expect(resource.centersVersion).toBe(4);
+
+    arena.update(8);
+    expect(data.numSplats).toBe(8);
+    expect(resource.centersVersion).toBe(5);
+
+    arena.update(99, false);
+    expect(data.numSplats).toBe(10);
+    expect(resource.centersVersion).toBe(5);
+  });
+
+  it("rejects an active count outside the allocated capacity", () => {
+    expect(() =>
+      configurePlayCanvasGsplatArenaResource(
+        { centersVersion: 0 },
+        { numSplats: 1 },
+        10,
+        11,
+      ),
+    ).toThrow(/counts are invalid/);
+  });
+
+  it("releases only uploaded typed-array texture levels", () => {
+    const typed = new Float32Array(12);
+    const texture = {
+      _levels: [typed] as unknown[],
+      getSource() {
+        return this._levels[0];
+      },
+    };
+    const image = {
+      _levels: [{ width: 1 }],
+      getSource() {
+        return this._levels[0];
+      },
+    };
+
+    expect(releasePlayCanvasTextureCpuSources([texture, image])).toBe(
+      typed.byteLength,
+    );
+    expect(texture._levels[0]).toBeNull();
+    expect(image._levels[0]).toEqual({ width: 1 });
   });
 });
 
