@@ -60,6 +60,7 @@ export type GsTilePlayCanvasColumns = GsTilePlyColumns & {
   colorStream: Uint16Array | null;
   shStreams: GsTileNativeShStreams | null;
   centerStream: Float32Array | null;
+  transformStreams: [Uint32Array, Uint16Array] | null;
   bounds: {
     minimum: [number, number, number];
     maximum: [number, number, number];
@@ -71,6 +72,7 @@ export type GsTilePlayCanvasPacking = {
   color?: boolean;
   sh?: boolean;
   centerBounds?: boolean;
+  transform?: boolean;
 };
 
 const decodedFloatFields = [
@@ -122,6 +124,9 @@ const validatePlayCanvasColumnRange = (
   ) {
     throw new Error("GSTile PlayCanvas column range escapes its destination");
   }
+  const transformColumnLength = destination.transformStreams
+    ? 0
+    : destination.count;
   const groups: ReadonlyArray<readonly [Float32Array[], number]> = [
     [destination.logScale, 3],
     [destination.rotation, 4],
@@ -129,7 +134,7 @@ const validatePlayCanvasColumnRange = (
   for (const [columns, width] of groups) {
     if (
       columns.length !== width ||
-      columns.some((column) => column.length !== destination.count)
+      columns.some((column) => column.length !== transformColumnLength)
     ) {
       throw new Error("GSTile PlayCanvas column width is inconsistent");
     }
@@ -146,6 +151,15 @@ const validatePlayCanvasColumnRange = (
       destination.centerStream.length !== destination.count * 3)
   ) {
     throw new Error("GSTile PlayCanvas position width is inconsistent");
+  }
+  const textureStreamLength = gsTileTextureElementCapacity(destination.count) * 4;
+  if (
+    destination.transformStreams !== null &&
+    (destination.centerStream === null ||
+      destination.transformStreams[0].length !== textureStreamLength ||
+      destination.transformStreams[1].length !== textureStreamLength)
+  ) {
+    throw new Error("GSTile PlayCanvas transform stream width is inconsistent");
   }
   const colorColumnLength = destination.colorStream ? 0 : destination.count;
   if (
@@ -259,8 +273,12 @@ export const allocateGsTilePlayCanvasColumns = (
     ? Array.from({ length: 3 }, () => new Float32Array(0))
     : columns(3);
   const opacityLogit = new Float32Array(packing.color ? 0 : count);
-  const logScale = columns(3);
-  const rotation = columns(4);
+  const logScale = packing.transform
+    ? Array.from({ length: 3 }, () => new Float32Array(0))
+    : columns(3);
+  const rotation = packing.transform
+    ? Array.from({ length: 4 }, () => new Float32Array(0))
+    : columns(4);
   const colorSh = packing.sh
     ? Array.from({ length: 45 }, () => new Float32Array(0))
     : columns(45);
@@ -282,8 +300,14 @@ export const allocateGsTilePlayCanvasColumns = (
         new Uint32Array(textureStreamLength),
       ]
     : null;
-  const centerStream = packing.centerBounds
+  const centerStream = packing.centerBounds || packing.transform
     ? new Float32Array(count * 3)
+    : null;
+  const transformStreams: [Uint32Array, Uint16Array] | null = packing.transform
+    ? [
+        new Uint32Array(textureStreamLength),
+        new Uint16Array(textureStreamLength),
+      ]
     : null;
   const plyColumns = {
     position,
@@ -301,6 +325,7 @@ export const allocateGsTilePlayCanvasColumns = (
     colorStream,
     shStreams,
     centerStream,
+    transformStreams,
     bounds: {
       minimum: [Infinity, Infinity, Infinity],
       maximum: [-Infinity, -Infinity, -Infinity],
@@ -550,38 +575,43 @@ const decodeRecordsIntoPlayCanvasColumns = (
     colorStream,
     shStreams,
     centerStream,
+    transformStreams,
   } = destination;
   const shScratch = shStreams ? createGsTileNativeShScratch() : null;
 
   for (let record = 0; record < count; record += 1) {
     const base = byteOffset + record * GSTILE_RECORD_BYTES;
     const targetRecord = recordOffset + record;
-    for (let axis = 0; axis < 3; axis += 1) {
-      const decodedPosition = Math.fround(dequantizeU16(
-        view.getUint16(base + axis * 2, true),
-        quantization.position.min[axis],
-        quantization.position.max[axis],
-      ));
-      if (centerStream) {
-        centerStream[targetRecord * 3 + axis] = decodedPosition;
-      } else {
-        position[axis][targetRecord] = decodedPosition;
+    if (!transformStreams) {
+      for (let axis = 0; axis < 3; axis += 1) {
+        const decodedPosition = Math.fround(
+          dequantizeU16(
+            view.getUint16(base + axis * 2, true),
+            quantization.position.min[axis],
+            quantization.position.max[axis],
+          ),
+        );
+        if (centerStream) {
+          centerStream[targetRecord * 3 + axis] = decodedPosition;
+        } else {
+          position[axis][targetRecord] = decodedPosition;
+        }
+        logScale[axis][targetRecord] = dequantizeU16(
+          view.getUint16(base + 6 + axis * 2, true),
+          quantization.logScale.min[axis],
+          quantization.logScale.max[axis],
+        );
       }
-      logScale[axis][targetRecord] = dequantizeU16(
-        view.getUint16(base + 6 + axis * 2, true),
-        quantization.logScale.min[axis],
-        quantization.logScale.max[axis],
-      );
+      const w = view.getInt16(base + 12, true) / 32_767;
+      const x = view.getInt16(base + 14, true) / 32_767;
+      const y = view.getInt16(base + 16, true) / 32_767;
+      const z = view.getInt16(base + 18, true) / 32_767;
+      const quaternionLength = normalizedBoundedQuaternionLength(w, x, y, z);
+      rotation[0][targetRecord] = w / quaternionLength;
+      rotation[1][targetRecord] = x / quaternionLength;
+      rotation[2][targetRecord] = y / quaternionLength;
+      rotation[3][targetRecord] = z / quaternionLength;
     }
-    const w = view.getInt16(base + 12, true) / 32_767;
-    const x = view.getInt16(base + 14, true) / 32_767;
-    const y = view.getInt16(base + 16, true) / 32_767;
-    const z = view.getInt16(base + 18, true) / 32_767;
-    const quaternionLength = normalizedBoundedQuaternionLength(w, x, y, z);
-    rotation[0][targetRecord] = w / quaternionLength;
-    rotation[1][targetRecord] = x / quaternionLength;
-    rotation[2][targetRecord] = y / quaternionLength;
-    rotation[3][targetRecord] = z / quaternionLength;
     const baseOpacity = Math.fround(dequantizeU16(
       view.getUint16(base + 20, true),
       quantization.opacityLogit.min,
