@@ -8,10 +8,7 @@ from fastapi import APIRouter, Depends, Query, Response
 
 from shared.database import get_session
 
-from ..gaussian_viewer import (
-    VIEWER_DESCRIPTOR_CACHE_SECONDS,
-    gaussian_viewer_descriptor,
-)
+from ..gaussian_viewer import gaussian_viewer_descriptor
 from ..mission_access import get_owned_mission
 from ..security import Principal, require_authenticated
 
@@ -34,8 +31,5 @@ def mission_gaussian_viewer(
             action="gaussian_viewer",
         )
         descriptor = gaussian_viewer_descriptor(session, mission)
-    response.headers["Cache-Control"] = (
-        f"private, max-age={VIEWER_DESCRIPTOR_CACHE_SECONDS}"
-    )
-    response.headers["Vary"] = "Authorization, Cookie"
+    response.headers["Cache-Control"] = "private, no-store"
     return descriptor
