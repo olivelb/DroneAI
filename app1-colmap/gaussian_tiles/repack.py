@@ -17,7 +17,7 @@ from .format import (
     canonical_manifest_bytes,
     validate_manifest,
     validate_pack_content,
-    write_aggregate_pack_atomic,
+    write_bundle_aggregate_pack_atomic,
 )
 
 _PackKind = Literal["exact", "proxy"]
@@ -106,19 +106,11 @@ class _AggregateRepackWriter:
         sequence = self.sequences[kind]
         self.sequences[kind] += 1
         pack_id = f"aggregate-{kind}-{sequence:06d}"
-        relative = Path("packs") / f"{pack_id}.gst"
-        pack = write_aggregate_pack_atomic(
-            self.bundle_tmp / relative,
+        pack = write_bundle_aggregate_pack_atomic(
+            self.bundle_tmp,
             [entry.payload for entry in pending],
             pack_id=pack_id,
         )
-        pack["id"] = pack_id
-        pack["path"] = relative.as_posix()
-        pack["byteOffset"] = PACK_HEADER_SIZE
-        if zstd_encoding := pack.get("encodings", {}).get("zstd"):
-            zstd_encoding["path"] = relative.with_suffix(
-                relative.suffix + ".zst"
-            ).as_posix()
         offset = PACK_HEADER_SIZE
         for entry in pending:
             entry.tile["pack"] = pack_id

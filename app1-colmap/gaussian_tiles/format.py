@@ -325,6 +325,34 @@ def write_aggregate_pack_atomic(
     return _write_encoded_pack_atomic(path, content)
 
 
+def write_bundle_aggregate_pack_atomic(
+    bundle_root: Path,
+    payloads: Sequence[bytes | memoryview],
+    *,
+    pack_id: str,
+) -> dict[str, Any]:
+    """Write an aggregate and attach its canonical bundle-relative metadata."""
+
+    relative = Path("packs") / f"{pack_id}.gst"
+    pack = write_aggregate_pack_atomic(
+        bundle_root / relative,
+        payloads,
+        pack_id=pack_id,
+    )
+    pack.update(
+        {
+            "id": pack_id,
+            "path": relative.as_posix(),
+            "byteOffset": PACK_HEADER_SIZE,
+        }
+    )
+    if zstd_encoding := pack.get("encodings", {}).get("zstd"):
+        zstd_encoding["path"] = relative.with_suffix(
+            relative.suffix + ".zst"
+        ).as_posix()
+    return pack
+
+
 def _write_bytes_atomic(path: Path, content: bytes) -> None:
     temporary = path.with_name(path.name + ".partial")
     try:

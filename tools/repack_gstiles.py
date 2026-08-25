@@ -5,15 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-COLMAP_ROOT = REPOSITORY_ROOT / "app1-colmap"
-for import_root in (REPOSITORY_ROOT, COLMAP_ROOT):
-    root = str(import_root)
-    if root not in sys.path:
-        sys.path.insert(0, root)
+from gstile_cli_common import configure_repository_imports, jsonl_progress_callback
+
+configure_repository_imports(__file__)
 
 from gaussian_tiles import repack_gstile_bundle  # noqa: E402
 
@@ -33,11 +29,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
-    progress_callback = None
-    if arguments.progress_jsonl:
-        progress_callback = lambda event: print(
-            json.dumps(event, sort_keys=True), file=sys.stderr, flush=True
-        )
+    progress_callback = jsonl_progress_callback(arguments.progress_jsonl)
     result = repack_gstile_bundle(
         arguments.source_bundle,
         arguments.output_directory,
