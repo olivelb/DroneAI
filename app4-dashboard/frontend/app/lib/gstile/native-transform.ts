@@ -15,21 +15,26 @@ export const packGsTileNativeTransforms = (
     | typeof Float16Array
     | null
     | undefined = globalThis.Float16Array,
+  activeCount?: number,
 ) => {
-  const count = columns.logScale[0]?.length ?? 0;
+  const capacity = columns.logScale[0]?.length ?? 0;
+  const count = activeCount ?? capacity;
   if (
+    !Number.isSafeInteger(count) ||
+    count < 0 ||
+    count > capacity ||
     columns.position.length !== 3 ||
     columns.logScale.length !== 3 ||
     columns.rotation.length !== 4 ||
     [...columns.logScale, ...columns.rotation].some(
-      (column) => column.length !== count,
+      (column) => column.length !== capacity,
     ) ||
     (columns.centerStream
-      ? columns.centerStream.length !== count * 3 ||
+      ? columns.centerStream.length !== capacity * 3 ||
         columns.position.some((column) => column.length !== 0)
-      : columns.position.some((column) => column.length !== count)) ||
-    transformA.length < count * 4 ||
-    transformB.length < count * 4
+      : columns.position.some((column) => column.length !== capacity)) ||
+    transformA.length < capacity * 4 ||
+    transformB.length < capacity * 4
   ) {
     throw new Error("GSTile native transform stream shape is inconsistent");
   }

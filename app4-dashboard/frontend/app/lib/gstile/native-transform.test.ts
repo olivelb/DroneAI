@@ -154,4 +154,39 @@ describe("GSTile native transform packing", () => {
       ),
     ).toThrow(/shape is inconsistent/);
   });
+
+  it("packs only the active prefix of a capacity-sized arena", () => {
+    const capacity = 4;
+    const position = Array.from(
+      { length: 3 },
+      (_, axis) => Float32Array.from({ length: capacity }, (_, i) => i + axis),
+    );
+    const logScale = Array.from(
+      { length: 3 },
+      () => new Float32Array(capacity),
+    );
+    const rotation = [
+      new Float32Array(capacity).fill(1),
+      new Float32Array(capacity),
+      new Float32Array(capacity),
+      new Float32Array(capacity),
+    ];
+    const transformA = new Uint32Array(capacity * 4).fill(0xffff_ffff);
+    const transformB = new Uint16Array(capacity * 4).fill(0xffff);
+
+    packGsTileNativeTransforms(
+      { position, logScale, rotation },
+      transformA,
+      transformB,
+      FloatPacking.float2Half,
+      null,
+      2,
+    );
+
+    expect([...transformA.slice(8)]).toEqual(new Array(8).fill(0xffff_ffff));
+    expect([...transformB.slice(8)]).toEqual(new Array(8).fill(0xffff));
+    expect([...transformA.slice(0, 8)]).not.toEqual(
+      new Array(8).fill(0xffff_ffff),
+    );
+  });
 });
