@@ -1,4 +1,9 @@
+import type { GsTilePersistentCache } from "./persistent-range-cache";
+
 export type ByteRange = { start: number; length: number };
+
+export const DEFAULT_GSTILE_MEMORY_CACHE_BYTES = 768 * 1024 * 1024;
+export const DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS = 300;
 
 export class GsTileRangeError extends Error {
   constructor(message: string) {
@@ -62,6 +67,11 @@ export type GsTileRangeSchedulerStatistics = {
   cacheHits: number;
   cacheMisses: number;
   inFlightHits: number;
+  persistentCacheHits: number;
+  persistentCacheMisses: number;
+  persistentWrites: number;
+  persistentWriteBytes: number;
+  persistentErrors: number;
 };
 
 type InFlightRange = {
@@ -83,6 +93,7 @@ export class GsTileRangeScheduler {
   readonly #maximumConcurrency: number;
   readonly #maximumCacheBytes: number;
   readonly #orphanGraceMilliseconds: number;
+  readonly #persistentCache: GsTilePersistentCache | null;
   #active = 0;
   #queue: QueueEntry[] = [];
   #cache = new Map<string, ArrayBuffer>();
@@ -90,12 +101,19 @@ export class GsTileRangeScheduler {
   #cacheHits = 0;
   #cacheMisses = 0;
   #inFlightHits = 0;
+  #persistentCacheHits = 0;
+  #persistentCacheMisses = 0;
+  #persistentWrites = 0;
+  #persistentWriteBytes = 0;
+  #persistentErrors = 0;
   #inFlight = new Map<string, InFlightRange>();
+  #persistentBuffers = new WeakSet<ArrayBuffer>();
 
   constructor(
     maximumConcurrency = 8,
-    maximumCacheBytes = 768 * 1024 * 1024,
-    orphanGraceMilliseconds = 300,
+    maximumCacheBytes = DEFAULT_GSTILE_MEMORY_CACHE_BYTES,
+    orphanGraceMilliseconds = DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS,
+    persistentCache: GsTilePersistentCache | null = null,
   ) {
     if (!Number.isInteger(maximumConcurrency) || maximumConcurrency < 1) {
       throw new Error("GSTile concurrency must be a positive integer");
@@ -112,6 +130,7 @@ export class GsTileRangeScheduler {
     this.#maximumConcurrency = maximumConcurrency;
     this.#maximumCacheBytes = maximumCacheBytes;
     this.#orphanGraceMilliseconds = orphanGraceMilliseconds;
+    this.#persistentCache = persistentCache;
   }
 
   statistics(): GsTileRangeSchedulerStatistics {
@@ -123,12 +142,22 @@ export class GsTileRangeScheduler {
       cacheHits: this.#cacheHits,
       cacheMisses: this.#cacheMisses,
       inFlightHits: this.#inFlightHits,
+      persistentCacheHits: this.#persistentCacheHits,
+      persistentCacheMisses: this.#persistentCacheMisses,
+      persistentWrites: this.#persistentWrites,
+      persistentWriteBytes: this.#persistentWriteBytes,
+      persistentErrors: this.#persistentErrors,
     };
   }
 
-  async fetch(url: string, range: ByteRange, signal?: AbortSignal) {
+  async fetch(
+    url: string,
+    range: ByteRange,
+    signal?: AbortSignal,
+    immutableIdentity?: string,
+  ) {
     if (signal?.aborted) return Promise.reject(signal.reason);
-    const key = `${url}\0${range.start}\0${range.length}`;
+    const key = this.#rangeKey(url, range, immutableIdentity);
     const cached = this.#cache.get(key);
     if (cached) {
       this.#cache.delete(key);
@@ -164,6 +193,36 @@ export class GsTileRangeScheduler {
     return this.#subscribe(request, signal);
   }
 
+  persistVerified(
+    immutableIdentity: string,
+    range: ByteRange,
+    content: ArrayBuffer,
+  ) {
+    if (!this.#persistentCache || this.#persistentBuffers.has(content)) return;
+    if (content.byteLength !== range.length) {
+      throw new Error("Verified GSTile range length mismatch");
+    }
+    const key = this.#rangeKey("", range, immutableIdentity);
+    this.#persistentBuffers.add(content);
+    void this.#persistentCache.write(key, content).then(
+      () => {
+        this.#persistentWrites += 1;
+        this.#persistentWriteBytes += content.byteLength;
+      },
+      () => {
+        this.#persistentErrors += 1;
+      },
+    );
+  }
+
+  evictPersistent(immutableIdentity: string, range: ByteRange) {
+    if (!this.#persistentCache) return;
+    const key = this.#rangeKey("", range, immutableIdentity);
+    void this.#persistentCache.delete(key).catch(() => {
+      this.#persistentErrors += 1;
+    });
+  }
+
   async #fetchAndCache(
     key: string,
     url: string,
@@ -172,26 +231,67 @@ export class GsTileRangeScheduler {
   ) {
     await this.#acquire(signal);
     try {
-      const content = await fetchGsTileRange(url, range, signal);
-      if (content.byteLength <= this.#maximumCacheBytes) {
-        while (
-          this.#cacheBytes + content.byteLength > this.#maximumCacheBytes &&
-          this.#cache.size > 0
-        ) {
-          const oldest = this.#cache.entries().next().value as
-            | [string, ArrayBuffer]
-            | undefined;
-          if (!oldest) break;
-          this.#cache.delete(oldest[0]);
-          this.#cacheBytes -= oldest[1].byteLength;
+      if (this.#persistentCache && key.startsWith("immutable:")) {
+        try {
+          const persistent = await this.#persistentCache.read(
+            key,
+            range.length,
+            signal,
+          );
+          if (persistent) {
+            this.#persistentCacheHits += 1;
+            this.#persistentBuffers.add(persistent);
+            this.#putMemory(key, persistent);
+            return persistent;
+          }
+          this.#persistentCacheMisses += 1;
+        } catch (error) {
+          if (signal.aborted) throw error;
+          this.#persistentErrors += 1;
         }
-        this.#cache.set(key, content);
-        this.#cacheBytes += content.byteLength;
       }
+      const content = await fetchGsTileRange(url, range, signal);
+      this.#putMemory(key, content);
       return content;
     } finally {
       this.#release();
     }
+  }
+
+  #rangeKey(
+    url: string,
+    range: ByteRange,
+    immutableIdentity?: string,
+  ) {
+    if (immutableIdentity !== undefined && !immutableIdentity) {
+      throw new Error("GSTile immutable cache identity cannot be empty");
+    }
+    const source = immutableIdentity
+      ? `immutable:${immutableIdentity}`
+      : `url:${url}`;
+    return `${source}\0${range.start}\0${range.length}`;
+  }
+
+  #putMemory(key: string, content: ArrayBuffer) {
+    if (content.byteLength > this.#maximumCacheBytes) return;
+    const existing = this.#cache.get(key);
+    if (existing) {
+      this.#cache.delete(key);
+      this.#cacheBytes -= existing.byteLength;
+    }
+    while (
+      this.#cacheBytes + content.byteLength > this.#maximumCacheBytes &&
+      this.#cache.size > 0
+    ) {
+      const oldest = this.#cache.entries().next().value as
+        | [string, ArrayBuffer]
+        | undefined;
+      if (!oldest) break;
+      this.#cache.delete(oldest[0]);
+      this.#cacheBytes -= oldest[1].byteLength;
+    }
+    this.#cache.set(key, content);
+    this.#cacheBytes += content.byteLength;
   }
 
   #subscribe(request: InFlightRange, signal?: AbortSignal) {
