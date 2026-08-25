@@ -1683,7 +1683,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
                   outputB,
                   pc.FloatPacking.float2Half,
                   globalThis.Float16Array,
-                  arenaActiveGaussianCount ?? tile.count,
+                  {
+                    activeCount: arenaActiveGaussianCount ?? tile.count,
+                    rotationIsNormalized: true,
+                  },
                 );
               } finally {
                 transformA.unlock();

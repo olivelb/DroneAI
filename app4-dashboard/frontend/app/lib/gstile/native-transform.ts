@@ -5,6 +5,11 @@ export type GsTileNativeTransformColumns = {
   rotation: readonly Float32Array[];
 };
 
+export type GsTileNativeTransformPackingOptions = {
+  activeCount?: number;
+  rotationIsNormalized?: boolean;
+};
+
 /** Pack the native PlayCanvas transform streams without per-splat math objects. */
 export const packGsTileNativeTransforms = (
   columns: GsTileNativeTransformColumns,
@@ -15,10 +20,10 @@ export const packGsTileNativeTransforms = (
     | typeof Float16Array
     | null
     | undefined = globalThis.Float16Array,
-  activeCount?: number,
+  options: GsTileNativeTransformPackingOptions = {},
 ) => {
   const capacity = columns.logScale[0]?.length ?? 0;
-  const count = activeCount ?? capacity;
+  const count = options.activeCount ?? capacity;
   if (
     !Number.isSafeInteger(count) ||
     count < 0 ||
@@ -54,18 +59,20 @@ export const packGsTileNativeTransforms = (
       let y = ry[splat];
       let z = rz[splat];
       let w = rw[splat];
-      const length = Math.sqrt(x * x + y * y + z * z + w * w);
-      if (length === 0) {
-        x = 0;
-        y = 0;
-        z = 0;
-        w = 1;
-      } else {
-        const inverseLength = 1 / length;
-        x *= inverseLength;
-        y *= inverseLength;
-        z *= inverseLength;
-        w *= inverseLength;
+      if (!options.rotationIsNormalized) {
+        const length = Math.sqrt(x * x + y * y + z * z + w * w);
+        if (length === 0) {
+          x = 0;
+          y = 0;
+          z = 0;
+          w = 1;
+        } else {
+          const inverseLength = 1 / length;
+          x *= inverseLength;
+          y *= inverseLength;
+          z *= inverseLength;
+          w *= inverseLength;
+        }
       }
       if (w < 0) {
         x = -x;
@@ -107,18 +114,20 @@ export const packGsTileNativeTransforms = (
     let y = ry[splat];
     let z = rz[splat];
     let w = rw[splat];
-    const length = Math.sqrt(x * x + y * y + z * z + w * w);
-    if (length === 0) {
-      x = 0;
-      y = 0;
-      z = 0;
-      w = 1;
-    } else {
-      const inverseLength = 1 / length;
-      x *= inverseLength;
-      y *= inverseLength;
-      z *= inverseLength;
-      w *= inverseLength;
+    if (!options.rotationIsNormalized) {
+      const length = Math.sqrt(x * x + y * y + z * z + w * w);
+      if (length === 0) {
+        x = 0;
+        y = 0;
+        z = 0;
+        w = 1;
+      } else {
+        const inverseLength = 1 / length;
+        x *= inverseLength;
+        y *= inverseLength;
+        z *= inverseLength;
+        w *= inverseLength;
+      }
     }
     if (w < 0) {
       x = -x;

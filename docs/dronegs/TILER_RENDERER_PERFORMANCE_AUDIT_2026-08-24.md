@@ -743,6 +743,40 @@ attribué à cette phase. La suite complète passe 28 fichiers et 161 tests, le
 lint, le typecheck et les builds de production local et BIGZEN. Le contrôle
 visuel humain est validé conforme au PLY original.
 
+### Qualification des rotations Q96 déjà normalisées — Saint-Étienne v4c
+
+Le décodeur Q96 normalise chaque quaternion avant de l'écrire dans les colonnes
+`Float32Array`. Le packer PlayCanvas peut donc recevoir explicitement ce contrat
+et éviter une seconde racine carrée ainsi que quatre divisions par splat. La
+canonicalisation du signe (`w >= 0`) et le chemin générique, qui continue à
+normaliser les entrées non garanties, sont conservés.
+
+Un test différentiel déterministe couvre 65 536 quaternions représentatifs du
+codage Q96. Sur les 196 608 composantes quaternion stockées en float16, dix
+seulement diffèrent du chemin qui renormalise, soit **0,0051 %**, et l'écart
+maximum est exactement **un ULP float16**. Les positions et échelles restent
+identiques. Le microbenchmark sur 65 536 splats mesure 2,824 ms avec le contrat
+Q96 contre 2,989 ms avec la renormalisation redondante, soit **1,06×** ou
+**−5,5 %** sur le packer isolé.
+
+Le protocole Chrome conserve le même onglet, le même cut, un warm-up exclu par
+build et l'ordre candidat → baseline `4920adf` → candidat :
+
+| variante | transform médian | ressource médiane | commit médian | load médian | LOD médian |
+|---|---:|---:|---:|---:|---:|
+| candidat, premier passage | **0,448 s** | **0,524 s** | **0,999 s** | 12,135 s | 13,225 s |
+| baseline `4920adf` | 0,464 s | 0,538 s | 1,007 s | **11,664 s** | **12,683 s** |
+| candidat, retour | **0,418 s** | **0,482 s** | **0,927 s** | 12,245 s | 13,174 s |
+
+Sur les six runs candidats, les médianes agrégées sont 0,4185 s pour les
+transformations, 0,491 s pour la ressource et 0,9545 s pour le commit : gains
+respectifs de **−9,8 %**, **−8,7 %** et **−5,2 %** face au baseline. Le LOD
+agrégé augmente de 4,1 %, mais le load réseau augmente simultanément de 4,5 % ;
+aucune régression du chemin interne n'est donc observée ni aucune accélération
+du LOD total revendiquée. La suite complète passe 28 fichiers et 162 tests, le
+lint, le typecheck et les builds de production local et BIGZEN. Le contrôle
+visuel humain est validé conforme au PLY original.
+
 ## Sources primaires
 
 - WebSplatter, papier et code officiel : https://arxiv.org/abs/2602.03207 et

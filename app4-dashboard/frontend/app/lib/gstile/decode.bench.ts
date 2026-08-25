@@ -171,6 +171,21 @@ const transformRotation = Array.from(
       (_, splat) => ((splat * (axis + 5)) % 2_047) / 1_024 - 1,
     ),
 );
+const normalizedTransformRotation = transformRotation.map(
+  () => new Float32Array(recordCount),
+);
+for (let splat = 0; splat < recordCount; splat += 1) {
+  const length = Math.hypot(
+    transformRotation[0][splat],
+    transformRotation[1][splat],
+    transformRotation[2][splat],
+    transformRotation[3][splat],
+  );
+  for (let component = 0; component < 4; component += 1) {
+    normalizedTransformRotation[component][splat] =
+      transformRotation[component][splat] / length;
+  }
+}
 const transformA = new Uint32Array(recordCount * 4);
 const transformB = new Uint16Array(recordCount * 4);
 
@@ -209,6 +224,44 @@ describe("GSTile native transform packing", () => {
       transformA,
       transformB,
       FloatPacking.float2Half,
+    );
+  });
+
+  bench("native conversion with normalized Q96 rotations", () => {
+    packGsTileNativeTransforms(
+      {
+        position: [
+          new Float32Array(0),
+          new Float32Array(0),
+          new Float32Array(0),
+        ],
+        centerStream: transformCenterStream,
+        logScale: transformLogScale,
+        rotation: normalizedTransformRotation,
+      },
+      transformA,
+      transformB,
+      FloatPacking.float2Half,
+    );
+  });
+
+  bench("trusted normalized Q96 rotations", () => {
+    packGsTileNativeTransforms(
+      {
+        position: [
+          new Float32Array(0),
+          new Float32Array(0),
+          new Float32Array(0),
+        ],
+        centerStream: transformCenterStream,
+        logScale: transformLogScale,
+        rotation: normalizedTransformRotation,
+      },
+      transformA,
+      transformB,
+      FloatPacking.float2Half,
+      globalThis.Float16Array,
+      { rotationIsNormalized: true },
     );
   });
 });
