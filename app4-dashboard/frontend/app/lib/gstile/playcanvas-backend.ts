@@ -77,6 +77,19 @@ type LodLoadTimings = {
   decodeWorkerServiceMs: number;
   decodeWorkerFallbacks: number;
 };
+export type GsTileFrameTelemetry = {
+  frameCpuMs: number | null;
+  frameGpuMs: number | null;
+  workBufferUploadPercent: number | null;
+};
+
+/** Keep the last real render sample while the on-demand renderer is idle. */
+export const retainGsTileFrameTelemetry = (
+  previous: GsTileFrameTelemetry,
+  current: GsTileFrameTelemetry,
+  rendered: boolean,
+) => (rendered ? current : previous);
+
 type PreparedTile = {
   pc: Pc;
   app: PcApplication;
@@ -788,6 +801,11 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #maximumSelectedProxyScreenRadiusPixels = 0;
   #lodState: GaussianRenderStatistics["lodState"] = "steady";
   #lastTimestampMs: number | null = null;
+  #lastRenderedFrameTelemetry: GsTileFrameTelemetry = {
+    frameCpuMs: null,
+    frameGpuMs: null,
+    workBufferUploadPercent: null,
+  };
   #target: Vec3 = [0, 0, 0];
   #yaw = 0;
   #pitch = 0;
@@ -3080,20 +3098,26 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   }
 
   #statistics(
-    frameCpuMs: number | null,
+    currentFrameCpuMs: number | null,
     rendered = true,
   ): GaussianRenderStatistics {
     const gpuTimings = this.#app?.stats.gpu;
-    const frameGpuMs = !rendered
-      ? 0
-      : this.#debugTraceEnabled && gpuTimings
+    const current: GsTileFrameTelemetry = {
+      frameCpuMs: currentFrameCpuMs,
+      frameGpuMs:
+        rendered && this.#debugTraceEnabled && gpuTimings
         ? [...gpuTimings.values()].reduce((total, value) => total + value, 0)
-        : null;
-    const workBufferUploadPercent = !rendered
-      ? 0
-      : this.#app
+        : null,
+      workBufferUploadPercent: rendered && this.#app
         ? this.#app.stats.frame.gsplatBufferCopy
-        : null;
+        : null,
+    };
+    this.#lastRenderedFrameTelemetry = retainGsTileFrameTelemetry(
+      this.#lastRenderedFrameTelemetry,
+      current,
+      rendered,
+    );
+    const frameTelemetry = this.#lastRenderedFrameTelemetry;
     return {
       lodState: this.#lodState,
       residentGaussians: this.#residentGaussians,
@@ -3114,9 +3138,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         this.#maximumSelectedProxyScreenRadiusPixels,
       maximumResidentGaussians: this.#maximumResidentGaussians,
       verticalFovDegrees: this.#camera?.camera?.fov ?? null,
-      frameCpuMs,
-      frameGpuMs,
-      workBufferUploadPercent,
+      frameCpuMs: frameTelemetry.frameCpuMs,
+      frameGpuMs: frameTelemetry.frameGpuMs,
+      workBufferUploadPercent: frameTelemetry.workBufferUploadPercent,
       lodTotalMs: this.#lodTotalMs,
       lodLoadMs: this.#lodLoadMs,
       lodCommitMs: this.#lodCommitMs,
