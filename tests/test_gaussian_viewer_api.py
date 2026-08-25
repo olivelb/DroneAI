@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import importlib
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from shared.artifact_manifest import ManifestBlob, ManifestFile
 
 
 viewer = importlib.import_module("app4-dashboard.api.gaussian_viewer")
+viewer_router = importlib.import_module(
+    "app4-dashboard.api.routers.mission_gaussians"
+)
 
 
 def _manifest(*, digest: str = "b" * 64) -> dict[str, object]:
@@ -102,11 +106,11 @@ def test_descriptor_validates_tenant_workspace_and_signs_packs(monkeypatch):
         "get_object_bytes",
         lambda key, *, max_bytes: json.dumps(_manifest()).encode(),
     )
-    monkeypatch.setattr(
-        viewer.storage,
-        "get_presigned_url",
-        lambda key, *, expires: f"https://objects.example/{key}?ttl={expires}",
-    )
+    def sign(key, *, expires, response_cache_control):
+        observed["response_cache_control"] = response_cache_control
+        return f"https://objects.example/{key}?ttl={expires}"
+
+    monkeypatch.setattr(viewer.storage, "get_presigned_url", sign)
 
     result = viewer.gaussian_viewer_descriptor(SimpleNamespace(), mission)
 
@@ -114,6 +118,7 @@ def test_descriptor_validates_tenant_workspace_and_signs_packs(monkeypatch):
         "key": artifact.artifact_metadata["manifest_key"],
         "checksum": artifact.checksum_sha256,
         "organization": "org-a",
+        "response_cache_control": viewer.VIEWER_PACK_CACHE_CONTROL,
     }
     assert result["schema"] == "droneai-gaussian-viewer-descriptor"
     assert result["artifactId"] == "artifact-viewer"
@@ -125,6 +130,38 @@ def test_descriptor_validates_tenant_workspace_and_signs_packs(monkeypatch):
             "sha256": "b" * 64,
         }
     ]
+
+
+def test_viewer_route_keeps_signed_descriptor_stable_in_private_browser_cache(
+    monkeypatch,
+):
+    session = SimpleNamespace()
+    mission = SimpleNamespace(id=7, organization_id="org-a")
+    descriptor = {"schema": "droneai-gaussian-viewer-descriptor"}
+    monkeypatch.setattr(viewer_router, "get_session", lambda: nullcontext(session))
+    monkeypatch.setattr(
+        viewer_router,
+        "get_owned_mission",
+        lambda *_args, **_kwargs: mission,
+    )
+    monkeypatch.setattr(
+        viewer_router,
+        "gaussian_viewer_descriptor",
+        lambda observed_session, observed_mission: descriptor,
+    )
+    response = Response()
+
+    result = viewer_router.mission_gaussian_viewer(
+        "mission-a",
+        response,
+        SimpleNamespace(),
+    )
+
+    assert result == descriptor
+    assert response.headers["cache-control"] == (
+        f"private, max-age={viewer.VIEWER_DESCRIPTOR_CACHE_SECONDS}"
+    )
+    assert response.headers["vary"] == "Authorization, Cookie"
 
 
 def test_descriptor_publishes_validated_recommended_view(monkeypatch):

@@ -17,7 +17,12 @@ import {
   gstileVerticalFovDegrees,
 } from "../lib/gstile/playcanvas-backend";
 import { decodeGsTileViewerDescriptor } from "../lib/gstile/descriptor";
-import { GsTileRangeScheduler } from "../lib/gstile/range-source";
+import { createGsTilePersistentCache } from "../lib/gstile/persistent-range-cache";
+import {
+  DEFAULT_GSTILE_MEMORY_CACHE_BYTES,
+  DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS,
+  GsTileRangeScheduler,
+} from "../lib/gstile/range-source";
 
 export type GaussianTileViewerProps = {
   manifestUrl?: string;
@@ -128,7 +133,12 @@ export default function GaussianTileViewer({
     const controller = new AbortController();
     // Six requests saturate the usual per-origin HTTP/1.1 connection pool
     // without the burst memory of decoding an unbounded LOD cut concurrently.
-    const scheduler = new GsTileRangeScheduler(6);
+    const scheduler = new GsTileRangeScheduler(
+      6,
+      DEFAULT_GSTILE_MEMORY_CACHE_BYTES,
+      DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS,
+      createGsTilePersistentCache(),
+    );
     const backend = createBackend();
     setStatistics(emptyStatistics);
     let animation = 0;

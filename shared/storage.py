@@ -653,6 +653,7 @@ def get_presigned_url(
     bucket: str | None = None,
     *,
     public: bool = True,
+    response_cache_control: str | None = None,
 ) -> str:
     """Generate a presigned GET URL for an S3 object.
 
@@ -661,9 +662,16 @@ def get_presigned_url(
     """
     bucket = bucket or S3_BUCKET
     client = _get_public_client() if public else _get_client()
+    params = {"Bucket": bucket, "Key": s3_key}
+    if response_cache_control is not None:
+        if not response_cache_control or any(
+            separator in response_cache_control for separator in ("\r", "\n")
+        ):
+            raise ValueError("Invalid presigned response Cache-Control value")
+        params["ResponseCacheControl"] = response_cache_control
     url = client.generate_presigned_url(
         "get_object",
-        Params={"Bucket": bucket, "Key": s3_key},
+        Params=params,
         ExpiresIn=expires,
     )
     return url

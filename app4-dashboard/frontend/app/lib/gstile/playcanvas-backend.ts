@@ -1111,15 +1111,19 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       if (!nodes?.length) continue;
       const url =
         packUrls?.get(pack.id) ?? resolveGsTilePackUrl(manifestUrl, pack.path);
+      const range = { start: 0, length: pack.byteLength };
+      const immutableIdentity = `sha256:${pack.sha256.toLowerCase()}`;
       const content = await scheduler.fetch(
         url,
-        { start: 0, length: pack.byteLength },
+        range,
         signal,
+        immutableIdentity,
       );
       const actualSha256 = await sha256(content);
       if (actualSha256 !== pack.sha256.toLowerCase()) {
         throw new Error(`GSTile pack ${pack.id} failed SHA-256 validation`);
       }
+      scheduler.persistVerified(immutableIdentity, range, content);
       for (const node of nodes) {
         signal.throwIfAborted();
         if (node.tile.sha256.toLowerCase() !== actualSha256) {
@@ -2225,11 +2229,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const url =
       this.#lodPackUrls?.get(pack.id) ??
       resolveGsTilePackUrl(this.#lodManifestUrl, pack.path);
+    const range = { start: 0, length: pack.byteLength };
+    const immutableIdentity = `sha256:${pack.sha256.toLowerCase()}`;
     const fetchStarted = performance.now();
     const content = await scheduler.fetch(
       url,
-      { start: 0, length: pack.byteLength },
+      range,
       signal,
+      immutableIdentity,
     );
     timings.fetchServiceMs += performance.now() - fetchStarted;
     if (!this.#verifiedPackBuffers.has(content)) {
@@ -2242,6 +2249,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       ) {
         throw new Error(`GSTile pack ${pack.id} failed SHA-256 validation`);
       }
+      scheduler.persistVerified(immutableIdentity, range, content);
       this.#verifiedPackBuffers.add(content);
     }
     signal.throwIfAborted();

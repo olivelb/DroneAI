@@ -846,6 +846,51 @@ class _MultipartClient:
         return {}
 
 
+class _PresignedGetClient:
+    def __init__(self):
+        self.request = None
+
+    def generate_presigned_url(self, operation, **kwargs):
+        self.request = (operation, kwargs)
+        return "https://objects.example/immutable-pack"
+
+
+def test_presigned_get_can_override_immutable_private_cache_control(monkeypatch):
+    client = _PresignedGetClient()
+    monkeypatch.setattr(storage, "_get_public_client", lambda: client)
+
+    result = storage.get_presigned_url(
+        "organizations/org-a/blobs/pack",
+        expires=900,
+        response_cache_control="private, max-age=31536000, immutable",
+    )
+
+    assert result == "https://objects.example/immutable-pack"
+    assert client.request == (
+        "get_object",
+        {
+            "Params": {
+                "Bucket": storage.S3_BUCKET,
+                "Key": "organizations/org-a/blobs/pack",
+                "ResponseCacheControl": (
+                    "private, max-age=31536000, immutable"
+                ),
+            },
+            "ExpiresIn": 900,
+        },
+    )
+
+
+def test_presigned_get_rejects_cache_control_header_injection(monkeypatch):
+    monkeypatch.setattr(storage, "_get_public_client", _PresignedGetClient)
+
+    with pytest.raises(ValueError, match="Cache-Control"):
+        storage.get_presigned_url(
+            "organizations/org-a/blobs/pack",
+            response_cache_control="private\r\nx-test: injected",
+        )
+
+
 def test_multipart_upload_helpers_presign_complete_and_abort(monkeypatch):
     client = _MultipartClient()
     monkeypatch.setattr(storage, "_get_client", lambda: client)

@@ -17,6 +17,8 @@ from shared.stage_workspace import resolve_workspace_files
 
 MAX_VIEWER_MANIFEST_BYTES = 8 * 1024 * 1024
 VIEWER_URL_TTL_SECONDS = 900
+VIEWER_DESCRIPTOR_CACHE_SECONDS = 300
+VIEWER_PACK_CACHE_CONTROL = "private, max-age=31536000, immutable"
 
 
 class ViewerMission(Protocol):
@@ -165,6 +167,7 @@ def gaussian_viewer_descriptor(
                     "url": storage.get_presigned_url(
                         entry.blob.key,
                         expires=expires_seconds,
+                        response_cache_control=VIEWER_PACK_CACHE_CONTROL,
                     ),
                     "byteLength": pack["byteLength"],
                     "sha256": pack["sha256"],

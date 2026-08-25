@@ -62,6 +62,116 @@ describe("GSTile range source", () => {
     });
   });
 
+  it("reuses a verified persistent pack across rotated signed URLs", async () => {
+    const persisted = new Uint8Array([1, 2, 3, 4]).buffer;
+    const persistentCache = {
+      read: vi.fn(async () => persisted),
+      write: vi.fn(async () => undefined),
+    };
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const scheduler = new GsTileRangeScheduler(
+      2,
+      1024,
+      300,
+      persistentCache,
+    );
+
+    const result = await scheduler.fetch(
+      "https://example.test/pack?signature=new",
+      { start: 0, length: 4 },
+      undefined,
+      "sha256:pack",
+    );
+
+    expect(result).toBe(persisted);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(persistentCache.read).toHaveBeenCalledWith(
+      "immutable:sha256:pack\u00000\u00004",
+      4,
+      expect.any(AbortSignal),
+    );
+    expect(scheduler.statistics()).toMatchObject({
+      persistentCacheHits: 1,
+      persistentCacheMisses: 0,
+      persistentErrors: 0,
+    });
+  });
+
+  it("persists a network pack only after explicit SHA verification", async () => {
+    const persistentCache = {
+      read: vi.fn(async () => null),
+      write: vi.fn(async () => undefined),
+    };
+    const fetchMock = vi.fn(async () =>
+      new Response(new Uint8Array([1, 2, 3, 4]), {
+        status: 206,
+        headers: { "Content-Range": "bytes 0-3/4" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const scheduler = new GsTileRangeScheduler(
+      2,
+      1024,
+      300,
+      persistentCache,
+    );
+    const range = { start: 0, length: 4 };
+    const content = await scheduler.fetch(
+      "https://example.test/pack?signature=old",
+      range,
+      undefined,
+      "sha256:pack",
+    );
+
+    expect(persistentCache.write).not.toHaveBeenCalled();
+    scheduler.persistVerified("sha256:pack", range, content);
+    await vi.waitFor(() => expect(persistentCache.write).toHaveBeenCalledOnce());
+    expect(persistentCache.write).toHaveBeenCalledWith(
+      "immutable:sha256:pack\u00000\u00004",
+      content,
+    );
+    expect(scheduler.statistics()).toMatchObject({
+      persistentCacheHits: 0,
+      persistentCacheMisses: 1,
+      persistentWrites: 1,
+      persistentWriteBytes: 4,
+    });
+  });
+
+  it("falls back to the network when persistent storage is unavailable", async () => {
+    const persistentCache = {
+      read: vi.fn(async () => {
+        throw new Error("quota database unavailable");
+      }),
+      write: vi.fn(async () => undefined),
+    };
+    const fetchMock = vi.fn(async () =>
+      new Response(new Uint8Array([1, 2, 3, 4]), {
+        status: 206,
+        headers: { "Content-Range": "bytes 0-3/4" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const scheduler = new GsTileRangeScheduler(
+      1,
+      1024,
+      300,
+      persistentCache,
+    );
+
+    await expect(
+      scheduler.fetch(
+        "https://example.test/pack",
+        { start: 0, length: 4 },
+        undefined,
+        "sha256:pack",
+      ),
+    ).resolves.toHaveProperty("byteLength", 4);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(scheduler.statistics()).toMatchObject({ persistentErrors: 1 });
+  });
+
   it("keeps a shared transfer alive when a superseded selection aborts", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
