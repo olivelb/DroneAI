@@ -386,6 +386,11 @@ Conserver le cut complet précédent jusqu'au succès.
     des textures PlayCanvas puis adoptés comme sources initiales. Le chemin
     `merged` supprime ainsi leur copie CPU de 64 octets/splat et le second
     buffer d'environ 454 Mio sur Saint-Étienne.
+24. Le stream couleur RGBA16F final suit le même contrat d'adoption atomique.
+    Son padding est validé avant toute allocation et une source incohérente
+    laisse la ressource intacte. Le chemin `merged` supprime ainsi la copie CPU
+    de 8 octets/splat et environ 56,7 Mio de stockage dupliqué sur
+    Saint-Étienne.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -644,6 +649,34 @@ que 1 184 texels et aucune opération supplémentaire n'est exécutée par splat
 La qualification complète passe 28 fichiers et 154 tests, le typecheck, le
 lint et les builds local et BIGZEN. Le contrôle visuel humain est validé
 conforme au PLY original.
+
+### Qualification de l'adoption zéro-copie couleur — Saint-Étienne v4c
+
+Le tableau RGBA16F produit pendant Q96 est maintenant dimensionné à la capacité
+exacte de la texture `splatColor`, puis adopté par le même basculement atomique
+que les streams SH3. Le padding de 1 184 texels ajoute seulement 9 472 octets.
+L'adoption supprime la copie de 59 482 760 octets et son stockage dupliqué net,
+soit environ **56,7 Mio** pour les 7 435 345 splats du cut complet. Les valeurs
+RGBA16F existantes sont transmises sans conversion ni réarrondi.
+
+Après le redémarrage de BIGZEN, la qualification a été reconstruite depuis le
+commit `main` `600ac5a`. Chaque variante reçoit un warm-up exclu, puis trois
+chargements du même cut, dans le même onglet Chrome et avec la vue recommandée
+du bundle. L'ordre candidat → baseline → candidat borne la dérive temporelle :
+
+| variante | couleur médiane | ressource médiane | commit médian | LOD médian |
+|---|---:|---:|---:|---:|
+| candidat, premier passage | **0,024 s** | **0,692 s** | 1,385 s | 13,533 s |
+| baseline `main` | 0,037 s | 0,710 s | 1,412 s | 13,987 s |
+| candidat, retour | **0,023 s** | **0,703 s** | **1,365 s** | 14,083 s |
+
+La médiane des six runs candidats est de 23,5 ms pour la couleur, contre 37 ms
+pour le baseline, soit un gain isolé et reproduit de **−36,5 %**. Les médianes
+agrégées candidat sont 0,699 s pour la ressource et 1,373 s pour le commit,
+respectivement −1,6 % et −2,8 % face au baseline. Le LOD total reste soumis au
+bruit du chargement réseau ; aucune accélération globale n'est revendiquée sur
+ce seul échantillon. Le contrôle visuel humain est validé conforme au PLY
+original.
 
 ## Sources primaires
 

@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
-  adoptGsTileNativeRgba32Streams,
+  adoptGsTileNativeRgbaStreams,
   gsTileTextureElementCapacity,
+  type GsTileRgbaTextureSource,
 } from "./native-streams";
 
 type TestTexture = {
-  data?: Uint32Array;
+  data?: GsTileRgbaTextureSource;
   destroyed: boolean;
   destroy: () => void;
 };
 
-const texture = (data?: Uint32Array): TestTexture => {
+const texture = (data?: GsTileRgbaTextureSource): TestTexture => {
   const result: TestTexture = {
     data,
     destroyed: false,
@@ -45,7 +46,7 @@ describe("GSTile native stream adoption", () => {
         _name: string,
         _format: number,
         _size: { x: number; y: number },
-        data: Uint32Array,
+        data: GsTileRgbaTextureSource,
       ) => texture(data),
     };
     const format = {
@@ -55,7 +56,7 @@ describe("GSTile native stream adoption", () => {
           : undefined,
     };
 
-    adoptGsTileNativeRgba32Streams(streams, format, names, sources);
+    adoptGsTileNativeRgbaStreams(streams, format, names, sources);
 
     names.forEach((name, index) => {
       expect(textures.get(name)?.data).toBe(sources[index]);
@@ -85,12 +86,70 @@ describe("GSTile native stream adoption", () => {
     const sources = names.map(() => new Uint32Array(16));
 
     expect(() =>
-      adoptGsTileNativeRgba32Streams(streams, format, names, sources),
+      adoptGsTileNativeRgbaStreams(streams, format, names, sources),
     ).toThrow(/allocation failed/);
     names.forEach((name, index) => {
       expect(textures.get(name)).toBe(originals[index]);
       expect(originals[index].destroyed).toBe(false);
     });
     expect(created[0].destroyed).toBe(true);
+  });
+
+  it("adopts an exact padded RGBA16F color source", () => {
+    const original = texture();
+    const source = new Uint16Array(24);
+    const textures = new Map<string, TestTexture>([
+      ["splatColor", original],
+    ]);
+    const streams = {
+      textureDimensions: { x: 3, y: 2 },
+      textures,
+      getTexture: (name: string) => textures.get(name),
+      createTexture: (
+        _name: string,
+        _format: number,
+        _size: { x: number; y: number },
+        data: GsTileRgbaTextureSource,
+      ) => texture(data),
+    };
+
+    adoptGsTileNativeRgbaStreams(
+      streams,
+      { getStream: () => ({ format: 16 }) },
+      ["splatColor"],
+      [source],
+    );
+
+    expect(textures.get("splatColor")?.data).toBe(source);
+    expect(original.destroyed).toBe(true);
+  });
+
+  it("rejects an unpadded RGBA16F source before allocating", () => {
+    const original = texture();
+    const textures = new Map<string, TestTexture>([
+      ["splatColor", original],
+    ]);
+    let allocationCount = 0;
+    const streams = {
+      textureDimensions: { x: 3, y: 2 },
+      textures,
+      getTexture: (name: string) => textures.get(name),
+      createTexture: () => {
+        allocationCount += 1;
+        return texture();
+      },
+    };
+
+    expect(() =>
+      adoptGsTileNativeRgbaStreams(
+        streams,
+        { getStream: () => ({ format: 16 }) },
+        ["splatColor"],
+        [new Uint16Array(20)],
+      ),
+    ).toThrow(/inputs are inconsistent/);
+    expect(allocationCount).toBe(0);
+    expect(textures.get("splatColor")).toBe(original);
+    expect(original.destroyed).toBe(false);
   });
 });
