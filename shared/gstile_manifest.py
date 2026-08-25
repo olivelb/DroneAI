@@ -343,7 +343,7 @@ def validate_gstile_manifest(payload: Mapping[str, Any]) -> None:
         node_ids,
         children_by_node,
         referenced_packs,
-        tile_count,
+        _tile_count,
         tile_records,
         lod_tile_count,
         lod_tile_records,
