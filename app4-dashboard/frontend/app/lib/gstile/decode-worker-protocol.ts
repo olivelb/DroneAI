@@ -1,7 +1,7 @@
 import type { GsTileQuantization } from "./contracts";
-import type { GsTileNativeTransformDecodeResult } from "./native-transform-decode";
+import type { GsTileNativeDecodeResult } from "./native-decode";
 
-export type GsTileTransformDecodeRequest = {
+export type GsTileDecodeWorkerRequest = {
   type: "decode";
   id: number;
   payload: ArrayBuffer;
@@ -9,10 +9,10 @@ export type GsTileTransformDecodeRequest = {
   quantization: GsTileQuantization;
 };
 
-export type GsTileTransformDecodeResponse =
+export type GsTileDecodeWorkerResponse =
   | {
       type: "decoded";
       id: number;
-      result: GsTileNativeTransformDecodeResult;
+      result: GsTileNativeDecodeResult;
     }
   | { type: "error"; id: number; message: string };

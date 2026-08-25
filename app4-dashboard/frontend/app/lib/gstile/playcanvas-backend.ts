@@ -43,10 +43,10 @@ import { packGsTileNativeTransforms } from "./native-transform";
 import { packGsTileNativeSh } from "./native-sh";
 import { adoptGsTileNativeRgbaStreams } from "./native-streams";
 import {
-  copyGsTileNativeTransformResult,
-  decodeGsTileNativeTransformPayload,
-} from "./native-transform-decode";
-import { GsTileTransformDecodePool } from "./transform-decode-pool";
+  copyGsTileNativeResult,
+  decodeGsTileNativePayload,
+} from "./native-decode";
+import { GsTileDecodeWorkerPool } from "./decode-worker-pool";
 
 type Pc = typeof import("playcanvas");
 type PcApplication = import("playcanvas").Application;
@@ -74,8 +74,8 @@ type LodLoadTimings = {
   fetchServiceMs: number;
   sha256ServiceMs: number;
   decodeCpuMs: number;
-  transformWorkerServiceMs: number;
-  transformWorkerFallbacks: number;
+  decodeWorkerServiceMs: number;
+  decodeWorkerFallbacks: number;
 };
 type PreparedTile = {
   pc: Pc;
@@ -810,8 +810,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodPackUrls: ReadonlyMap<string, string> | undefined;
   #lodSignal: AbortSignal | null = null;
   #lodSyncController: AbortController | null = null;
-  #transformDecodePool: GsTileTransformDecodePool | null = null;
-  #transformDecodePoolUnavailable = false;
+  #decodeWorkerPool: GsTileDecodeWorkerPool | null = null;
+  #decodeWorkerPoolUnavailable = false;
   #lodGeneration = 0;
   #lodSelectionKey = "";
   #lodPendingKey = "";
@@ -830,8 +830,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodFetchServiceMs: number | null = null;
   #lodSha256ServiceMs: number | null = null;
   #lodDecodeCpuMs: number | null = null;
-  #lodTransformWorkerServiceMs: number | null = null;
-  #lodTransformWorkerFallbacks: number | null = null;
+  #lodDecodeWorkerServiceMs: number | null = null;
+  #lodDecodeWorkerFallbacks: number | null = null;
   #lodResourceCreateMs: number | null = null;
   #lodResourceColorMs: number | null = null;
   #lodResourceTransformMs: number | null = null;
@@ -1232,10 +1232,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       new DOMException("GSTile backend disposed", "AbortError"),
     );
     this.#lodSyncController = null;
-    this.#transformDecodePool?.dispose(
+    this.#decodeWorkerPool?.dispose(
       new DOMException("GSTile backend disposed", "AbortError"),
     );
-    this.#transformDecodePool = null;
+    this.#decodeWorkerPool = null;
     if (this.#lodUpdateTimer !== null) clearTimeout(this.#lodUpdateTimer);
     this.#lodUpdateTimer = null;
     this.#removeInputListeners?.();
@@ -1289,8 +1289,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodFetchServiceMs = null;
     this.#lodSha256ServiceMs = null;
     this.#lodDecodeCpuMs = null;
-    this.#lodTransformWorkerServiceMs = null;
-    this.#lodTransformWorkerFallbacks = null;
+    this.#lodDecodeWorkerServiceMs = null;
+    this.#lodDecodeWorkerFallbacks = null;
     this.#lodResourceCreateMs = null;
     this.#lodResourceColorMs = null;
     this.#lodResourceTransformMs = null;
@@ -2226,24 +2226,24 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     signal.throwIfAborted();
   }
 
-  #ensureTransformDecodePool() {
+  #ensureDecodeWorkerPool() {
     if (
-      this.#transformDecodePoolUnavailable ||
+      this.#decodeWorkerPoolUnavailable ||
       this.#useFloat32Transforms ||
       typeof Worker === "undefined" ||
       typeof globalThis.Float16Array !== "function"
     ) {
       return null;
     }
-    if (!this.#transformDecodePool) {
+    if (!this.#decodeWorkerPool) {
       try {
-        this.#transformDecodePool = new GsTileTransformDecodePool();
+        this.#decodeWorkerPool = new GsTileDecodeWorkerPool();
       } catch {
-        this.#transformDecodePoolUnavailable = true;
+        this.#decodeWorkerPoolUnavailable = true;
         return null;
       }
     }
-    return this.#transformDecodePool;
+    return this.#decodeWorkerPool;
   }
 
   async #loadLodTile(
@@ -2280,7 +2280,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     destination: GsTilePlayCanvasColumns,
     recordOffset: number,
     timings: LodLoadTimings,
-    transformDecodePool: GsTileTransformDecodePool | null,
+    decodeWorkerPool: GsTileDecodeWorkerPool | null,
   ) {
     const { tile, pack, content } = await this.#fetchVerifiedLodTile(
       node,
@@ -2288,35 +2288,23 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       timings,
     );
     await this.#yieldBeforeLodDecode(signal);
-    const decodeStarted = performance.now();
-    const transformWorkerStarted =
-      destination.transformStreams && transformDecodePool
+    const workerStarted =
+      destination.transformStreams && decodeWorkerPool
         ? performance.now()
         : null;
-    const nativeTransformPromise = destination.transformStreams
-      ? (() => {
-          return transformDecodePool
-            ? transformDecodePool.decode(
-                content,
-                tile.byteOffset,
-                tile.byteLength,
-                tile.recordCount,
-                tile.quantization,
-                signal,
-              )
-            : Promise.resolve(
-                decodeGsTileNativeTransformPayload(
-                  content.slice(
-                    tile.byteOffset,
-                    tile.byteOffset + tile.byteLength,
-                  ),
-                  tile.recordCount,
-                  tile.quantization,
-                ),
-              );
-        })()
-      : null;
-    try {
+    const nativeDecodePromise =
+      destination.transformStreams && decodeWorkerPool
+        ? decodeWorkerPool.decode(
+            content,
+            tile.byteOffset,
+            tile.byteLength,
+            tile.recordCount,
+            tile.quantization,
+            signal,
+          )
+        : null;
+    if (!nativeDecodePromise) {
+      const decodeStarted = performance.now();
       decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
         content,
         tile.byteOffset,
@@ -2326,42 +2314,37 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         destination,
         recordOffset,
       );
+      timings.decodeCpuMs += performance.now() - decodeStarted;
+      signal.throwIfAborted();
+      return { byteLength: pack.byteLength, bounds: null };
+    }
+    let nativeResult;
+    try {
+      nativeResult = await nativeDecodePromise;
     } catch (error) {
-      void nativeTransformPromise?.catch(() => undefined);
-      throw error;
-    }
-    timings.decodeCpuMs += performance.now() - decodeStarted;
-    let nativeBounds: MergedArenaBounds | null = null;
-    if (nativeTransformPromise) {
-      let nativeTransforms;
-      try {
-        nativeTransforms = await nativeTransformPromise;
-      } catch (error) {
-        if (signal.aborted) throw error;
-        timings.transformWorkerFallbacks += 1;
-        this.#transformDecodePool?.dispose(error);
-        this.#transformDecodePool = null;
-        this.#transformDecodePoolUnavailable = true;
-        nativeTransforms = decodeGsTileNativeTransformPayload(
-          content.slice(tile.byteOffset, tile.byteOffset + tile.byteLength),
-          tile.recordCount,
-          tile.quantization,
-        );
-      }
-      copyGsTileNativeTransformResult(
-        destination,
-        recordOffset,
-        nativeTransforms,
+      if (signal.aborted) throw error;
+      timings.decodeWorkerFallbacks += 1;
+      this.#decodeWorkerPool?.dispose(error);
+      this.#decodeWorkerPool = null;
+      this.#decodeWorkerPoolUnavailable = true;
+      const fallbackStarted = performance.now();
+      nativeResult = decodeGsTileNativePayload(
+        content.slice(tile.byteOffset, tile.byteOffset + tile.byteLength),
+        tile.recordCount,
+        tile.quantization,
       );
-      nativeBounds = {
-        min: [...nativeTransforms.bounds.minimum],
-        max: [...nativeTransforms.bounds.maximum],
-      };
-      if (transformWorkerStarted !== null) {
-        timings.transformWorkerServiceMs +=
-          performance.now() - transformWorkerStarted;
-      }
+      timings.decodeCpuMs += performance.now() - fallbackStarted;
     }
+    if (workerStarted !== null) {
+      timings.decodeWorkerServiceMs += performance.now() - workerStarted;
+    }
+    const copyStarted = performance.now();
+    copyGsTileNativeResult(destination, recordOffset, nativeResult);
+    timings.decodeCpuMs += performance.now() - copyStarted;
+    const nativeBounds: MergedArenaBounds = {
+      min: [...nativeResult.bounds.minimum],
+      max: [...nativeResult.bounds.maximum],
+    };
     signal.throwIfAborted();
     return { byteLength: pack.byteLength, bounds: nativeBounds };
   }
@@ -2416,8 +2399,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const nodes = new Map(manifest.nodes.map((node) => [node.id, node]));
     const staged = new Map<string, PreparedTile>();
     const mergedAssembly = this.#gpuAssembly === "merged";
-    const transformDecodePool = mergedAssembly
-      ? this.#ensureTransformDecodePool()
+    const decodeWorkerPool = mergedAssembly
+      ? this.#ensureDecodeWorkerPool()
       : null;
     const mergedOffsets = new Map<string, number>();
     const selectedArenaNodes = mergedAssembly
@@ -2465,7 +2448,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
               color: true,
               centerBounds: true,
               sh: true,
-              transform: transformDecodePool !== null,
+              transform: decodeWorkerPool !== null,
             },
           )
         : null;
@@ -2477,8 +2460,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       fetchServiceMs: 0,
       sha256ServiceMs: 0,
       decodeCpuMs: 0,
-      transformWorkerServiceMs: 0,
-      transformWorkerFallbacks: 0,
+      decodeWorkerServiceMs: 0,
+      decodeWorkerFallbacks: 0,
     };
     const transitions = planLodTransitions(
       manifest,
@@ -2512,7 +2495,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
                 mergedColumns,
                 recordOffset ?? 0,
                 loadTimings,
-                transformDecodePool,
+                decodeWorkerPool,
               );
               mergedNodeByteLengths.set(nodeId, loaded.byteLength);
               if (loaded.bounds) mergedNodeBounds.set(nodeId, loaded.bounds);
@@ -2544,11 +2527,11 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       this.#lodFetchServiceMs = loadTimings.fetchServiceMs;
       this.#lodSha256ServiceMs = loadTimings.sha256ServiceMs;
       this.#lodDecodeCpuMs = loadTimings.decodeCpuMs;
-      this.#lodTransformWorkerServiceMs = transformDecodePool
-        ? loadTimings.transformWorkerServiceMs
+      this.#lodDecodeWorkerServiceMs = decodeWorkerPool
+        ? loadTimings.decodeWorkerServiceMs
         : null;
-      this.#lodTransformWorkerFallbacks = transformDecodePool
-        ? loadTimings.transformWorkerFallbacks
+      this.#lodDecodeWorkerFallbacks = decodeWorkerPool
+        ? loadTimings.decodeWorkerFallbacks
         : null;
       controller.signal.throwIfAborted();
       if (generation !== this.#lodGeneration) {
@@ -3063,8 +3046,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         lodFetchServiceMs: this.#lodFetchServiceMs,
         lodSha256ServiceMs: this.#lodSha256ServiceMs,
         lodDecodeCpuMs: this.#lodDecodeCpuMs,
-        lodTransformWorkerServiceMs: this.#lodTransformWorkerServiceMs,
-        lodTransformWorkerFallbacks: this.#lodTransformWorkerFallbacks,
+        lodDecodeWorkerServiceMs: this.#lodDecodeWorkerServiceMs,
+        lodDecodeWorkerFallbacks: this.#lodDecodeWorkerFallbacks,
         lodResourceCreateMs: this.#lodResourceCreateMs,
         lodResourceColorMs: this.#lodResourceColorMs,
         lodResourceTransformMs: this.#lodResourceTransformMs,
@@ -3140,8 +3123,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       lodFetchServiceMs: this.#lodFetchServiceMs,
       lodSha256ServiceMs: this.#lodSha256ServiceMs,
       lodDecodeCpuMs: this.#lodDecodeCpuMs,
-      lodTransformWorkerServiceMs: this.#lodTransformWorkerServiceMs,
-      lodTransformWorkerFallbacks: this.#lodTransformWorkerFallbacks,
+      lodDecodeWorkerServiceMs: this.#lodDecodeWorkerServiceMs,
+      lodDecodeWorkerFallbacks: this.#lodDecodeWorkerFallbacks,
       lodResourceCreateMs: this.#lodResourceCreateMs,
       lodResourceColorMs: this.#lodResourceColorMs,
       lodResourceTransformMs: this.#lodResourceTransformMs,
