@@ -81,6 +81,8 @@ const emptyStatistics: GaussianRenderStatistics = {
   lodFetchServiceMs: null,
   lodSha256ServiceMs: null,
   lodDecodeCpuMs: null,
+  lodTransformWorkerServiceMs: null,
+  lodTransformWorkerFallbacks: null,
   lodResourceCreateMs: null,
   lodResourceColorMs: null,
   lodResourceTransformMs: null,
@@ -243,6 +245,8 @@ export default function GaussianTileViewer({
       data-lod-fetch-service-ms={statistics.lodFetchServiceMs ?? ""}
       data-lod-sha256-service-ms={statistics.lodSha256ServiceMs ?? ""}
       data-lod-decode-cpu-ms={statistics.lodDecodeCpuMs ?? ""}
+      data-lod-transform-worker-service-ms={statistics.lodTransformWorkerServiceMs ?? ""}
+      data-lod-transform-worker-fallbacks={statistics.lodTransformWorkerFallbacks ?? ""}
       data-lod-resource-create-ms={statistics.lodResourceCreateMs ?? ""}
       data-lod-resource-color-ms={statistics.lodResourceColorMs ?? ""}
       data-lod-resource-transform-ms={statistics.lodResourceTransformMs ?? ""}
@@ -324,6 +328,8 @@ export default function GaussianTileViewer({
             {statistics.lodDecodeCpuMs !== null && (
               <span>
                 Σ fetch {statistics.lodFetchServiceMs?.toFixed(0)} · SHA {statistics.lodSha256ServiceMs?.toFixed(0)} · Q96 {statistics.lodDecodeCpuMs.toFixed(0)} ms
+                {statistics.lodTransformWorkerServiceMs !== null &&
+                  ` · Worker Σ ${statistics.lodTransformWorkerServiceMs.toFixed(0)} (fallbacks ${statistics.lodTransformWorkerFallbacks ?? 0})`}
                 {statistics.lodResourceCreateMs !== null &&
                   ` · resource ${statistics.lodResourceCreateMs.toFixed(0)}`}
                 {statistics.lodResourceShMs !== null &&

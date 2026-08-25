@@ -174,11 +174,14 @@ SIMD WASM est à comparer au TypeScript JIT ; il ne sera retenu que mesuré.
 Acceptance : aucune tâche UI > 50 ms pendant un parcours froid/chaud, hash et
 coefficients identiques, annulation générationnelle, mémoire de file bornée.
 
-État : **décodage column-major final livré et cœur TypeScript optimisé**. Un
-Worker naïf n'est pas retenu : transférer ses colonnes imposerait une seconde
-copie d'environ 2,2 Go à 7,4 M splats, ou un double pic mémoire. La suite doit
-donc soit rendre le Worker propriétaire du cache et de la destination partagée,
-soit produire directement les streams packés sans représentation intermédiaire.
+État : **partiellement livré et mesuré**. Le décodage column-major final et le
+cœur TypeScript restent sur le thread principal pour couleur, SH et opacité.
+En revanche, un pool borné à quatre Workers décode les 20 octets Q96 de
+transformations directement vers centres, `transformA/B` et bornes. Chaque
+Worker reçoit 96 octets/splat et renvoie seulement 36 octets/splat transférés ;
+la copie d'entrée n'est créée qu'à l'admission effective d'une tâche. Le double
+pic d'environ 2,2 Go du Worker naïf est donc évité. SHA, le reste de Q96 et la
+mesure automatisée des longues tâches restent à déplacer ou instrumenter.
 
 ### 3. Tri/culling/raster WebGPU moderne — impact très élevé sur le frame time
 
@@ -396,6 +399,18 @@ Conserver le cut complet précédent jusqu'au succès.
     pas encore présents dans la map PlayCanvas, le handoff évite à la fois leur
     copie CPU de 64 octets/splat et l'allocation préalable de quatre textures
     vides.
+26. La première ressource fusionnée est créée directement à la capacité de
+    l'arène puis promue en conteneur mutable. Les sources CPU des textures sont
+    libérées après la première frame soumise, supprimant le second conteneur et
+    environ 1,118 Gio de rétention CPU sur Saint-Étienne.
+27. Le packer de transformations reçoit un contrat explicite lorsque les
+    rotations Q96 sont déjà normalisées. Le chemin générique sûr reste le
+    défaut ; le chemin Q96 évite une racine carrée et quatre divisions par
+    splat.
+28. Un pool de quatre Workers prépare centres, bornes et textures de
+    transformations directement depuis les records Q96. Les tâches en attente
+    ne dupliquent pas les payloads ; l'admission, l'annulation et le fallback
+    synchrone sont bornés et télémétrés.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -777,6 +792,52 @@ du LOD total revendiquée. La suite complète passe 28 fichiers et 162 tests, le
 lint, le typecheck et les builds de production local et BIGZEN. Le contrôle
 visuel humain est validé conforme au PLY original.
 
+### Qualification du Worker borné Q96→transformations — Saint-Étienne v4c
+
+Le Worker ne matérialise ni colonnes `logScale/rotation`, ni ressource
+intermédiaire. Il lit les 20 premiers octets du record Q96, écrit les centres
+float32 et les textures PlayCanvas `transformA` RGBA32U / `transformB` RGBA16F,
+puis calcule les bornes conservatrices du nœud. Pendant ce temps, le thread UI
+continue le décodage couleur, SH et opacité. Les textures finales sont adoptées
+par la ressource sans second packing au commit.
+
+La file accepte au plus quatre tâches actives. Les tâches en attente conservent
+une référence au pack brut déjà mis en cache ; la copie de 96 octets/splat
+n'est créée et transférée qu'au moment où un Worker est libre. Chaque résultat
+transféré occupe 36 octets/splat. Le handoff permanent passe en parallèle de
+176 à **172 octets/splat**, soit 29 741 380 octets (environ **28,4 Mio**) évités
+sur les 7 435 345 splats du cut.
+
+Un test différentiel sur 16 384 records compare bit à bit centres,
+`transformA`, `transformB` et bornes au décodeur/packer précédent. Deux tests
+de pool vérifient qu'un seul payload est admis par Worker disponible et qu'une
+tâche annulée en file n'est jamais envoyée. Le fallback synchrone reste fermé
+sur les mêmes validations Q96 et son compteur est exposé dans le HUD.
+
+Le protocole Chrome conserve le même bundle, un warm-up exclu par build et
+l'ordre candidat → baseline `da454a8` → candidat :
+
+| variante | Q96 médian | transform médian | ressource médiane | commit médian | load médian | LOD médian |
+|---|---:|---:|---:|---:|---:|---:|
+| candidat, premier passage | **3,179 s** | **0,025 s** | **0,103 s** | **0,334 s** | 12,120 s | 12,467 s |
+| baseline `da454a8` | 3,350 s | 0,419 s | 0,503 s | 0,984 s | 11,627 s | 12,630 s |
+| candidat, retour | **3,216 s** | **0,026 s** | **0,106 s** | **0,363 s** | **11,162 s** | **11,502 s** |
+
+Sur les six runs candidats, les médianes agrégées sont 3,195 s pour Q96,
+25 ms pour les transformations, 104,5 ms pour la ressource, 336 ms pour le
+commit, 11,615 s pour le load et 11,977 s pour le LOD. Face au baseline, les
+gains sont **−4,6 % sur Q96**, **−94,0 % sur les transformations**, **−79,2 %
+sur la ressource**, **−65,9 % sur le commit** et **−5,2 % sur le LOD**. Le load
+est apparié à −0,1 %, ce qui rend le gain global interprétable.
+
+Après correction du bornage mémoire, trois runs supplémentaires donnent des
+médianes de 3,191 s Q96, 26 ms transformations, 105 ms ressource et 329 ms
+commit. La télémétrie rapporte 4,343 s de service Worker cumulé — somme des
+tâches concurrentes, pas temps mur — et **zéro fallback**. La suite complète
+passe 30 fichiers et 167 tests, le lint, le typecheck et les builds production
+local et BIGZEN. Le contrôle visuel humain dans Chrome est validé conforme au
+PLY original.
+
 ## Sources primaires
 
 - WebSplatter, papier et code officiel : https://arxiv.org/abs/2602.03207 et
@@ -803,13 +864,13 @@ visuel humain est validé conforme au PLY original.
 
 ## Prochaines gates
 
-1. Ajouter télémétrie fetch/SHA/decode/columnar/upload/sort/raster et long-task.
+1. Ajouter attente Worker, copies entrée/sortie, upload, sort/raster et
+   longues tâches à la télémétrie structurée.
 2. Répéter les essais appariés Chrome sur un corpus de caméras figé et publier
    médiane, p95, long tasks, mémoire CPU/VRAM et différences d'image.
-3. Ne pas fusionner les transformations dans Q96 avec l'implémentation actuelle :
-   l'essai réduit le commit de 29,4 % mais augmente le LOD de 2,0 %. Reprendre
-   seulement avec Worker/WASM, destination partagée ou écriture directe vers
-   l'arène, et conserver la gate sur le coût total Q96 + ressource.
+3. Conserver la fusion Q96→transformations dans le Worker borné. La variante
+   synchrone sur le thread UI avait réduit le commit de 29,4 % mais augmenté le
+   LOD de 2,0 % ; ne pas la réintroduire sans gate sur Q96 + load + ressource.
 4. Instrumenter le nombre de spans, les octets réellement copiés et le temps
    de reconstruction du manager unifié, puis figer un parcours caméra répétable.
 5. Construire un prototype external-sort Morton sur une copie immuable du PLY.
