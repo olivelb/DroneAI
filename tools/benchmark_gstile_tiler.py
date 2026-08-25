@@ -122,6 +122,8 @@ def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         "--chunk-records",
         str(arguments.chunk_records),
     ]
+    if arguments.pack_target_bytes is not None:
+        command.extend(["--pack-target-bytes", str(arguments.pack_target_bytes)])
     if arguments.lod_proxy_size is not None:
         command.extend(
             [
@@ -168,6 +170,7 @@ def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         "configuration": {
             "leafSize": arguments.leaf_size,
             "chunkRecords": arguments.chunk_records,
+            "packTargetBytes": arguments.pack_target_bytes,
             "lodProxySize": arguments.lod_proxy_size,
             "lodProxyStrategy": arguments.lod_proxy_strategy,
             "command": command,
@@ -198,6 +201,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--report", type=Path, required=True)
     run.add_argument("--leaf-size", type=int, default=65_536)
     run.add_argument("--chunk-records", type=int, default=131_072)
+    run.add_argument("--pack-target-bytes", type=int)
     run.add_argument("--lod-proxy-size", type=int)
     run.add_argument(
         "--lod-proxy-strategy",

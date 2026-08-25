@@ -113,6 +113,10 @@ export type GsTileManifest = {
   packs: GsTilePack[];
   statistics: {
     leafCount: number;
+    packCount?: number;
+    representationCount?: number;
+    packTargetBytes?: number;
+    packGrouping?: "depth-spatial-v1";
     packBytes: number;
     bytesPerGaussian: number;
     lod: string;
@@ -244,6 +248,10 @@ const structuralDecoder = decoder<GsTileManifest>(
       },
       {
         exactPackBytes: integerValue,
+        packCount: integerValue,
+        representationCount: integerValue,
+        packTargetBytes: integerValue,
+        packGrouping: oneOf("depth-spatial-v1"),
         proxyCount: integerValue,
         proxyRecords: integerValue,
         proxyPackBytes: integerValue,
@@ -342,7 +350,7 @@ export const decodeGsTileManifest = (value: unknown): GsTileManifest => {
       (exact
         ? tile.recordCount !== node.gaussianCount
         : tile.recordCount > node.gaussianCount) ||
-      tile.recordCount !== pack.recordCount ||
+      tile.recordCount > pack.recordCount ||
       tile.byteLength !== tile.recordCount * GSTILE_RECORD_BYTES ||
       tile.byteOffset < GSTILE_PACK_HEADER_BYTES ||
       tile.byteOffset % GSTILE_RECORD_BYTES !== GSTILE_PACK_HEADER_BYTES ||

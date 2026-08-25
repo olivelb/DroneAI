@@ -77,9 +77,10 @@ def _validate_manifest_header(
 
 def _validate_packs(
     packs: list[Any],
-) -> tuple[set[str], dict[str, int], dict[str, str]]:
+) -> tuple[set[str], dict[str, int], dict[str, int], dict[str, str]]:
     pack_ids: set[str] = set()
     pack_counts: dict[str, int] = {}
+    pack_lengths: dict[str, int] = {}
     pack_hashes: dict[str, str] = {}
     for index, raw_pack in enumerate(packs):
         if not isinstance(raw_pack, Mapping):
@@ -126,8 +127,9 @@ def _validate_packs(
             ):
                 raise ValueError("GSTile zstd encoding identity is invalid")
         pack_counts[pack_id] = record_count
+        pack_lengths[pack_id] = byte_length
         pack_hashes[pack_id] = digest
-    return pack_ids, pack_counts, pack_hashes
+    return pack_ids, pack_counts, pack_lengths, pack_hashes
 
 
 def _validate_bounds(node: Mapping[str, Any], field: str = "bounds") -> None:
@@ -155,26 +157,37 @@ def _validate_tile_reference(
     gaussian_count: int,
     pack_ids: set[str],
     pack_counts: Mapping[str, int],
+    pack_lengths: Mapping[str, int],
     pack_hashes: Mapping[str, str],
     referenced_packs: set[str],
+    ranges_by_pack: dict[str, list[tuple[int, int]]],
 ) -> int:
     if not isinstance(value, Mapping) or value.get("pack") not in pack_ids:
         raise ValueError("GSTile tile references an unknown pack")
     pack_id = cast(str, value["pack"])
-    if pack_id in referenced_packs:
-        raise ValueError("GSTile packs must have exactly one node reference")
     referenced_packs.add(pack_id)
     record_count = value.get("recordCount")
+    byte_offset = value.get("byteOffset")
+    byte_length = value.get("byteLength")
     if (
         isinstance(record_count, bool)
         or not isinstance(record_count, int)
         or record_count < 1
-        or record_count != pack_counts[pack_id]
-        or value.get("byteOffset") != GSTILE_PACK_HEADER_SIZE
-        or value.get("byteLength") != record_count * GSTILE_PACK_RECORD_SIZE
+        or record_count > pack_counts[pack_id]
+        or isinstance(byte_offset, bool)
+        or not isinstance(byte_offset, int)
+        or byte_offset < GSTILE_PACK_HEADER_SIZE
+        or (byte_offset - GSTILE_PACK_HEADER_SIZE) % GSTILE_PACK_RECORD_SIZE
+        or isinstance(byte_length, bool)
+        or not isinstance(byte_length, int)
+        or byte_length != record_count * GSTILE_PACK_RECORD_SIZE
+        or byte_offset + byte_length > pack_lengths[pack_id]
         or value.get("sha256") != pack_hashes[pack_id]
     ):
         raise ValueError("GSTile tile range or identity is invalid")
+    ranges_by_pack.setdefault(pack_id, []).append(
+        (byte_offset, byte_offset + byte_length)
+    )
     if exact and gaussian_count != record_count:
         raise ValueError("GSTile leaf counts do not match their pack")
     if not exact and record_count > gaussian_count:
@@ -188,9 +201,19 @@ def _validate_nodes(
     has_lod: bool,
     pack_ids: set[str],
     pack_counts: Mapping[str, int],
+    pack_lengths: Mapping[str, int],
     pack_hashes: Mapping[str, str],
     require_render_bounds: bool,
-) -> tuple[set[str], dict[str, tuple[str, ...]], set[str], int, int, int, int]:
+) -> tuple[
+    set[str],
+    dict[str, tuple[str, ...]],
+    set[str],
+    int,
+    int,
+    int,
+    int,
+    dict[str, list[tuple[int, int]]],
+]:
 
     node_ids: set[str] = set()
     tile_count = 0
@@ -198,6 +221,7 @@ def _validate_nodes(
     lod_tile_count = 0
     lod_tile_records = 0
     referenced_packs: set[str] = set()
+    ranges_by_pack: dict[str, list[tuple[int, int]]] = {}
     children_by_node: dict[str, tuple[str, ...]] = {}
     for raw_node in nodes:
         if not isinstance(raw_node, Mapping) or not isinstance(raw_node.get("id"), str):
@@ -260,8 +284,10 @@ def _validate_nodes(
                     gaussian_count=gaussian_count,
                     pack_ids=pack_ids,
                     pack_counts=pack_counts,
+                    pack_lengths=pack_lengths,
                     pack_hashes=pack_hashes,
                     referenced_packs=referenced_packs,
+                    ranges_by_pack=ranges_by_pack,
                 )
         else:
             record_count = _validate_tile_reference(
@@ -270,8 +296,10 @@ def _validate_nodes(
                 gaussian_count=gaussian_count,
                 pack_ids=pack_ids,
                 pack_counts=pack_counts,
+                pack_lengths=pack_lengths,
                 pack_hashes=pack_hashes,
                 referenced_packs=referenced_packs,
+                ranges_by_pack=ranges_by_pack,
             )
             tile_count += 1
             tile_records += record_count
@@ -283,6 +311,7 @@ def _validate_nodes(
         tile_records,
         lod_tile_count,
         lod_tile_records,
+        ranges_by_pack,
     )
 
 
@@ -309,20 +338,22 @@ def validate_gstile_manifest(payload: Mapping[str, Any]) -> None:
 
     has_lod, nodes, packs, source_count = _validate_manifest_header(payload)
     profile = payload.get("profile")
-    pack_ids, pack_counts, pack_hashes = _validate_packs(packs)
+    pack_ids, pack_counts, pack_lengths, pack_hashes = _validate_packs(packs)
     (
         node_ids,
         children_by_node,
         referenced_packs,
-        tile_count,
+        _tile_count,
         tile_records,
         lod_tile_count,
         lod_tile_records,
+        ranges_by_pack,
     ) = _validate_nodes(
         nodes,
         has_lod=has_lod,
         pack_ids=pack_ids,
         pack_counts=pack_counts,
+        pack_lengths=pack_lengths,
         pack_hashes=pack_hashes,
         require_render_bounds=profile == GSTILE_ADAPTIVE_LOD_PROFILE,
     )
@@ -344,8 +375,19 @@ def validate_gstile_manifest(payload: Mapping[str, Any]) -> None:
                     for axis in range(3)
                 ):
                     raise ValueError("GSTile parent renderBounds must contain child renderBounds")
-    expected_pack_count = tile_count + lod_tile_count
-    if expected_pack_count != len(packs) or referenced_packs != pack_ids or tile_records != source_count:
+    for pack_id in pack_ids:
+        cursor = GSTILE_PACK_HEADER_SIZE
+        for start, end in sorted(ranges_by_pack.get(pack_id, [])):
+            if start != cursor:
+                raise ValueError(
+                    "GSTile tile ranges must cover each pack without holes or overlaps"
+                )
+            cursor = end
+        if cursor != pack_lengths[pack_id]:
+            raise ValueError(
+                "GSTile tile ranges must cover each pack without holes or overlaps"
+            )
+    if referenced_packs != pack_ids or tile_records != source_count:
         raise ValueError("GSTile leaf population does not match the source")
     if has_lod and lod_tile_count != len(children_by_node):
         raise ValueError("GSTile LOD proxy population is incomplete")

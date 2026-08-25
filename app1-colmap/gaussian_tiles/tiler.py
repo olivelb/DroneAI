@@ -25,8 +25,12 @@ from shared.gstile_manifest import (
 )
 
 from .format import (
+    PACK_HEADER_SIZE,
+    PACK_RECORD_SIZE,
     canonical_manifest_bytes,
+    encode_pack,
     validate_manifest,
+    write_bundle_aggregate_pack_atomic,
     write_pack_atomic,
 )
 
@@ -47,6 +51,7 @@ class GsTileBuildOptions:
     ] = "moment-matched"
     invisible_gaussian_scale_threshold: float | None = None
     visibility_opacity_threshold: float = 0.05
+    pack_target_bytes: int | None = None
 
     def validate(self) -> None:
         if not 1_024 <= self.leaf_size <= 1_048_576:
@@ -81,6 +86,15 @@ class GsTileBuildOptions:
             raise ValueError(
                 "GSTile visibility_opacity_threshold must be strictly between 0 and 1"
             )
+        if self.pack_target_bytes is not None and (
+            isinstance(self.pack_target_bytes, bool)
+            or not PACK_HEADER_SIZE + PACK_RECORD_SIZE
+            <= self.pack_target_bytes
+            <= 1024**3
+        ):
+            raise ValueError(
+                "GSTile pack_target_bytes must be between 128 bytes and 1 GiB"
+            )
         if len(self.coordinate_origin) != 3 or not all(np.isfinite(value) for value in self.coordinate_origin):
             raise ValueError("GSTile coordinate origin must contain three finite values")
 
@@ -113,6 +127,13 @@ class _LodProxy:
     errors: np.ndarray
     render_bounds_min: tuple[float, float, float] | None = None
     render_bounds_max: tuple[float, float, float] | None = None
+
+
+@dataclass
+class _PendingEncodedTile:
+    payload: memoryview
+    tile: dict[str, Any]
+    errors: dict[str, float]
 
 
 def _emit_progress(
@@ -961,6 +982,16 @@ class _GsTileTreeBuilder:
         self.proxy_pack_bytes = 0
         self.proxy_records = 0
         self.leaf_count = 0
+        self.pending_tiles: dict[
+            tuple[Literal["exact", "proxy"], int], list[_PendingEncodedTile]
+        ] = {}
+        self.pending_payload_bytes: dict[
+            tuple[Literal["exact", "proxy"], int], int
+        ] = {}
+        self.aggregate_sequences: dict[Literal["exact", "proxy"], int] = {
+            "exact": 0,
+            "proxy": 0,
+        }
 
     def pack_tile(
         self,
@@ -968,9 +999,46 @@ class _GsTileTreeBuilder:
         *,
         pack_id: str,
         node_id: str,
-    ) -> tuple[dict[str, Any], int]:
+        kind: Literal["exact", "proxy"],
+        depth: int,
+    ) -> dict[str, Any]:
         ply_records = np.empty(records.shape[0], dtype=self.layout.dtype)
         _copy_record_prefix(records, ply_records)
+        if self.options.pack_target_bytes is not None:
+            content, quantization, errors = encode_pack(
+                ply_records,
+                records["source_id"],
+                node_id=node_id,
+            )
+            payload = memoryview(content)[PACK_HEADER_SIZE:]
+            key = (kind, depth)
+            pending = self.pending_tiles.setdefault(key, [])
+            self.pending_payload_bytes.setdefault(key, 0)
+            target_payload_bytes = self.options.pack_target_bytes - PACK_HEADER_SIZE
+            if (
+                pending
+                and self.pending_payload_bytes[key] + len(payload)
+                > target_payload_bytes
+            ):
+                self._flush_aggregate(key)
+                pending = self.pending_tiles.setdefault(key, [])
+            tile = {
+                "pack": "",
+                "byteOffset": 0,
+                "byteLength": len(payload),
+                "recordCount": records.shape[0],
+                "sha256": "",
+                "quantization": quantization,
+            }
+            pending.append(
+                _PendingEncodedTile(payload=payload, tile=tile, errors=errors)
+            )
+            self.pending_payload_bytes[key] += len(payload)
+            if self.pending_payload_bytes[key] >= target_payload_bytes:
+                self._flush_aggregate(key)
+            self._enforce_aggregate_memory_bound()
+            return tile
+
         relative = Path("packs") / f"{pack_id}.gst"
         pack, errors = write_pack_atomic(
             self.bundle_tmp / relative,
@@ -984,19 +1052,85 @@ class _GsTileTreeBuilder:
             zstd_encoding["path"] = relative.with_suffix(
                 relative.suffix + ".zst"
             ).as_posix()
-        pack["byteOffset"] = 32
+        pack["byteOffset"] = PACK_HEADER_SIZE
         self.packs.append(pack)
-        for key, value in errors.items():
-            self.maximum_errors[key] = max(self.maximum_errors.get(key, 0.0), value)
         tile = {
             "pack": pack_id,
-            "byteOffset": 32,
-            "byteLength": pack["byteLength"] - 32,
+            "byteOffset": PACK_HEADER_SIZE,
+            "byteLength": pack["byteLength"] - PACK_HEADER_SIZE,
             "recordCount": records.shape[0],
             "sha256": pack["sha256"],
             "quantization": pack.pop("quantization"),
         }
-        return tile, pack["byteLength"]
+        self._record_errors(errors)
+        if kind == "exact":
+            self.exact_pack_bytes += pack["byteLength"]
+        else:
+            self.proxy_pack_bytes += pack["byteLength"]
+        return tile
+
+    def _record_errors(self, errors: dict[str, float]) -> None:
+        for key, value in errors.items():
+            self.maximum_errors[key] = max(self.maximum_errors.get(key, 0.0), value)
+
+    def _enforce_aggregate_memory_bound(self) -> None:
+        """Keep depth-local aggregation bounded under adversarial trees."""
+
+        maximum_pending_bytes = 256 * 1024**2
+        while sum(self.pending_payload_bytes.values()) > maximum_pending_bytes:
+            key = min(
+                self.pending_payload_bytes,
+                key=lambda candidate: (-self.pending_payload_bytes[candidate], candidate),
+            )
+            self._flush_aggregate(key)
+
+    def _flush_aggregate(
+        self, key: tuple[Literal["exact", "proxy"], int]
+    ) -> None:
+        kind, depth = key
+        pending = self.pending_tiles.get(key, [])
+        if not pending:
+            return
+        sequence = self.aggregate_sequences[kind]
+        self.aggregate_sequences[kind] += 1
+        pack_id = f"aggregate-{kind}-{sequence:06d}"
+        pack = write_bundle_aggregate_pack_atomic(
+            self.bundle_tmp,
+            [entry.payload for entry in pending],
+            pack_id=pack_id,
+        )
+        byte_offset = PACK_HEADER_SIZE
+        for entry in pending:
+            entry.tile["pack"] = pack_id
+            entry.tile["byteOffset"] = byte_offset
+            entry.tile["sha256"] = pack["sha256"]
+            byte_offset += len(entry.payload)
+            self._record_errors(entry.errors)
+        if byte_offset != pack["byteLength"]:
+            raise RuntimeError("GSTile aggregate payload accounting mismatch")
+        self.packs.append(pack)
+        if kind == "exact":
+            self.exact_pack_bytes += pack["byteLength"]
+        else:
+            self.proxy_pack_bytes += pack["byteLength"]
+        _emit_progress(
+            self.options.progress_callback,
+            "pack_written",
+            pack=pack_id,
+            kind=kind,
+            depth=depth,
+            tileCount=len(pending),
+            gaussianCount=pack["recordCount"],
+            byteLength=pack["byteLength"],
+        )
+        self.pending_tiles[key] = []
+        self.pending_payload_bytes[key] = 0
+
+    def finish(self) -> None:
+        """Flush bounded aggregate buffers before manifest publication."""
+
+        for key in sorted(self.pending_tiles):
+            self._flush_aggregate(key)
 
     def _lod_proxy(
         self,
@@ -1071,8 +1205,13 @@ class _GsTileTreeBuilder:
                 "min": list(render_bounds_min),
                 "max": list(render_bounds_max),
             }
-        node["tile"], written = self.pack_tile(records, pack_id=node_id, node_id=node_id)
-        self.exact_pack_bytes += written
+        node["tile"] = self.pack_tile(
+            records,
+            pack_id=node_id,
+            node_id=node_id,
+            kind="exact",
+            depth=depth,
+        )
         self.leaf_count += 1
         if self.options.lod_proxy_size is not None:
             node["geometricError"] = 0.0
@@ -1155,16 +1294,17 @@ class _GsTileTreeBuilder:
                 "min": list(render_bounds_min),
                 "max": list(render_bounds_max),
             }
-        node["lodTile"], written = self.pack_tile(
+        node["lodTile"] = self.pack_tile(
             proxy.records,
             pack_id=f"lod-{node_id}",
             node_id=f"lod-{node_id}",
+            kind="proxy",
+            depth=depth,
         )
         node["geometricError"] = max(
             float(np.max(proxy.errors, initial=0.0)),
             _proxy_support_error(proxy.records),
         )
-        self.proxy_pack_bytes += written
         self.proxy_records += proxy.records.shape[0]
         _emit_progress(
             self.options.progress_callback,
@@ -1285,6 +1425,7 @@ def build_gstile_bundle(
         )
         tree = _GsTileTreeBuilder(layout, options, bundle_tmp)
         tree.visit(root_work, "r", 0)
+        tree.finish()
         if options.cancellation_check is not None:
             options.cancellation_check()
         if options.lod_proxy_strategy == "adaptive-moment":
@@ -1322,6 +1463,17 @@ def build_gstile_bundle(
             "packs": tree.packs,
             "statistics": {
                 "leafCount": tree.leaf_count,
+                "packCount": len(tree.packs),
+                "representationCount": tree.leaf_count
+                + sum(1 for node in tree.nodes if "lodTile" in node),
+                **(
+                    {
+                        "packTargetBytes": options.pack_target_bytes,
+                        "packGrouping": "depth-spatial-v1",
+                    }
+                    if options.pack_target_bytes is not None
+                    else {}
+                ),
                 "packBytes": sum(pack["byteLength"] for pack in tree.packs),
                 "bytesPerGaussian": sum(pack["byteLength"] for pack in tree.packs)
                 / root_work.count,

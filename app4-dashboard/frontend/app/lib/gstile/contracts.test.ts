@@ -174,6 +174,49 @@ describe("GSTile browser contract", () => {
     );
   });
 
+  it("accepts several independently quantized tiles in one canonical pack", () => {
+    const value = lodManifest();
+    const exactHash = "e".repeat(64);
+    const left = value.nodes[1].tile;
+    const right = value.nodes[2].tile;
+    if (!left || !right) throw new Error("LOD fixture exact tiles are missing");
+    Object.assign(left, { pack: "aggregate-exact", sha256: exactHash });
+    Object.assign(right, {
+      pack: "aggregate-exact",
+      byteOffset: 128,
+      sha256: exactHash,
+    });
+    value.packs = [
+      value.packs[0],
+      {
+        id: "aggregate-exact",
+        path: "packs/aggregate-exact.gst",
+        byteLength: 224,
+        recordCount: 2,
+        sha256: exactHash,
+        payloadCrc32: "23456789",
+        byteOffset: 32,
+      },
+    ];
+    Object.assign(value.statistics, {
+      packBytes: 352,
+      bytesPerGaussian: 176,
+      exactPackBytes: 224,
+      packCount: 2,
+      representationCount: 3,
+      packTargetBytes: 224,
+      packGrouping: "depth-spatial-v1",
+    });
+
+    const decoded = decodeGsTileManifest(value);
+    expect(decoded.packs).toHaveLength(2);
+    expect(decoded.nodes[2].tile?.byteOffset).toBe(128);
+    expect(decoded.statistics.packGrouping).toBe("depth-spatial-v1");
+
+    right.byteOffset = 32;
+    expect(() => decodeGsTileManifest(value)).toThrow(/non-overlapping tile ranges/);
+  });
+
   it("accepts V4 only with conservative hierarchical render bounds", () => {
     const value = lodManifest();
     value.profile = "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4";
