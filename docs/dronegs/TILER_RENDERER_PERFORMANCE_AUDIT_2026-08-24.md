@@ -929,6 +929,42 @@ Les deux variantes sont abandonnées et ne sont pas fusionnées. La prochaine
 gate doit ventiler les timings GPU par projection, compaction, radix sort et
 raster avant toute nouvelle modification du renderer.
 
+### Télémétrie GPU nommée et prototype hexagonal abandonné
+
+La télémétrie de frame conserve maintenant, avec le dernier échantillon réel,
+la durée des passes GPU nommées publiée par PlayCanvas. Le snapshot de debug
+expose ainsi séparément la préparation du work buffer (`pm`), le culling et la
+compaction d'intervalles, `GSplatProjector`, les passes OneSweep et le raster
+final. Cette instrumentation n'ajoute aucune soumission GPU et disparaît du
+chemin chaud lorsque le profiler PlayCanvas ne fournit pas de timings.
+
+La première décomposition d'un mouvement sur Saint-Étienne confirme que les
+deux coûts dominants sont le raster final et la préparation `pm`, devant le
+projector et le radix sort. Un prototype géométriquement exact a donc remplacé
+le carré circonscrit de chaque splat par un hexagone régulier circonscrit. Son
+aire est inférieure d'environ 13,4 % à celle du carré et les tests couvrent
+strictement 4 096 points du disque unité. Le mesh expérimental était isolé au
+raster hybride et au picking ; les passes internes et les ombres conservaient
+leur quad. La qualité n'était donc pas approximée, mais chaque splat demandait
+six sommets et douze indices au lieu de quatre et six.
+
+Le protocole A/B/A recharge le cut complet de 7,4 M splats et rejoue la même
+trajectoire caméra. Cinq runs baseline `ad72d0d` sont comparés aux huit runs du
+candidat isolé `7dfd96d` :
+
+| variante | GPU total médian | raster médian | projector médian | OneSweep médian |
+|---|---:|---:|---:|---:|
+| baseline quad `ad72d0d` | **32,51 ms** | **8,98 ms** | 3,93 ms | **1,97 ms** |
+| hexagone isolé `7dfd96d` | 34,54 ms (**+6,3 %**) | 9,76 ms (**+8,8 %**) | **3,80 ms** | 2,49 ms (**+26,7 %**) |
+
+La réduction théorique de fragments ne compense donc pas les 50 % de sommets
+supplémentaires ni le doublement des indices sur ce GPU et cette scène. La
+passe `pm`, initialement suspectée, reste au contraire stable entre variantes ;
+elle n'utilise pas le mesh hybride dédié. Le prototype hexagonal est abandonné
+et n'est pas fusionné. Les prochaines optimisations du raster doivent agir sur
+la hiérarchie, le binning ou l'évaluation des fragments sans augmenter le coût
+géométrique par splat.
+
 ## Sources primaires
 
 - WebSplatter, papier et code officiel : https://arxiv.org/abs/2602.03207 et
@@ -955,8 +991,9 @@ raster avant toute nouvelle modification du renderer.
 
 ## Prochaines gates
 
-1. Ajouter attente Worker, copies entrée/sortie, upload, sort/raster et
-   longues tâches à la télémétrie structurée.
+1. Ajouter attente Worker, copies entrée/sortie, upload et longues tâches à la
+   télémétrie structurée ; les passes GPU nommées couvrent désormais compaction,
+   projection, OneSweep et raster.
 2. Répéter les essais appariés Chrome sur un corpus de caméras figé et publier
    médiane, p95, long tasks, mémoire CPU/VRAM et différences d'image.
 3. Conserver le décodage Q96 complet dans le Worker borné et mesurer les tâches
