@@ -43,8 +43,8 @@ export type GaussianRenderStatistics = {
   lodFetchServiceMs: number | null;
   lodSha256ServiceMs: number | null;
   lodDecodeCpuMs: number | null;
-  lodTransformWorkerServiceMs: number | null;
-  lodTransformWorkerFallbacks: number | null;
+  lodDecodeWorkerServiceMs: number | null;
+  lodDecodeWorkerFallbacks: number | null;
   lodResourceCreateMs: number | null;
   lodResourceColorMs: number | null;
   lodResourceTransformMs: number | null;

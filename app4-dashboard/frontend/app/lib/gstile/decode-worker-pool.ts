@@ -1,10 +1,10 @@
 import type { GsTileQuantization } from "./contracts";
-import type { GsTileNativeTransformDecodeResult } from "./native-transform-decode";
+import type { GsTileNativeDecodeResult } from "./native-decode";
 import { GSTILE_RECORD_BYTES } from "./pack";
 import type {
-  GsTileTransformDecodeRequest,
-  GsTileTransformDecodeResponse,
-} from "./transform-decode-protocol";
+  GsTileDecodeWorkerRequest,
+  GsTileDecodeWorkerResponse,
+} from "./decode-worker-protocol";
 
 type DecodeTask = {
   id: number;
@@ -14,47 +14,47 @@ type DecodeTask = {
   recordCount: number;
   quantization: GsTileQuantization;
   signal: AbortSignal;
-  resolve: (result: GsTileNativeTransformDecodeResult) => void;
+  resolve: (result: GsTileNativeDecodeResult) => void;
   reject: (reason: unknown) => void;
   abort: () => void;
   settled: boolean;
 };
 
 type WorkerSlot = {
-  worker: GsTileTransformWorker;
+  worker: GsTileDecodeWorker;
   task: DecodeTask | null;
 };
 
-export type GsTileTransformWorker = {
-  onmessage: ((event: MessageEvent<GsTileTransformDecodeResponse>) => void) | null;
+export type GsTileDecodeWorker = {
+  onmessage: ((event: MessageEvent<GsTileDecodeWorkerResponse>) => void) | null;
   onerror: ((event: ErrorEvent) => void) | null;
   onmessageerror: ((event: MessageEvent) => void) | null;
-  postMessage: (message: GsTileTransformDecodeRequest, transfer: Transferable[]) => void;
+  postMessage: (message: GsTileDecodeWorkerRequest, transfer: Transferable[]) => void;
   terminate: () => void;
 };
 
-export type GsTileTransformWorkerFactory = () => GsTileTransformWorker;
+export type GsTileDecodeWorkerFactory = () => GsTileDecodeWorker;
 
 const defaultWorkerCount = () =>
   Math.min(4, Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 4) - 2));
 
-const createTransformDecodeWorker: GsTileTransformWorkerFactory = () =>
-  new Worker(new URL("./transform-decode-worker.ts", import.meta.url), {
+const createDecodeWorker: GsTileDecodeWorkerFactory = () =>
+  new Worker(new URL("./decode-worker.ts", import.meta.url), {
     type: "module",
-    name: "gstile-transform-decode",
+    name: "gstile-decode",
   });
 
-/** Bounded pool for the small transform subset of Q96 decoding. */
-export class GsTileTransformDecodePool {
+/** Bounded pool for decoding Q96 directly into final PlayCanvas streams. */
+export class GsTileDecodeWorkerPool {
   readonly #slots: WorkerSlot[];
   readonly #queue: DecodeTask[] = [];
-  readonly #workerFactory: GsTileTransformWorkerFactory;
+  readonly #workerFactory: GsTileDecodeWorkerFactory;
   #nextId = 1;
   #disposed = false;
 
   constructor(
     workerCount = defaultWorkerCount(),
-    workerFactory = createTransformDecodeWorker,
+    workerFactory = createDecodeWorker,
   ) {
     if (!Number.isSafeInteger(workerCount) || workerCount < 1 || workerCount > 8) {
       throw new Error("GSTile transform Worker count must be between 1 and 8");
@@ -69,7 +69,7 @@ export class GsTileTransformDecodePool {
       task: null,
     };
     slot.worker.onmessage = (
-      event: MessageEvent<GsTileTransformDecodeResponse>,
+      event: MessageEvent<GsTileDecodeWorkerResponse>,
     ) => this.#complete(slot, event.data);
     slot.worker.onerror = (event) => {
       event.preventDefault();
@@ -102,7 +102,7 @@ export class GsTileTransformDecodePool {
         new Error("GSTile transform Worker range is inconsistent"),
       );
     }
-    return new Promise<GsTileNativeTransformDecodeResult>((resolve, reject) => {
+    return new Promise<GsTileNativeDecodeResult>((resolve, reject) => {
       const task: DecodeTask = {
         id: this.#nextId++,
         content,
@@ -144,7 +144,7 @@ export class GsTileTransformDecodePool {
         task.byteOffset,
         task.byteOffset + task.byteLength,
       );
-      const request: GsTileTransformDecodeRequest = {
+      const request: GsTileDecodeWorkerRequest = {
         type: "decode",
         id: task.id,
         payload,
@@ -155,7 +155,7 @@ export class GsTileTransformDecodePool {
     }
   }
 
-  #complete(slot: WorkerSlot, response: GsTileTransformDecodeResponse) {
+  #complete(slot: WorkerSlot, response: GsTileDecodeWorkerResponse) {
     const task = slot.task;
     if (!task || response.id !== task.id) {
       this.#failSlot(slot, new Error("GSTile transform Worker response is stale"));

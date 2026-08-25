@@ -1,22 +1,22 @@
 /// <reference lib="webworker" />
 
-import { decodeGsTileNativeTransformPayload } from "./native-transform-decode";
+import { decodeGsTileNativePayload } from "./native-decode";
 import type {
-  GsTileTransformDecodeRequest,
-  GsTileTransformDecodeResponse,
-} from "./transform-decode-protocol";
+  GsTileDecodeWorkerRequest,
+  GsTileDecodeWorkerResponse,
+} from "./decode-worker-protocol";
 
 const scope = self as DedicatedWorkerGlobalScope;
 
-scope.onmessage = (event: MessageEvent<GsTileTransformDecodeRequest>) => {
+scope.onmessage = (event: MessageEvent<GsTileDecodeWorkerRequest>) => {
   const request = event.data;
   try {
-    const result = decodeGsTileNativeTransformPayload(
+    const result = decodeGsTileNativePayload(
       request.payload,
       request.recordCount,
       request.quantization,
     );
-    const response: GsTileTransformDecodeResponse = {
+    const response: GsTileDecodeWorkerResponse = {
       type: "decoded",
       id: request.id,
       result,
@@ -25,9 +25,12 @@ scope.onmessage = (event: MessageEvent<GsTileTransformDecodeRequest>) => {
       result.centerStream.buffer,
       result.transformA.buffer,
       result.transformB.buffer,
+      result.colorStream.buffer,
+      ...result.shStreams.map((stream) => stream.buffer),
+      ...result.opacityStreams.map((stream) => stream.buffer),
     ]);
   } catch (error) {
-    const response: GsTileTransformDecodeResponse = {
+    const response: GsTileDecodeWorkerResponse = {
       type: "error",
       id: request.id,
       message: error instanceof Error ? error.message : String(error),

@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { GsTileQuantization } from "./contracts";
-import type { GsTileNativeTransformDecodeResult } from "./native-transform-decode";
+import type { GsTileNativeDecodeResult } from "./native-decode";
 import {
-  GsTileTransformDecodePool,
-  type GsTileTransformWorker,
-} from "./transform-decode-pool";
+  GsTileDecodeWorkerPool,
+  type GsTileDecodeWorker,
+} from "./decode-worker-pool";
 import type {
-  GsTileTransformDecodeRequest,
-  GsTileTransformDecodeResponse,
-} from "./transform-decode-protocol";
+  GsTileDecodeWorkerRequest,
+  GsTileDecodeWorkerResponse,
+} from "./decode-worker-protocol";
 
 const quantization: GsTileQuantization = {
   position: { min: [0, 0, 0], max: [1, 1, 1] },
@@ -22,11 +22,24 @@ const quantization: GsTileQuantization = {
   sourceOpacityShDegree: 3,
 };
 
-const result = (count: number): GsTileNativeTransformDecodeResult => ({
+const result = (count: number): GsTileNativeDecodeResult => ({
   count,
   centerStream: new Float32Array(count * 3),
   transformA: new Uint32Array(count * 4),
   transformB: new Uint16Array(count * 4),
+  colorStream: new Uint16Array(count * 4),
+  shStreams: [
+    new Uint32Array(count * 4),
+    new Uint32Array(count * 4),
+    new Uint32Array(count * 4),
+    new Uint32Array(count * 4),
+  ],
+  opacityStreams: [
+    new Float32Array(count * 4),
+    new Float32Array(count * 4),
+    new Float32Array(count * 4),
+    new Float32Array(count * 4),
+  ],
   bounds: {
     minimum: [0, 0, 0],
     maximum: [1, 1, 1],
@@ -34,14 +47,14 @@ const result = (count: number): GsTileNativeTransformDecodeResult => ({
   },
 });
 
-class FakeWorker implements GsTileTransformWorker {
-  onmessage: ((event: MessageEvent<GsTileTransformDecodeResponse>) => void) | null = null;
+class FakeWorker implements GsTileDecodeWorker {
+  onmessage: ((event: MessageEvent<GsTileDecodeWorkerResponse>) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
   onmessageerror: ((event: MessageEvent) => void) | null = null;
-  readonly requests: GsTileTransformDecodeRequest[] = [];
+  readonly requests: GsTileDecodeWorkerRequest[] = [];
   terminated = false;
 
-  postMessage(message: GsTileTransformDecodeRequest) {
+  postMessage(message: GsTileDecodeWorkerRequest) {
     this.requests.push(message);
   }
 
@@ -49,7 +62,7 @@ class FakeWorker implements GsTileTransformWorker {
     const request = this.requests[index];
     this.onmessage?.({
       data: { type: "decoded", id: request.id, result: result(request.recordCount) },
-    } as MessageEvent<GsTileTransformDecodeResponse>);
+    } as MessageEvent<GsTileDecodeWorkerResponse>);
   }
 
   terminate() {
@@ -57,10 +70,10 @@ class FakeWorker implements GsTileTransformWorker {
   }
 }
 
-describe("GSTile transform decode Worker pool", () => {
+describe("GSTile decode Worker pool", () => {
   it("admits only one payload copy per available Worker", async () => {
     const worker = new FakeWorker();
-    const pool = new GsTileTransformDecodePool(1, () => worker);
+    const pool = new GsTileDecodeWorkerPool(1, () => worker);
     const signal = new AbortController().signal;
     const first = pool.decode(new ArrayBuffer(128), 32, 96, 1, quantization, signal);
     const second = pool.decode(new ArrayBuffer(128), 32, 96, 1, quantization, signal);
@@ -77,7 +90,7 @@ describe("GSTile transform decode Worker pool", () => {
 
   it("rejects an aborted queued decode without dispatching it", async () => {
     const worker = new FakeWorker();
-    const pool = new GsTileTransformDecodePool(1, () => worker);
+    const pool = new GsTileDecodeWorkerPool(1, () => worker);
     const active = pool.decode(
       new ArrayBuffer(96),
       0,

@@ -1,12 +1,25 @@
 import type { GsTileQuantization } from "./contracts";
+import type {
+  GsTileOpacityStreams,
+  GsTilePlayCanvasColumns,
+} from "./decode";
+import { packGsTileNativeColorRecord } from "./native-color";
+import {
+  createGsTileNativeShScratch,
+  packGsTileNativeShRecord,
+  type GsTileNativeShStreams,
+} from "./native-sh";
 import { GSTILE_RECORD_BYTES } from "./pack";
 import { gsTileTextureElementCapacity } from "./native-streams";
 
-export type GsTileNativeTransformDecodeResult = {
+export type GsTileNativeDecodeResult = {
   count: number;
   centerStream: Float32Array;
   transformA: Uint32Array;
   transformB: Uint16Array;
+  colorStream: Uint16Array;
+  shStreams: GsTileNativeShStreams;
+  opacityStreams: GsTileOpacityStreams;
   bounds: {
     minimum: [number, number, number];
     maximum: [number, number, number];
@@ -18,12 +31,12 @@ const dequantizeU16 = (value: number, minimum: number, maximum: number) =>
   minimum + value * ((maximum - minimum) / 65_535);
 
 /** Decode the transform subset of an already SHA-256-authenticated Q96 payload. */
-export const decodeGsTileNativeTransformPayload = (
+export const decodeGsTileNativePayload = (
   payload: ArrayBuffer,
   recordCount: number,
   quantization: GsTileQuantization,
   float2Half?: (value: number) => number,
-): GsTileNativeTransformDecodeResult => {
+): GsTileNativeDecodeResult => {
   if (
     !Number.isSafeInteger(recordCount) ||
     recordCount < 1 ||
@@ -43,6 +56,19 @@ export const decodeGsTileNativeTransformPayload = (
   const centerStream = new Float32Array(recordCount * 3);
   const transformA = new Uint32Array(capacity * 4);
   const transformB = new Uint16Array(capacity * 4);
+  const colorStream = new Uint16Array(capacity * 4);
+  const shStreams: GsTileNativeShStreams = [
+    new Uint32Array(capacity * 4),
+    new Uint32Array(capacity * 4),
+    new Uint32Array(capacity * 4),
+    new Uint32Array(capacity * 4),
+  ];
+  const opacityStreams: GsTileOpacityStreams = [
+    new Float32Array(capacity * 4),
+    new Float32Array(capacity * 4),
+    new Float32Array(capacity * 4),
+    new Float32Array(capacity * 4),
+  ];
   const transformAFloat32 = new Float32Array(transformA.buffer);
   const transformAHalf = hasNativeFloat16
     ? new Float16Array(transformA.buffer)
@@ -51,6 +77,7 @@ export const decodeGsTileNativeTransformPayload = (
     ? new Float16Array(transformB.buffer)
     : null;
   const view = new DataView(payload);
+  const shScratch = createGsTileNativeShScratch();
   const minimum: [number, number, number] = [Infinity, Infinity, Infinity];
   const maximum: [number, number, number] = [-Infinity, -Infinity, -Infinity];
 
@@ -141,6 +168,75 @@ export const decodeGsTileNativeTransformPayload = (
       transformB[streamOffset + 3] = float2Half(z);
     }
 
+    const baseOpacity = Math.fround(
+      dequantizeU16(
+        view.getUint16(base + 20, true),
+        quantization.opacityLogit.min,
+        quantization.opacityLogit.max,
+      ),
+    );
+    packGsTileNativeColorRecord(
+      colorStream,
+      record,
+      Math.fround(
+        view.getInt16(base + 22, true) * quantization.colorDcScale[0],
+      ),
+      Math.fround(
+        view.getInt16(base + 24, true) * quantization.colorDcScale[1],
+      ),
+      Math.fround(
+        view.getInt16(base + 26, true) * quantization.colorDcScale[2],
+      ),
+      baseOpacity,
+    );
+    const opacityScale = quantization.opacityShScale;
+    opacityStreams[0][streamOffset] = baseOpacity;
+    opacityStreams[0][streamOffset + 1] =
+      view.getInt8(base + 73) * opacityScale[0];
+    opacityStreams[0][streamOffset + 2] =
+      view.getInt8(base + 74) * opacityScale[1];
+    opacityStreams[0][streamOffset + 3] =
+      view.getInt8(base + 75) * opacityScale[2];
+    opacityStreams[1][streamOffset] =
+      view.getInt8(base + 76) * opacityScale[3];
+    opacityStreams[1][streamOffset + 1] =
+      view.getInt8(base + 77) * opacityScale[4];
+    opacityStreams[1][streamOffset + 2] =
+      view.getInt8(base + 78) * opacityScale[5];
+    opacityStreams[1][streamOffset + 3] =
+      view.getInt8(base + 79) * opacityScale[6];
+    opacityStreams[2][streamOffset] =
+      view.getInt8(base + 80) * opacityScale[7];
+    opacityStreams[2][streamOffset + 1] =
+      view.getInt8(base + 81) * opacityScale[8];
+    opacityStreams[2][streamOffset + 2] =
+      view.getInt8(base + 82) * opacityScale[9];
+    opacityStreams[2][streamOffset + 3] =
+      view.getInt8(base + 83) * opacityScale[10];
+    opacityStreams[3][streamOffset] =
+      view.getInt8(base + 84) * opacityScale[11];
+    opacityStreams[3][streamOffset + 1] =
+      view.getInt8(base + 85) * opacityScale[12];
+    opacityStreams[3][streamOffset + 2] =
+      view.getInt8(base + 86) * opacityScale[13];
+    opacityStreams[3][streamOffset + 3] =
+      view.getInt8(base + 87) * opacityScale[14];
+    const colorScale = quantization.colorShScale;
+    const coefficients = shScratch.coefficients;
+    for (let coefficient = 0; coefficient < 15; coefficient += 1) {
+      const index = coefficient * 3;
+      coefficients[index] = Math.fround(
+        view.getInt8(base + 28 + coefficient) * colorScale[coefficient],
+      );
+      coefficients[index + 1] = Math.fround(
+        view.getInt8(base + 43 + coefficient) * colorScale[coefficient + 15],
+      );
+      coefficients[index + 2] = Math.fround(
+        view.getInt8(base + 58 + coefficient) * colorScale[coefficient + 30],
+      );
+    }
+    packGsTileNativeShRecord(shScratch, shStreams, record);
+
     const radius = 2 * Math.exp(Math.max(sx, sy, sz));
     minimum[0] = Math.min(minimum[0], px - radius);
     minimum[1] = Math.min(minimum[1], py - radius);
@@ -155,22 +251,23 @@ export const decodeGsTileNativeTransformPayload = (
     centerStream,
     transformA,
     transformB,
+    colorStream,
+    shStreams,
+    opacityStreams,
     bounds: { minimum, maximum, valid: true },
   };
 };
 
-export const copyGsTileNativeTransformResult = (
-  destination: {
-    count: number;
-    centerStream: Float32Array | null;
-    transformStreams: readonly [Uint32Array, Uint16Array] | null;
-  },
+export const copyGsTileNativeResult = (
+  destination: GsTilePlayCanvasColumns,
   recordOffset: number,
-  source: GsTileNativeTransformDecodeResult,
+  source: GsTileNativeDecodeResult,
 ) => {
   if (
     !destination.centerStream ||
     !destination.transformStreams ||
+    !destination.colorStream ||
+    !destination.shStreams ||
     !Number.isSafeInteger(recordOffset) ||
     recordOffset < 0 ||
     recordOffset + source.count > destination.count
@@ -187,4 +284,18 @@ export const copyGsTileNativeTransformResult = (
     source.transformB.subarray(0, activeElements),
     recordOffset * 4,
   );
+  destination.colorStream.set(
+    source.colorStream.subarray(0, activeElements),
+    recordOffset * 4,
+  );
+  for (let stream = 0; stream < 4; stream += 1) {
+    destination.shStreams[stream].set(
+      source.shStreams[stream].subarray(0, activeElements),
+      recordOffset * 4,
+    );
+    destination.opacityStreams[stream].set(
+      source.opacityStreams[stream].subarray(0, activeElements),
+      recordOffset * 4,
+    );
+  }
 };

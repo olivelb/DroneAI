@@ -1,14 +1,18 @@
 import { FloatPacking } from "playcanvas";
 import { describe, expect, it } from "vitest";
 import type { GsTileQuantization } from "./contracts";
-import { allocateGsTilePlayCanvasColumns } from "./decode";
+import {
+  allocateGsTilePlayCanvasColumns,
+  decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns,
+} from "./decode";
 import { calculateMergedArenaBounds } from "./merged-arena";
 import {
-  copyGsTileNativeTransformResult,
-  decodeGsTileNativeTransformPayload,
-} from "./native-transform-decode";
+  copyGsTileNativeResult,
+  decodeGsTileNativePayload,
+} from "./native-decode";
 import { gsTileTextureElementCapacity } from "./native-streams";
 import { packGsTileNativeTransforms } from "./native-transform";
+import { GSTILE_PACK_HEADER_BYTES } from "./pack";
 
 const quantization: GsTileQuantization = {
   position: { min: [-800, -250, 30], max: [1_200, 900, 410] },
@@ -97,16 +101,43 @@ describe("GSTile native transform payload decoding", () => {
       { rotationIsNormalized: true },
     );
 
-    const actual = decodeGsTileNativeTransformPayload(
+    const actual = decodeGsTileNativePayload(
       payload,
       count,
       quantization,
       FloatPacking.float2Half,
     );
 
+    const pack = new ArrayBuffer(GSTILE_PACK_HEADER_BYTES + payload.byteLength);
+    const packBytes = new Uint8Array(pack);
+    packBytes.set([71, 83, 84, 73, 76, 69, 49, 0]);
+    const packView = new DataView(pack);
+    packView.setUint16(8, 1, true);
+    packView.setUint16(10, GSTILE_PACK_HEADER_BYTES, true);
+    packView.setUint16(12, 96, true);
+    packView.setUint32(16, count, true);
+    packBytes.set(new Uint8Array(payload), GSTILE_PACK_HEADER_BYTES);
+    const expectedStreams = allocateGsTilePlayCanvasColumns(count, {
+      centerBounds: true,
+      color: true,
+      sh: true,
+    });
+    decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
+      pack,
+      GSTILE_PACK_HEADER_BYTES,
+      payload.byteLength,
+      count,
+      quantization,
+      expectedStreams,
+      0,
+    );
+
     expect(actual.centerStream).toEqual(centerStream);
     expect(actual.transformA).toEqual(expectedA);
     expect(actual.transformB).toEqual(expectedB);
+    expect(actual.colorStream).toEqual(expectedStreams.colorStream);
+    expect(actual.shStreams).toEqual(expectedStreams.shStreams);
+    expect(actual.opacityStreams).toEqual(expectedStreams.opacityStreams);
     const expectedBounds = calculateMergedArenaBounds(
       Array.from({ length: 3 }, () => new Float32Array(0)),
       logScale,
@@ -122,28 +153,37 @@ describe("GSTile native transform payload decoding", () => {
   });
 
   it("copies only active texels into a bounded destination range", () => {
-    const source = decodeGsTileNativeTransformPayload(
+    const source = decodeGsTileNativePayload(
       new Uint8Array(96).map((_, index) => (index === 12 ? 1 : 0)).buffer,
       1,
       quantization,
       FloatPacking.float2Half,
     );
-    const destination = {
-      count: 3,
-      centerStream: new Float32Array(9),
-      transformStreams: [
-        new Uint32Array(gsTileTextureElementCapacity(3) * 4),
-        new Uint16Array(gsTileTextureElementCapacity(3) * 4),
-      ] as [Uint32Array, Uint16Array],
-    };
-    copyGsTileNativeTransformResult(destination, 1, source);
-    expect(destination.centerStream.slice(3, 6)).toEqual(source.centerStream);
-    expect(destination.transformStreams[0].slice(4, 8)).toEqual(
+    const destination = allocateGsTilePlayCanvasColumns(3, {
+      centerBounds: true,
+      color: true,
+      sh: true,
+      transform: true,
+    });
+    copyGsTileNativeResult(destination, 1, source);
+    expect(destination.centerStream?.slice(3, 6)).toEqual(source.centerStream);
+    expect(destination.transformStreams?.[0].slice(4, 8)).toEqual(
       source.transformA.slice(0, 4),
     );
-    expect(destination.transformStreams[1].slice(4, 8)).toEqual(
+    expect(destination.transformStreams?.[1].slice(4, 8)).toEqual(
       source.transformB.slice(0, 4),
     );
+    expect(destination.colorStream?.slice(4, 8)).toEqual(
+      source.colorStream.slice(0, 4),
+    );
+    for (let stream = 0; stream < 4; stream += 1) {
+      expect(destination.shStreams?.[stream].slice(4, 8)).toEqual(
+        source.shStreams[stream].slice(0, 4),
+      );
+      expect(destination.opacityStreams[stream].slice(4, 8)).toEqual(
+        source.opacityStreams[stream].slice(0, 4),
+      );
+    }
   });
 
   it("bounds the merged handoff to 172 bytes per active splat", () => {
