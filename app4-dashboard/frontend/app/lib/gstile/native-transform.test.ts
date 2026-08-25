@@ -180,7 +180,7 @@ describe("GSTile native transform packing", () => {
       transformB,
       FloatPacking.float2Half,
       null,
-      2,
+      { activeCount: 2 },
     );
 
     expect([...transformA.slice(8)]).toEqual(new Array(8).fill(0xffff_ffff));
@@ -188,5 +188,71 @@ describe("GSTile native transform packing", () => {
     expect([...transformA.slice(0, 8)]).not.toEqual(
       new Array(8).fill(0xffff_ffff),
     );
+  });
+
+  it("keeps Q96-normalized rotations within one half-float ULP", () => {
+    const count = 65_536;
+    let state = 0x85eb_ca6b;
+    const random = () => {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+      return state / 0xffff_ffff;
+    };
+    const rotation = Array.from({ length: 4 }, () => new Float32Array(count));
+    for (let splat = 0; splat < count; splat += 1) {
+      const values = Array.from(
+        { length: 4 },
+        () => Math.round((random() * 2 - 1) * 32_767) / 32_767,
+      );
+      const length = Math.hypot(...values) || 1;
+      for (let component = 0; component < 4; component += 1) {
+        rotation[component][splat] = values[component] / length;
+      }
+    }
+    const columns = {
+      position: [
+        new Float32Array(0),
+        new Float32Array(0),
+        new Float32Array(0),
+      ],
+      centerStream: new Float32Array(count * 3),
+      logScale: Array.from({ length: 3 }, () => new Float32Array(count)),
+      rotation,
+    };
+    const referenceA = new Uint32Array(count * 4);
+    const referenceB = new Uint16Array(count * 4);
+    const trustedA = new Uint32Array(count * 4);
+    const trustedB = new Uint16Array(count * 4);
+
+    packGsTileNativeTransforms(
+      columns,
+      referenceA,
+      referenceB,
+      FloatPacking.float2Half,
+    );
+    packGsTileNativeTransforms(
+      columns,
+      trustedA,
+      trustedB,
+      FloatPacking.float2Half,
+      globalThis.Float16Array,
+      { rotationIsNormalized: true },
+    );
+
+    let changed = 0;
+    let maximumUlp = 0;
+    for (let splat = 0; splat < count; splat += 1) {
+      const offset = splat * 4;
+      for (const [actual, expected] of [
+        [trustedA[offset + 3] & 0xffff, referenceA[offset + 3] & 0xffff],
+        [trustedA[offset + 3] >>> 16, referenceA[offset + 3] >>> 16],
+        [trustedB[offset + 3], referenceB[offset + 3]],
+      ]) {
+        const distance = Math.abs(actual - expected);
+        if (distance > 0) changed += 1;
+        maximumUlp = Math.max(maximumUlp, distance);
+      }
+    }
+    expect(maximumUlp).toBeLessThanOrEqual(1);
+    expect(changed).toBeLessThanOrEqual(16);
   });
 });
