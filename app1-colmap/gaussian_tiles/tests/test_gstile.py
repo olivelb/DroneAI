@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import zstandard
 
 COLMAP_ROOT = Path(__file__).resolve().parents[2]
 if str(COLMAP_ROOT) not in sys.path:
@@ -210,6 +211,15 @@ def test_tiler_is_deterministic_and_spatially_bounded(tmp_path: Path) -> None:
     for left, right in zip(first_manifest["packs"], second_manifest["packs"]):
         assert left["sha256"] == right["sha256"]
         assert _sha256(first.output / left["path"]) == _sha256(second.output / right["path"])
+        assert left["encodings"]["zstd"] == right["encodings"]["zstd"]
+        encoded = left["encodings"]["zstd"]
+        compressed_path = first.output / encoded["path"]
+        raw_path = first.output / left["path"]
+        assert compressed_path.stat().st_size == encoded["byteLength"]
+        assert _sha256(compressed_path) == encoded["sha256"]
+        assert zstandard.ZstdDecompressor().decompress(
+            compressed_path.read_bytes()
+        ) == raw_path.read_bytes()
     assert read_binary_ply_layout(source).vertex_count == 2_500
     event_names = {str(event["event"]) for event in events}
     assert {
@@ -228,6 +238,16 @@ def test_manifest_rejects_pack_path_traversal(tmp_path: Path) -> None:
     result = build_gstile_bundle(source, tmp_path / "bundle")
     manifest = json.loads(result.manifest_path.read_text("ascii"))
     manifest["packs"][0]["path"] = "../secret"
+    with pytest.raises(ValueError, match="escapes"):
+        validate_manifest(manifest)
+
+
+def test_manifest_rejects_zstd_path_traversal(tmp_path: Path) -> None:
+    source = tmp_path / "source.ply"
+    _write_ply(source, _records(1_024))
+    result = build_gstile_bundle(source, tmp_path / "bundle")
+    manifest = json.loads(result.manifest_path.read_text("ascii"))
+    manifest["packs"][0]["encodings"]["zstd"]["path"] = "../secret.zst"
     with pytest.raises(ValueError, match="escapes"):
         validate_manifest(manifest)
 

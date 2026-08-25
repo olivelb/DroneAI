@@ -980,6 +980,10 @@ class _GsTileTreeBuilder:
         )
         pack["id"] = pack_id
         pack["path"] = relative.as_posix()
+        if zstd_encoding := pack.get("encodings", {}).get("zstd"):
+            zstd_encoding["path"] = relative.with_suffix(
+                relative.suffix + ".zst"
+            ).as_posix()
         pack["byteOffset"] = 32
         self.packs.append(pack)
         for key, value in errors.items():

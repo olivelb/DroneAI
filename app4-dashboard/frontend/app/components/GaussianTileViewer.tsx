@@ -121,11 +121,44 @@ export default function GaussianTileViewer({
   );
   const mergedGpuMode = assemblyOption === "merged";
   const incrementalGpuMode = assemblyOption === "incremental";
+  const viewerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState("Initialisation…");
   const [error, setError] = useState<string | null>(null);
+  const [fullscreenError, setFullscreenError] = useState<string | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
   const [statistics, setStatistics] =
     useState<GaussianRenderStatistics>(emptyStatistics);
+
+  useEffect(() => {
+    const synchronizeFullscreen = () => {
+      setFullscreen(document.fullscreenElement === viewerRef.current);
+    };
+    document.addEventListener("fullscreenchange", synchronizeFullscreen);
+    return () => {
+      document.removeEventListener("fullscreenchange", synchronizeFullscreen);
+    };
+  }, []);
+
+  const toggleFullscreen = async () => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    setFullscreenError(null);
+    try {
+      if (document.fullscreenElement === viewer) {
+        await document.exitFullscreen();
+      } else {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        await viewer.requestFullscreen();
+      }
+    } catch (reason) {
+      setFullscreenError(
+        reason instanceof Error
+          ? reason.message
+          : "Le mode plein écran est indisponible",
+      );
+    }
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -229,7 +262,13 @@ export default function GaussianTileViewer({
 
   return (
     <div
-      className={`relative min-h-80 overflow-hidden rounded-2xl bg-[#101816] ${className}`}
+      ref={viewerRef}
+      className={`relative min-h-80 overflow-hidden bg-[#101816] ${fullscreen ? "rounded-none" : "resize-y rounded-2xl"} ${className}`}
+      style={
+        fullscreen
+          ? { width: "100vw", height: "100vh", minHeight: "100vh" }
+          : undefined
+      }
       data-testid="gstile-viewer"
       data-status={status}
       data-lod-state={statistics.lodState}
@@ -266,6 +305,23 @@ export default function GaussianTileViewer({
       data-lod-reused-gaussians={statistics.lodReusedGaussians}
     >
       <canvas ref={canvasRef} className="block h-full min-h-80 w-full" />
+      <button
+        type="button"
+        onClick={() => void toggleFullscreen()}
+        className="absolute right-3 top-3 z-10 grid size-9 place-items-center rounded-xl border border-white/15 bg-black/55 text-white/80 backdrop-blur transition hover:bg-black/75 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+        aria-label={fullscreen ? "Quitter le plein écran" : "Afficher en plein écran"}
+        title={fullscreen ? "Quitter le plein écran (Échap)" : "Plein écran"}
+      >
+        {fullscreen ? (
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M8 3v5H3M16 3v5h5M8 21v-5H3M16 21v-5h5" />
+          </svg>
+        ) : (
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+          </svg>
+        )}
+      </button>
       <div className="pointer-events-none absolute left-3 top-3 rounded-xl border border-white/10 bg-black/55 px-3 py-2 text-[11px] text-white/80 backdrop-blur">
         <div className="font-semibold text-white">
           {mergedGpuMode
@@ -364,6 +420,11 @@ export default function GaussianTileViewer({
       {error && (
         <div className="absolute inset-x-4 bottom-4 rounded-xl border border-red-300/30 bg-red-950/85 p-3 text-xs text-red-100">
           {error}
+        </div>
+      )}
+      {fullscreenError && !error && (
+        <div className="absolute inset-x-4 bottom-4 rounded-xl border border-amber-300/30 bg-amber-950/85 p-3 text-xs text-amber-100">
+          {fullscreenError}
         </div>
       )}
     </div>

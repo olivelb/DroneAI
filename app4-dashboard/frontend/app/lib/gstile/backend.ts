@@ -8,6 +8,11 @@ export type GaussianViewFrame = {
   outward: readonly [number, number, number];
 };
 
+export type GsTilePackTransportUrls = {
+  identity: string;
+  zstd?: string;
+};
+
 export type GaussianCameraState = {
   view: Float64Array;
   projection: Float64Array;
@@ -64,7 +69,7 @@ export interface GaussianRenderBackend {
     manifest: GsTileManifest,
     scheduler: GsTileRangeScheduler,
     signal: AbortSignal,
-    packUrls?: ReadonlyMap<string, string>,
+    packUrls?: ReadonlyMap<string, GsTilePackTransportUrls>,
     recommendedView?: GaussianViewFrame | null,
   ): Promise<void>;
   setCamera(camera: GaussianCameraState): void;

@@ -109,6 +109,7 @@ def gaussian_viewer_descriptor(
     mission: ViewerMission,
     *,
     expires_seconds: int = VIEWER_URL_TTL_SECONDS,
+    accept_zstd: bool = False,
 ) -> dict[str, Any]:
     """Return a validated manifest plus browser-reachable pack URLs."""
 
@@ -159,17 +160,45 @@ def gaussian_viewer_descriptor(
                 raise ValueError(f"Viewer workspace does not publish {relative}")
             if entry.blob.size_bytes != pack["byteLength"] or entry.blob.checksum_sha256 != pack["sha256"]:
                 raise ValueError(f"GSTile pack integrity differs for {pack['id']}")
-            signed_packs.append(
-                {
-                    "id": pack["id"],
-                    "url": storage.get_presigned_url(
-                        entry.blob.key,
-                        expires=expires_seconds,
-                    ),
-                    "byteLength": pack["byteLength"],
-                    "sha256": pack["sha256"],
-                }
-            )
+            signed_pack: dict[str, Any] = {
+                "id": pack["id"],
+                "url": storage.get_presigned_url(
+                    entry.blob.key,
+                    expires=expires_seconds,
+                ),
+                "byteLength": pack["byteLength"],
+                "sha256": pack["sha256"],
+            }
+            zstd = pack.get("encodings", {}).get("zstd")
+            if zstd is not None:
+                encoded_relative = (
+                    base / safe_bundle_path(zstd["path"], "pack.encodings.zstd.path")
+                ).as_posix()
+                encoded_entry = files.get(encoded_relative)
+                if encoded_entry is None:
+                    raise ValueError(
+                        f"Viewer workspace does not publish {encoded_relative}"
+                    )
+                if (
+                    encoded_entry.blob.size_bytes != zstd["byteLength"]
+                    or encoded_entry.blob.checksum_sha256 != zstd["sha256"]
+                ):
+                    raise ValueError(
+                        f"GSTile zstd integrity differs for {pack['id']}"
+                    )
+                if accept_zstd:
+                    signed_pack["encodings"] = {
+                        "zstd": {
+                            "url": storage.get_presigned_url(
+                                encoded_entry.blob.key,
+                                expires=expires_seconds,
+                                response_content_encoding="zstd",
+                            ),
+                            "byteLength": zstd["byteLength"],
+                            "sha256": zstd["sha256"],
+                        }
+                    }
+            signed_packs.append(signed_pack)
     except HTTPException:
         raise
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:

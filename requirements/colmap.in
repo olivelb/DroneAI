@@ -16,3 +16,4 @@ pyproj
 rasterio
 scipy
 sqlalchemy
+zstandard

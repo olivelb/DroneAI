@@ -1,5 +1,5 @@
 import { ResponseContractError } from "../contract-decoder";
-import type { GaussianViewFrame } from "./backend";
+import type { GaussianViewFrame, GsTilePackTransportUrls } from "./backend";
 import { decodeGsTileManifest, type GsTileManifest } from "./contracts";
 
 export type GsTileViewerDescriptor = {
@@ -7,7 +7,7 @@ export type GsTileViewerDescriptor = {
   bundleId: string;
   expiresAt: string;
   manifest: GsTileManifest;
-  packUrls: ReadonlyMap<string, string>;
+  packUrls: ReadonlyMap<string, GsTilePackTransportUrls>;
   recommendedView: GaussianViewFrame | null;
 };
 
@@ -123,7 +123,7 @@ export const decodeGsTileViewerDescriptor = (
     );
   }
   const manifestPacks = new Map(manifest.packs.map((pack) => [pack.id, pack]));
-  const packUrls = new Map<string, string>();
+  const packUrls = new Map<string, GsTilePackTransportUrls>();
   payload.packs.forEach((rawPack, index) => {
     const pack = objectValue(rawPack, `$.packs[${index}]`);
     const id = stringValue(pack.id, `$.packs[${index}].id`);
@@ -158,7 +158,52 @@ export const decodeGsTileViewerDescriptor = (
         "HTTP(S) URL",
       );
     }
-    packUrls.set(id, parsed.toString());
+    const urls: GsTilePackTransportUrls = { identity: parsed.toString() };
+    const expectedZstd = expected.encodings?.zstd;
+    if (pack.encodings !== undefined) {
+      const encodings = objectValue(
+        pack.encodings,
+        `$.packs[${index}].encodings`,
+      );
+      const zstd = objectValue(
+        encodings.zstd,
+        `$.packs[${index}].encodings.zstd`,
+      );
+      const zstdUrl = stringValue(
+        zstd.url,
+        `$.packs[${index}].encodings.zstd.url`,
+      );
+      if (
+        !expectedZstd ||
+        zstd.byteLength !== expectedZstd.byteLength ||
+        zstd.sha256 !== expectedZstd.sha256
+      ) {
+        throw new ResponseContractError(
+          "Gaussian viewer descriptor",
+          `$.packs[${index}].encodings.zstd`,
+          "manifest-matching zstd encoding",
+        );
+      }
+      let parsedZstd: URL;
+      try {
+        parsedZstd = new URL(zstdUrl);
+      } catch {
+        throw new ResponseContractError(
+          "Gaussian viewer descriptor",
+          `$.packs[${index}].encodings.zstd.url`,
+          "absolute URL",
+        );
+      }
+      if (!("http:" === parsedZstd.protocol || "https:" === parsedZstd.protocol)) {
+        throw new ResponseContractError(
+          "Gaussian viewer descriptor",
+          `$.packs[${index}].encodings.zstd.url`,
+          "HTTP(S) URL",
+        );
+      }
+      urls.zstd = parsedZstd.toString();
+    }
+    packUrls.set(id, urls);
   });
   if (packUrls.size !== manifest.packs.length) {
     throw new ResponseContractError(

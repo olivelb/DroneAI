@@ -106,6 +106,25 @@ def _validate_packs(
         digest = pack.get("sha256")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError("GSTile pack SHA-256 is invalid")
+        encodings = pack.get("encodings")
+        if encodings is not None:
+            if not isinstance(encodings, Mapping) or set(encodings) != {"zstd"}:
+                raise ValueError("GSTile pack encodings are invalid")
+            zstd = encodings.get("zstd")
+            if not isinstance(zstd, Mapping):
+                raise ValueError("GSTile zstd encoding is invalid")
+            safe_bundle_path(zstd.get("path"), f"packs[{index}].encodings.zstd.path")
+            compressed_length = zstd.get("byteLength")
+            compressed_digest = zstd.get("sha256")
+            if (
+                isinstance(compressed_length, bool)
+                or not isinstance(compressed_length, int)
+                or compressed_length < 1
+                or compressed_length >= byte_length
+                or not isinstance(compressed_digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", compressed_digest)
+            ):
+                raise ValueError("GSTile zstd encoding identity is invalid")
         pack_counts[pack_id] = record_count
         pack_hashes[pack_id] = digest
     return pack_ids, pack_counts, pack_hashes

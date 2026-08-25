@@ -77,6 +77,13 @@ export type GsTilePack = {
   sha256: string;
   payloadCrc32: string;
   byteOffset: number;
+  encodings?: {
+    zstd: {
+      path: string;
+      byteLength: number;
+      sha256: string;
+    };
+  };
 };
 
 export type GsTileManifest = {
@@ -179,15 +186,26 @@ const nodeValidator = objectWith(
     geometricError: numberValue,
   },
 );
-const packValidator = objectWith({
-  id: nonEmptyString,
-  path: nonEmptyString,
-  byteLength: integerValue,
-  recordCount: integerValue,
-  sha256: nonEmptyString,
-  payloadCrc32: nonEmptyString,
-  byteOffset: integerValue,
-});
+const packValidator = objectWith(
+  {
+    id: nonEmptyString,
+    path: nonEmptyString,
+    byteLength: integerValue,
+    recordCount: integerValue,
+    sha256: nonEmptyString,
+    payloadCrc32: nonEmptyString,
+    byteOffset: integerValue,
+  },
+  {
+    encodings: objectWith({
+      zstd: objectWith({
+        path: nonEmptyString,
+        byteLength: integerValue,
+        sha256: nonEmptyString,
+      }),
+    }),
+  },
+);
 
 const structuralDecoder = decoder<GsTileManifest>(
   "GSTile manifest",
@@ -266,6 +284,8 @@ export const decodeGsTileManifest = (value: unknown): GsTileManifest => {
   const packsById = new Map<string, GsTilePack>();
   manifest.packs.forEach((pack) => {
     safeRelativePath(pack.path);
+    const zstd = pack.encodings?.zstd;
+    if (zstd) safeRelativePath(zstd.path);
     if (
       packIds.has(pack.id) ||
       !Number.isSafeInteger(pack.byteLength) ||
@@ -275,7 +295,12 @@ export const decodeGsTileManifest = (value: unknown): GsTileManifest => {
       pack.byteLength !==
         GSTILE_PACK_HEADER_BYTES + pack.recordCount * GSTILE_RECORD_BYTES ||
       !/^[0-9a-f]{64}$/i.test(pack.sha256) ||
-      !/^[0-9a-f]{8}$/i.test(pack.payloadCrc32)
+      !/^[0-9a-f]{8}$/i.test(pack.payloadCrc32) ||
+      (zstd !== undefined &&
+        (!Number.isSafeInteger(zstd.byteLength) ||
+          zstd.byteLength < 1 ||
+          zstd.byteLength >= pack.byteLength ||
+          !/^[0-9a-f]{64}$/i.test(zstd.sha256)))
     ) {
       throw new ResponseContractError(
         "GSTile manifest",
