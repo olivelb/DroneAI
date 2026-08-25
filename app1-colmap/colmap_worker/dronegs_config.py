@@ -45,6 +45,7 @@ class DroneGsRunConfig:
     photometric_finish: int
     photometric_mse_percent: int
     checkpoint_every: int
+    host_image_cache_mib: int
     test_every: int
     test_split: str
     test_guard_percent: int
@@ -211,6 +212,7 @@ def resolve_dronegs_config(
         photometric_finish=int(params.get("gs_photometric_finish", 1_000)),
         photometric_mse_percent=int(params.get("gs_photometric_mse_percent", 100)),
         checkpoint_every=checkpoint_every,
+        host_image_cache_mib=int(params.get("gs_host_image_cache_mib", 0)),
         test_every=int(params.get("gs_test_every", 8)),
         test_split=str(params.get("gs_test_split", "modulo")),
         test_guard_percent=int(params.get("gs_test_guard_percent", 0)),
@@ -291,6 +293,11 @@ def resolve_dronegs_config(
         raise ValueError("gs_capacity_floor must be positive and no greater than gs_cap_max")
     if config.capacity_mode == "adaptive" and config.target_gaussian_spacing_pixels <= 0:
         raise ValueError("adaptive Gaussian capacity requires a positive target pixel spacing")
+    if (
+        config.host_image_cache_mib != 0
+        and not 256 <= config.host_image_cache_mib <= 65_536
+    ):
+        raise ValueError("gs_host_image_cache_mib must be 0 (auto) or between 256 and 65536")
 
     warnings: list[str] = []
     if checkpoint_every != requested_checkpoint_every:

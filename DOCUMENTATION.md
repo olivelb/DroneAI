@@ -1505,6 +1505,7 @@ Default training parameters (configurable via dashboard UI):
 | `gs_photometric_finish` | 1000 | Final mixed-objective ramp |
 | `gs_photometric_mse_percent` | 100 | Final active-pixel MSE weight |
 | `gs_checkpoint_every` | 7500 | Resumable native checkpoint interval; standard runs are capped at 1/2/3 saves for 7.5k/15k/30k iterations; zero disables periodic saves |
+| `gs_host_image_cache_mib` | 0 (auto) | Decoded-image cache ceiling; auto preserves host/cgroup headroom and native allocation remains capped by the measured working set |
 | `gs_test_every` | 8 | Deterministic held-out split interval |
 | `gs_test_split` | modulo | V1 parity split; custom supports spatial-block |
 | `gs_test_guard_percent` | 0 | Guard ring excluded from training for spatial-block |
@@ -1718,6 +1719,7 @@ complete immutable envelopes and the memory formula are in
 | DroneGS Photometric Finish | `gs_photometric_finish` | int | 1000 | 0–10000 |
 | DroneGS Final MSE Weight | `gs_photometric_mse_percent` | int | 100 | 0–100 |
 | DroneGS Checkpoint Interval | `gs_checkpoint_every` | int | 7500 | 0–50000; non-zero values are bounded by the 1/2/3-save policy |
+| DroneGS Host Image Cache | `gs_host_image_cache_mib` | int | 0 | 0 auto, or 256–65536 MiB |
 | DroneGS Held-out Split Interval | `gs_test_every` | int | 8 | 0 or 2–100 |
 | DroneGS Held-out Split Policy | `gs_test_split` | select | modulo | modulo/spatial-block |
 | DroneGS Spatial Guard Ring | `gs_test_guard_percent` | float | 0 | 0–100 |

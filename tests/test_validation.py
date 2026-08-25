@@ -269,6 +269,7 @@ def test_pipeline_defaults_select_validated_dronegs_profile():
     assert params["gs_photometric_finish"] == "1000"
     assert params["gs_photometric_mse_percent"] == "100"
     assert params["gs_checkpoint_every"] == "7500"
+    assert params["gs_host_image_cache_mib"] == "0"
     assert params["gs_test_every"] == "8"
     assert params["gs_canary_min_psnr"] == "18.0"
     assert params["gs_canary_min_ssim"] == "0.25"
@@ -291,6 +292,7 @@ def test_dashboard_exposes_complete_dronegs_quality_configuration():
         "gs_pruning_policy",
         "gs_raster_profile",
         "gs_checkpoint_every",
+        "gs_host_image_cache_mib",
         "gs_test_every",
         "gs_canary_min_psnr",
         "gs_canary_min_ssim",
