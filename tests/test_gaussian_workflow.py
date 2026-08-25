@@ -119,6 +119,7 @@ def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch)
             max_width=2400,
             vol_id="mission",
             report_fn=None,
+            dronegs_host_image_cache_mib=4096,
         ),
         backend=backend,
         model_class=lambda: None,
@@ -148,6 +149,7 @@ def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch)
                 "fits_estimate": None,
             },
             "capacity_plan": result.capacity_plan.as_dict(),
+            "host_image_cache_mib": 4096,
         }
     ]
 
