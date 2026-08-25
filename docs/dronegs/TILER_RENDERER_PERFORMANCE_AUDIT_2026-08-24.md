@@ -881,6 +881,27 @@ rapportent **zéro fallback**. La suite complète passe 30 fichiers et 167 tests
 le lint, le typecheck et les builds production local et BIGZEN. Le contrôle
 visuel humain est validé conforme au PLY original.
 
+### Correction de la télémétrie des frames à la demande
+
+Le renderer à la demande publiait une statistique synthétique avec CPU, GPU et
+upload à zéro lorsqu'aucune frame n'était soumise. Cette statistique écrasait
+la dernière mesure réelle dans le HUD et empêchait de profiler correctement le
+chemin de rendu. Le backend conserve désormais le dernier échantillon produit
+par une frame effectivement rendue et ne le remplace qu'après une nouvelle
+soumission. Deux tests de contrat couvrent le maintien au repos et le
+remplacement après rendu.
+
+Sur le bundle Saint-Étienne complet de 7,4 M splats, la première observation
+diagnostique après correction donne 2,8 ms GPU et 11,4 ms CPU sur la dernière
+frame du cut stabilisé. Après un déplacement caméra, la dernière frame mesurée
+atteint 15,1 ms GPU et 12,0 ms CPU. Ces valeurs isolées ne constituent pas un
+benchmark statistique ; elles identifient toutefois le tri/raster sous mouvement
+comme prochain goulot à instrumenter. L'inspection du chemin PlayCanvas 2.21.4
+montre que les intervalles non-octree du pack fusionné partagent actuellement
+une unique sphère englobante de ressource. Le prochain prototype devra donc
+attacher des bornes conservatrices à chaque intervalle GSTile afin de permettre
+le culling GPU avant le radix sort, sans changer les splats visibles.
+
 ## Sources primaires
 
 - WebSplatter, papier et code officiel : https://arxiv.org/abs/2602.03207 et
