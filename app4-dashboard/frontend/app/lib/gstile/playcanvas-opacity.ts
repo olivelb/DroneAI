@@ -7,6 +7,7 @@
  * color for a changed view. No custom data is retained in the work-buffer.
  */
 export const DRONEGS_OPACITY_MODIFIER_GLSL = /* glsl */ `
+#define DRONEGS_WORKBUFFER_VIEW_DIRECTION
 uniform vec3 uDroneCameraPosition;
 uniform float uDroneOpacityMode;
 uniform float uDroneLodScaleMultiplier;
@@ -30,8 +31,9 @@ void modifySplatRotationScale(
 }
 
 void modifySplatColor(vec3 center, inout vec4 color) {
-    vec3 delta = center - uDroneCameraPosition;
-    vec3 dir = delta / max(length(delta), 1.0e-12);
+    // PlayCanvas already normalizes this exact direction for RGB SH. Reusing
+    // it avoids a second subtract, length and division for every active splat.
+    vec3 dir = getDroneWorkBufferViewDirection();
     float x = dir.x;
     float y = dir.y;
     float z = dir.z;
@@ -74,6 +76,7 @@ void modifySplatColor(vec3 center, inout vec4 color) {
 `;
 
 export const DRONEGS_OPACITY_MODIFIER_WGSL = /* wgsl */ `
+#define DRONEGS_WORKBUFFER_VIEW_DIRECTION
 uniform uDroneCameraPosition: vec3f;
 uniform uDroneOpacityMode: f32;
 uniform uDroneLodScaleMultiplier: f32;
@@ -97,8 +100,9 @@ fn modifySplatRotationScale(
 }
 
 fn modifySplatColor(center: vec3f, color: ptr<function, vec4f>) {
-    let delta = center - uniform.uDroneCameraPosition;
-    let dir = delta / max(length(delta), 1.0e-12);
+    // PlayCanvas already normalizes this exact direction for RGB SH. Reusing
+    // it avoids a second subtract, length and division for every active splat.
+    let dir = getDroneWorkBufferViewDirection();
     let x = dir.x;
     let y = dir.y;
     let z = dir.z;

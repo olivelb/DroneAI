@@ -12,6 +12,8 @@ COPY app4-dashboard/frontend/scripts/patch-playcanvas-incremental-world.mjs \
     ./scripts/patch-playcanvas-incremental-world.mjs
 COPY app4-dashboard/frontend/scripts/patch-playcanvas-container-intervals.mjs \
     ./scripts/patch-playcanvas-container-intervals.mjs
+COPY app4-dashboard/frontend/scripts/patch-playcanvas-workbuffer-view-direction.mjs \
+    ./scripts/patch-playcanvas-workbuffer-view-direction.mjs
 RUN npm ci
 
 COPY app4-dashboard/frontend/ ./
