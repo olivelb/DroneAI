@@ -31,6 +31,7 @@ export interface GsTilePersistentCache {
     signal?: AbortSignal,
   ): Promise<ArrayBuffer | null>;
   write(key: string, content: ArrayBuffer): Promise<void>;
+  delete(key: string): Promise<void>;
 }
 
 const requestResult = <T>(request: IDBRequest<T>) =>
@@ -129,7 +130,7 @@ export class IndexedDbGsTilePersistentCache implements GsTilePersistentCache {
     const content = await record.content.arrayBuffer();
     signal?.throwIfAborted();
     if (content.byteLength !== expectedByteLength) {
-      void this.#delete(key);
+      void this.delete(key);
       return null;
     }
     void this.#touch(key, expectedByteLength);
@@ -237,7 +238,7 @@ export class IndexedDbGsTilePersistentCache implements GsTilePersistentCache {
     }
   }
 
-  async #delete(key: string) {
+  async delete(key: string) {
     try {
       const database = await this.#database;
       const transaction = database.transaction(

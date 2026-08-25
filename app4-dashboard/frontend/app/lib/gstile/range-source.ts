@@ -215,6 +215,14 @@ export class GsTileRangeScheduler {
     );
   }
 
+  evictPersistent(immutableIdentity: string, range: ByteRange) {
+    if (!this.#persistentCache) return;
+    const key = this.#rangeKey("", range, immutableIdentity);
+    void this.#persistentCache.delete(key).catch(() => {
+      this.#persistentErrors += 1;
+    });
+  }
+
   async #fetchAndCache(
     key: string,
     url: string,

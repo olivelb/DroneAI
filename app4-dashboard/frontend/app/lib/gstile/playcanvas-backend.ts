@@ -1121,6 +1121,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       );
       const actualSha256 = await sha256(content);
       if (actualSha256 !== pack.sha256.toLowerCase()) {
+        scheduler.evictPersistent(immutableIdentity, range);
         throw new Error(`GSTile pack ${pack.id} failed SHA-256 validation`);
       }
       scheduler.persistVerified(immutableIdentity, range, content);
@@ -2247,6 +2248,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         actualSha256 !== pack.sha256.toLowerCase() ||
         actualSha256 !== tile.sha256.toLowerCase()
       ) {
+        scheduler.evictPersistent(immutableIdentity, range);
         throw new Error(`GSTile pack ${pack.id} failed SHA-256 validation`);
       }
       scheduler.persistVerified(immutableIdentity, range, content);

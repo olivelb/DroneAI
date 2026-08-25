@@ -67,6 +67,7 @@ describe("GSTile range source", () => {
     const persistentCache = {
       read: vi.fn(async () => persisted),
       write: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
     };
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -102,6 +103,7 @@ describe("GSTile range source", () => {
     const persistentCache = {
       read: vi.fn(async () => null),
       write: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
     };
     const fetchMock = vi.fn(async () =>
       new Response(new Uint8Array([1, 2, 3, 4]), {
@@ -137,6 +139,12 @@ describe("GSTile range source", () => {
       persistentWrites: 1,
       persistentWriteBytes: 4,
     });
+
+    scheduler.evictPersistent("sha256:pack", range);
+    await vi.waitFor(() => expect(persistentCache.delete).toHaveBeenCalledOnce());
+    expect(persistentCache.delete).toHaveBeenCalledWith(
+      "immutable:sha256:pack\u00000\u00004",
+    );
   });
 
   it("falls back to the network when persistent storage is unavailable", async () => {
@@ -145,6 +153,7 @@ describe("GSTile range source", () => {
         throw new Error("quota database unavailable");
       }),
       write: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
     };
     const fetchMock = vi.fn(async () =>
       new Response(new Uint8Array([1, 2, 3, 4]), {
