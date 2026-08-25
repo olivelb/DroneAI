@@ -75,8 +75,36 @@ Required top-level fields:
 Each node has `id`, `bounds.min`, `bounds.max`, `gaussianCount`, and either
 `children` or a `tile`, never both. Bounds enclose Gaussian centres. A tile has
 `pack`, `byteOffset`, `byteLength`, `recordCount`, `sha256` and `quantization`.
-The current tiler writes one tile per pack and byte offset 32; readers must not
-assume this because later writers may aggregate tiles into larger packs.
+By default the tiler writes one tile per pack. With `pack_target_bytes`, it
+groups exact tiles and proxies into separate, bounded packs. Aggregated
+representations use the `depth-spatial-v1` layout: a pack contains one
+representation kind at one tree depth, ordered by spatial node identifier.
+A LOD cut normally selects a parent or its descendants, not both; mixing
+depths therefore creates systematic byte overfetch even when it reduces the
+request count.
+Every tile keeps its own quantization and occupies an aligned, non-overlapping
+payload range. Tile ranges must cover the complete pack payload in ascending
+offset order. Their shared SHA-256 identifies the canonical aggregate pack.
+This extension is additive within version 1 because readers were already
+required to use the declared byte range rather than assume offset 32 or a
+one-to-one tile/pack relationship.
+
+Aggregating writers report `statistics.packCount`,
+`statistics.representationCount`, `statistics.packTargetBytes`, and optionally
+`statistics.packGrouping` so request reduction and overfetch experiments remain
+reproducible from the manifest.
+
+Existing immutable bundles can be migrated without decoding or requantizing
+their Q96 records:
+
+```bash
+python tools/repack_gstiles.py SOURCE_BUNDLE OUTPUT_BUNDLE \
+  --pack-target-bytes 2097152 --progress-jsonl
+```
+
+The repacker verifies every source pack SHA-256, header and payload CRC before
+copying its declared tile ranges. Publication is atomic and the output receives
+a new content-derived bundle identifier.
 
 A pack may expose an additive `encodings.zstd` object containing `path`,
 `byteLength` and `sha256`. It is a lossless transport representation of the
@@ -139,6 +167,12 @@ When `encodings.zstd` is selected, the browser fetches the complete encoded
 object, decodes it before Q96 parsing, verifies the canonical pack SHA-256, and
 caches only the canonical decoded bytes. Thus encoded and unencoded clients
 share the same immutable cache identity and rendering input.
+
+When several requested tiles share a pack, the scheduler coalesces their fetch
+under that same immutable identity. Aggregation is intentionally bounded: a
+writer may exceed the configured target only when one tile is larger than the
+target, and exact tiles are never mixed with LOD proxies so prefetch does not
+force unrelated representation classes into memory.
 
 Authenticated descriptors advertise the zstd URL only when the request's
 `Accept-Encoding` includes `zstd`. The signed object response declares

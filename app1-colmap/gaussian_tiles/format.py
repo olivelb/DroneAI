@@ -8,7 +8,7 @@ import os
 import struct
 import zlib
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import zstandard
@@ -110,6 +110,27 @@ def _sh_degree(color_rest_count: int, opacity_sh_count: int) -> tuple[int, int]:
     return color_degree, opacity_degree
 
 
+def _encode_pack_header(payload: bytes, *, identity: str) -> bytes:
+    if not payload or len(payload) % PACK_RECORD_SIZE:
+        raise ValueError("GSTile pack payload must contain complete records")
+    record_count = len(payload) // PACK_RECORD_SIZE
+    if record_count > 0xFFFFFFFF:
+        raise ValueError("GSTile pack record count exceeds uint32")
+    identity_hash = int.from_bytes(
+        hashlib.sha256(identity.encode("utf-8")).digest()[:8], "little"
+    )
+    return _HEADER.pack(
+        PACK_MAGIC,
+        GSTILE_VERSION,
+        PACK_HEADER_SIZE,
+        PACK_RECORD_SIZE,
+        0,
+        record_count,
+        identity_hash,
+        zlib.crc32(payload),
+    )
+
+
 def encode_pack(
     records: np.ndarray,
     source_ids: np.ndarray,
@@ -186,17 +207,7 @@ def encode_pack(
     packed["source_id"] = np.asarray(source_ids, dtype="<u8")
 
     payload = packed.tobytes(order="C")
-    node_hash = int.from_bytes(hashlib.sha256(node_id.encode("utf-8")).digest()[:8], "little")
-    header = _HEADER.pack(
-        PACK_MAGIC,
-        GSTILE_VERSION,
-        PACK_HEADER_SIZE,
-        PACK_RECORD_SIZE,
-        0,
-        records.shape[0],
-        node_hash,
-        zlib.crc32(payload),
-    )
+    header = _encode_pack_header(payload, identity=node_id)
     quantization = {
         "position": {"min": position_min.tolist(), "max": position_max.tolist()},
         "logScale": {"min": scale_min.tolist(), "max": scale_max.tolist()},
@@ -220,16 +231,11 @@ def encode_pack(
     return header + payload, quantization, errors
 
 
-def write_pack_atomic(
-    path: Path,
-    records: np.ndarray,
-    source_ids: np.ndarray,
-    *,
-    node_id: str,
-) -> tuple[dict[str, Any], dict[str, float]]:
-    content, quantization, errors = encode_pack(records, source_ids, node_id=node_id)
+def _write_encoded_pack_atomic(path: Path, content: bytes) -> dict[str, Any]:
+    record_count, payload_crc32 = validate_pack_content(content)
+
+
     content_sha256 = hashlib.sha256(content).hexdigest()
-    payload_crc32 = _HEADER.unpack_from(content)[-1]
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_bytes_atomic(path, content)
     encodings: dict[str, dict[str, Any]] = {}
@@ -246,20 +252,77 @@ def write_pack_atomic(
             "byteLength": len(compressed),
             "sha256": hashlib.sha256(compressed).hexdigest(),
         }
-    return (
-        {
-            "path": path.as_posix(),
-            "byteLength": len(content),
-            "recordCount": records.shape[0],
-            # The immutable bytes are already resident here. Hashing them before
-            # the write avoids reading every completed pack back from disk.
-            "sha256": content_sha256,
-            "payloadCrc32": f"{payload_crc32:08x}",
-            "quantization": quantization,
-            **({"encodings": encodings} if encodings else {}),
-        },
-        errors,
-    )
+    return {
+        "path": path.as_posix(),
+        "byteLength": len(content),
+        "recordCount": record_count,
+        # The immutable bytes are already resident here. Hashing them before
+        # the write avoids reading every completed pack back from disk.
+        "sha256": content_sha256,
+        "payloadCrc32": f"{payload_crc32:08x}",
+        **({"encodings": encodings} if encodings else {}),
+    }
+
+
+def validate_pack_content(content: bytes | bytearray | memoryview) -> tuple[int, int]:
+    """Validate one canonical pack and return its record count and payload CRC."""
+
+    if len(content) < PACK_HEADER_SIZE:
+        raise ValueError("GSTile encoded pack is truncated")
+    (
+        magic,
+        version,
+        header_size,
+        record_size,
+        flags,
+        record_count,
+        _identity_hash,
+        payload_crc32,
+    ) = _HEADER.unpack_from(content)
+    if (
+        magic != PACK_MAGIC
+        or version != GSTILE_VERSION
+        or header_size != PACK_HEADER_SIZE
+        or record_size != PACK_RECORD_SIZE
+        or flags != 0
+        or len(content) != PACK_HEADER_SIZE + record_count * PACK_RECORD_SIZE
+    ):
+        raise ValueError("GSTile encoded pack layout is invalid")
+    actual_crc32 = zlib.crc32(memoryview(content)[header_size:])
+    if actual_crc32 != payload_crc32:
+        raise ValueError("GSTile payload CRC mismatch")
+    return record_count, payload_crc32
+
+
+def write_pack_atomic(
+    path: Path,
+    records: np.ndarray,
+    source_ids: np.ndarray,
+    *,
+    node_id: str,
+) -> tuple[dict[str, Any], dict[str, float]]:
+    content, quantization, errors = encode_pack(records, source_ids, node_id=node_id)
+    pack = _write_encoded_pack_atomic(path, content)
+    pack["quantization"] = quantization
+    return pack, errors
+
+
+def write_aggregate_pack_atomic(
+    path: Path,
+    payloads: Sequence[bytes | memoryview],
+    *,
+    pack_id: str,
+) -> dict[str, Any]:
+    """Write one canonical pack containing independently quantized tile payloads."""
+
+    if not payloads:
+        raise ValueError("GSTile aggregate pack cannot be empty")
+    for payload in payloads:
+        if not payload or len(payload) % PACK_RECORD_SIZE:
+            raise ValueError("GSTile aggregate tile payload is invalid")
+    payload = b"".join(payloads)
+    content = _encode_pack_header(payload, identity=pack_id) + payload
+    return _write_encoded_pack_atomic(path, content)
 
 
 def _write_bytes_atomic(path: Path, content: bytes) -> None:

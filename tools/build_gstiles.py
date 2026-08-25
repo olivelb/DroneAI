@@ -36,6 +36,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--chunk-records", type=int, default=131_072)
     parser.add_argument(
+        "--pack-target-bytes",
+        type=int,
+        help="aggregate spatially adjacent tiles into canonical packs up to this size",
+    )
+    parser.add_argument(
         "--filter-invisible-giant-scale",
         type=float,
         help=(
@@ -75,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             lod_proxy_size=arguments.lod_proxy_size,
             lod_proxy_strategy=arguments.lod_proxy_strategy,
             chunk_records=arguments.chunk_records,
+            pack_target_bytes=arguments.pack_target_bytes,
             temporary_root=arguments.temporary_root,
             coordinate_origin=tuple(arguments.origin),
             crs=arguments.crs,

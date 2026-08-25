@@ -779,6 +779,11 @@ def run_gaussian_viewer_stage(
                 leaf_size=int(raw_options.get("leaf_size", 65_536)),
                 chunk_records=int(raw_options.get("chunk_records", 131_072)),
                 maximum_depth=int(raw_options.get("maximum_depth", 48)),
+                pack_target_bytes=(
+                    int(raw_options["pack_target_bytes"])
+                    if raw_options.get("pack_target_bytes") is not None
+                    else None
+                ),
                 temporary_root=temporary_root,
                 cancellation_check=control.raise_if_cancelled,
                 invisible_gaussian_scale_threshold=(

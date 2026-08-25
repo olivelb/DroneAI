@@ -897,6 +897,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #minimumLodLeafDepth = 0;
   #maximumLodDepth = 0;
   #verifiedPackBuffers = new WeakSet<ArrayBuffer>();
+  #packVerificationPromises = new WeakMap<ArrayBuffer, Promise<void>>();
   #forceWorkBufferRewriteFrames = 0;
   #renderFramesRemaining = 1;
   #lodTotalMs: number | null = null;
@@ -1373,6 +1374,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#maximumLodDepth = 0;
     this.#coordinateOrigin = [0, 0, 0];
     this.#verifiedPackBuffers = new WeakSet<ArrayBuffer>();
+    this.#packVerificationPromises = new WeakMap<ArrayBuffer, Promise<void>>();
     this.#forceWorkBufferRewriteFrames = 0;
     this.#renderFramesRemaining = 0;
     this.#lodTotalMs = null;
@@ -2326,22 +2328,48 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       transport,
     );
     timings.fetchServiceMs += performance.now() - fetchStarted;
-    if (!this.#verifiedPackBuffers.has(content)) {
-      const sha256Started = performance.now();
-      const actualSha256 = await sha256(content);
-      timings.sha256ServiceMs += performance.now() - sha256Started;
-      if (
-        actualSha256 !== pack.sha256.toLowerCase() ||
-        actualSha256 !== tile.sha256.toLowerCase()
-      ) {
-        scheduler.evictPersistent(immutableIdentity, range);
-        throw new Error(`GSTile pack ${pack.id} failed SHA-256 validation`);
-      }
-      scheduler.persistVerified(immutableIdentity, range, content);
-      this.#verifiedPackBuffers.add(content);
+    if (tile.sha256.toLowerCase() !== pack.sha256.toLowerCase()) {
+      throw new Error(`GSTile node ${node.id} references an unexpected pack hash`);
     }
+    await this.#verifyLodPackContent(
+      pack,
+      content,
+      range,
+      immutableIdentity,
+      timings,
+    );
     signal.throwIfAborted();
     return { pc, app, manifest, tile, pack, content };
+  }
+
+  async #verifyLodPackContent(
+    pack: GsTileManifest["packs"][number],
+    content: ArrayBuffer,
+    range: { start: number; length: number },
+    immutableIdentity: string,
+    timings?: LodLoadTimings,
+  ) {
+    if (this.#verifiedPackBuffers.has(content)) return;
+    let verification = this.#packVerificationPromises.get(content);
+    if (!verification) {
+      verification = (async () => {
+        const sha256Started = performance.now();
+        const actualSha256 = await sha256(content);
+        if (timings) {
+          timings.sha256ServiceMs += performance.now() - sha256Started;
+        }
+        if (actualSha256 !== pack.sha256.toLowerCase()) {
+          this.#lodScheduler?.evictPersistent(immutableIdentity, range);
+          throw new Error(`GSTile pack ${pack.id} failed SHA-256 validation`);
+        }
+        this.#lodScheduler?.persistVerified(immutableIdentity, range, content);
+        this.#verifiedPackBuffers.add(content);
+      })().finally(() => {
+        this.#packVerificationPromises.delete(content);
+      });
+      this.#packVerificationPromises.set(content, verification);
+    }
+    await verification;
   }
 
   async #yieldBeforeLodDecode(signal: AbortSignal) {
@@ -2396,7 +2424,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       decoded,
       origin: manifest.coordinateFrame.origin,
       node,
-      byteLength: pack.byteLength,
+      byteLength: tile.byteLength,
     };
   }
 
@@ -2442,7 +2470,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       );
       timings.decodeCpuMs += performance.now() - decodeStarted;
       signal.throwIfAborted();
-      return { byteLength: pack.byteLength, bounds: null };
+      return { byteLength: tile.byteLength, bounds: null };
     }
     let nativeResult;
     try {
@@ -2472,7 +2500,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       max: [...nativeResult.bounds.maximum],
     };
     signal.throwIfAborted();
-    return { byteLength: pack.byteLength, bounds: nativeBounds };
+    return { byteLength: tile.byteLength, bounds: nativeBounds };
   }
 
   async #synchronizeLod(
@@ -3074,14 +3102,13 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
             immutableIdentity,
             transport,
           );
-          const actualSha256 = await sha256(content);
-          if (actualSha256 !== pack.sha256.toLowerCase()) {
-            scheduler.evictPersistent(immutableIdentity, range);
-            throw new Error(`GSTile prefetch pack ${pack.id} failed SHA-256`);
-          }
+          await this.#verifyLodPackContent(
+            pack,
+            content,
+            range,
+            immutableIdentity,
+          );
           controller.signal.throwIfAborted();
-          this.#verifiedPackBuffers.add(content);
-          scheduler.persistVerified(immutableIdentity, range, content);
           this.#lodPrefetchCompletedNodes += 1;
           this.#lodPrefetchCompletedBytes += content.byteLength;
         }),

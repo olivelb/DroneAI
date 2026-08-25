@@ -14,8 +14,14 @@ if str(COLMAP_ROOT) not in sys.path:
     sys.path.insert(0, str(COLMAP_ROOT))
 
 from gaussian_ortho.ply_stream import read_binary_ply_layout
-from gaussian_tiles import GsTileBuildOptions, build_gstile_bundle, decode_pack, validate_manifest
-from gaussian_tiles.format import PACK_HEADER_SIZE, encode_pack
+from gaussian_tiles import (
+    GsTileBuildOptions,
+    build_gstile_bundle,
+    decode_pack,
+    repack_gstile_bundle,
+    validate_manifest,
+)
+from gaussian_tiles.format import PACK_DTYPE, PACK_HEADER_SIZE, encode_pack
 from gaussian_tiles.tiler import (
     _adaptive_moment_lod_proxy,
     _gaussian_render_bounds,
@@ -230,6 +236,212 @@ def test_tiler_is_deterministic_and_spatially_bounded(tmp_path: Path) -> None:
         "leaf_written",
         "published",
     } <= event_names
+
+
+def test_tiler_aggregates_adjacent_tiles_losslessly_and_deterministically(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.ply"
+    _write_ply(source, _records(5_000))
+    options = GsTileBuildOptions(
+        leaf_size=1_024,
+        chunk_records=1_024,
+        pack_target_bytes=220_000,
+    )
+    first = build_gstile_bundle(source, tmp_path / "first", options=options)
+    second = build_gstile_bundle(source, tmp_path / "second", options=options)
+    manifest = json.loads(first.manifest_path.read_text("ascii"))
+    repeated = json.loads(second.manifest_path.read_text("ascii"))
+    validate_manifest(manifest)
+
+    tiles_by_pack: dict[str, list[dict[str, object]]] = {}
+    for node in manifest["nodes"]:
+        if tile := node.get("tile"):
+            tiles_by_pack.setdefault(tile["pack"], []).append(tile)
+    assert len(manifest["packs"]) < sum(len(tiles) for tiles in tiles_by_pack.values())
+    assert any(len(tiles) > 1 for tiles in tiles_by_pack.values())
+    assert manifest["statistics"]["packCount"] == len(manifest["packs"])
+    assert manifest["statistics"]["representationCount"] == first.leaf_count
+    assert manifest["statistics"]["packTargetBytes"] == 220_000
+    assert first.bundle_id == second.bundle_id
+    assert [pack["sha256"] for pack in manifest["packs"]] == [
+        pack["sha256"] for pack in repeated["packs"]
+    ]
+
+    source_ids: list[int] = []
+    for pack in manifest["packs"]:
+        content = (first.output / pack["path"]).read_bytes()
+        assert len(content) == pack["byteLength"]
+        assert hashlib.sha256(content).hexdigest() == pack["sha256"]
+        if encoded := pack.get("encodings", {}).get("zstd"):
+            assert zstandard.ZstdDecompressor().decompress(
+                (first.output / encoded["path"]).read_bytes()
+            ) == content
+        cursor = PACK_HEADER_SIZE
+        for tile in sorted(
+            tiles_by_pack[pack["id"]], key=lambda value: value["byteOffset"]
+        ):
+            assert tile["byteOffset"] == cursor
+            assert tile["sha256"] == pack["sha256"]
+            end = cursor + tile["byteLength"]
+            packed = np.frombuffer(content[cursor:end], dtype=PACK_DTYPE)
+            source_ids.extend(int(value) for value in packed["source_id"])
+            cursor = end
+        assert cursor == len(content)
+    assert sorted(source_ids) == list(range(5_000))
+
+
+def test_manifest_rejects_overlapping_aggregate_tile_ranges(tmp_path: Path) -> None:
+    source = tmp_path / "source.ply"
+    _write_ply(source, _records(5_000))
+    result = build_gstile_bundle(
+        source,
+        tmp_path / "bundle",
+        options=GsTileBuildOptions(
+            leaf_size=1_024,
+            chunk_records=1_024,
+            pack_target_bytes=220_000,
+        ),
+    )
+    manifest = json.loads(result.manifest_path.read_text("ascii"))
+    nodes_by_pack: dict[str, list[dict[str, object]]] = {}
+    for node in manifest["nodes"]:
+        if tile := node.get("tile"):
+            nodes_by_pack.setdefault(tile["pack"], []).append(tile)
+    shared = next(tiles for tiles in nodes_by_pack.values() if len(tiles) > 1)
+    shared[1]["byteOffset"] = shared[0]["byteOffset"]
+    with pytest.raises(ValueError, match="without holes or overlaps"):
+        validate_manifest(manifest)
+
+
+def test_pack_target_rejects_out_of_contract_sizes() -> None:
+    with pytest.raises(ValueError, match="pack_target_bytes"):
+        GsTileBuildOptions(pack_target_bytes=127).validate()
+    with pytest.raises(ValueError, match="pack_target_bytes"):
+        GsTileBuildOptions(pack_target_bytes=1024**3 + 1).validate()
+
+
+def test_aggregate_packs_do_not_mix_exact_tiles_and_lod_proxies(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.ply"
+    _write_ply(source, _records(5_000))
+    result = build_gstile_bundle(
+        source,
+        tmp_path / "bundle",
+        options=GsTileBuildOptions(
+            leaf_size=1_024,
+            chunk_records=1_024,
+            lod_proxy_size=1_024,
+            pack_target_bytes=220_000,
+        ),
+    )
+    manifest = json.loads(result.manifest_path.read_text("ascii"))
+    validate_manifest(manifest)
+    exact_pack_ids = {
+        node["tile"]["pack"] for node in manifest["nodes"] if "tile" in node
+    }
+    proxy_pack_ids = {
+        node["lodTile"]["pack"]
+        for node in manifest["nodes"]
+        if "lodTile" in node
+    }
+    assert exact_pack_ids
+    assert proxy_pack_ids
+    assert exact_pack_ids.isdisjoint(proxy_pack_ids)
+    assert all(pack_id.startswith("aggregate-exact-") for pack_id in exact_pack_ids)
+    assert all(pack_id.startswith("aggregate-proxy-") for pack_id in proxy_pack_ids)
+    depths_by_pack: dict[str, set[int]] = {}
+    for node in manifest["nodes"]:
+        for field in ("tile", "lodTile"):
+            if tile := node.get(field):
+                depths_by_pack.setdefault(tile["pack"], set()).add(len(node["id"]) - 1)
+    assert all(len(depths) == 1 for depths in depths_by_pack.values())
+    assert manifest["statistics"]["representationCount"] == sum(
+        "tile" in node or "lodTile" in node for node in manifest["nodes"]
+    )
+
+
+def _representation_payloads(
+    bundle: Path,
+    manifest: dict[str, object],
+) -> dict[tuple[str, str], bytes]:
+    packs = {
+        pack["id"]: (bundle / pack["path"]).read_bytes()
+        for pack in manifest["packs"]
+    }
+    payloads = {}
+    for node in manifest["nodes"]:
+        for field in ("tile", "lodTile"):
+            if tile := node.get(field):
+                start = tile["byteOffset"]
+                payloads[(node["id"], field)] = packs[tile["pack"]][
+                    start : start + tile["byteLength"]
+                ]
+    return payloads
+
+
+def test_repack_preserves_every_canonical_tile_payload(tmp_path: Path) -> None:
+    source = tmp_path / "source.ply"
+    _write_ply(source, _records(5_000))
+    original = build_gstile_bundle(
+        source,
+        tmp_path / "original",
+        options=GsTileBuildOptions(
+            leaf_size=1_024,
+            chunk_records=1_024,
+            lod_proxy_size=1_024,
+        ),
+    )
+    first = repack_gstile_bundle(
+        original.output,
+        tmp_path / "first",
+        pack_target_bytes=220_000,
+    )
+    second = repack_gstile_bundle(
+        original.output,
+        tmp_path / "second",
+        pack_target_bytes=220_000,
+    )
+    original_manifest = json.loads(original.manifest_path.read_text("ascii"))
+    first_manifest = json.loads(first.manifest_path.read_text("ascii"))
+    second_manifest = json.loads(second.manifest_path.read_text("ascii"))
+    validate_manifest(first_manifest)
+
+    assert first.pack_count < first.source_pack_count
+    assert first.bundle_id == second.bundle_id
+    assert first_manifest["source"] == original_manifest["source"]
+    assert first_manifest["statistics"]["packGrouping"] == "depth-spatial-v1"
+    depths_by_pack: dict[str, set[int]] = {}
+    for node in first_manifest["nodes"]:
+        for field in ("tile", "lodTile"):
+            if tile := node.get(field):
+                depths_by_pack.setdefault(tile["pack"], set()).add(len(node["id"]) - 1)
+    assert all(len(depths) == 1 for depths in depths_by_pack.values())
+    assert _representation_payloads(original.output, original_manifest) == (
+        _representation_payloads(first.output, first_manifest)
+    )
+    assert [pack["sha256"] for pack in first_manifest["packs"]] == [
+        pack["sha256"] for pack in second_manifest["packs"]
+    ]
+
+
+def test_repack_rejects_corrupt_canonical_source_pack(tmp_path: Path) -> None:
+    source = tmp_path / "source.ply"
+    _write_ply(source, _records(1_024))
+    original = build_gstile_bundle(source, tmp_path / "original")
+    manifest = json.loads(original.manifest_path.read_text("ascii"))
+    pack_path = original.output / manifest["packs"][0]["path"]
+    corrupted = bytearray(pack_path.read_bytes())
+    corrupted[-1] ^= 1
+    pack_path.write_bytes(corrupted)
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        repack_gstile_bundle(
+            original.output,
+            tmp_path / "repacked",
+            pack_target_bytes=220_000,
+        )
 
 
 def test_manifest_rejects_pack_path_traversal(tmp_path: Path) -> None:
