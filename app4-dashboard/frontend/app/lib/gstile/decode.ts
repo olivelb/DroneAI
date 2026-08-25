@@ -176,7 +176,9 @@ const validatePlayCanvasColumnRange = (
   if (
     destination.opacityStreams.length !== 4 ||
     destination.opacityStreams.some(
-      (stream) => stream.length !== destination.count * 4,
+      (stream) =>
+        stream.length !==
+        gsTileTextureElementCapacity(destination.count) * 4,
     )
   ) {
     throw new Error("GSTile PlayCanvas opacity stream width is inconsistent");
@@ -262,13 +264,13 @@ export const allocateGsTilePlayCanvasColumns = (
   const colorSh = packing.sh
     ? Array.from({ length: 45 }, () => new Float32Array(0))
     : columns(45);
-  const opacityStreams: GsTileOpacityStreams = [
-    new Float32Array(count * 4),
-    new Float32Array(count * 4),
-    new Float32Array(count * 4),
-    new Float32Array(count * 4),
-  ];
   const textureStreamLength = gsTileTextureElementCapacity(count) * 4;
+  const opacityStreams: GsTileOpacityStreams = [
+    new Float32Array(textureStreamLength),
+    new Float32Array(textureStreamLength),
+    new Float32Array(textureStreamLength),
+    new Float32Array(textureStreamLength),
+  ];
   const colorStream = packing.color
     ? new Uint16Array(textureStreamLength)
     : null;

@@ -391,6 +391,11 @@ Conserver le cut complet précédent jusqu'au succès.
     laisse la ressource intacte. Le chemin `merged` supprime ainsi la copie CPU
     de 8 octets/splat et environ 56,7 Mio de stockage dupliqué sur
     Saint-Étienne.
+25. Les quatre streams d'opacité RGBA32F sont également paddés pendant le
+    décodage puis installés directement comme `extraStreams`. Comme ils ne sont
+    pas encore présents dans la map PlayCanvas, le handoff évite à la fois leur
+    copie CPU de 64 octets/splat et l'allocation préalable de quatre textures
+    vides.
 
 ### Qualification arène GPU persistante — Saint-Étienne v4c
 
@@ -677,6 +682,33 @@ respectivement −1,6 % et −2,8 % face au baseline. Le LOD total reste soumis 
 bruit du chargement réseau ; aucune accélération globale n'est revendiquée sur
 ce seul échantillon. Le contrôle visuel humain est validé conforme au PLY
 original.
+
+### Qualification de l'adoption zéro-copie opacité — Saint-Étienne v4c
+
+Les quatre tableaux RGBA32F produits pendant Q96 sont maintenant dimensionnés
+à la capacité exacte des textures PlayCanvas et installés dans la map avant la
+première synchronisation des `extraStreams`. Le padding de 1 184 texels ajoute
+75 776 octets. Le chemin supprime une copie et une duplication nette de
+475 862 080 octets, soit environ **453,8 Mio**, sans conversion : les mêmes
+valeurs float32 alimentent directement les shaders d'opacité directionnelle.
+
+La qualification utilise le même ordre candidat → baseline → candidat, un
+warm-up exclu par build, le même onglet Chrome et le cut complet de 7 435 345
+splats :
+
+| variante | streams médian | ressource médiane | commit médian | LOD médian |
+|---|---:|---:|---:|---:|
+| candidat, premier passage | **0,182 s** | **0,711 s** | **1,268 s** | 14,564 s |
+| baseline `main` `851d628` | 0,283 s | 0,718 s | 1,401 s | 13,158 s |
+| candidat, retour | **0,193 s** | 0,722 s | **1,304 s** | **13,061 s** |
+
+Sur les six runs candidats, la médiane `streams` est de 186,5 ms, soit
+**−34,1 %** face au baseline. Les médianes agrégées sont 0,712 s pour la
+ressource, 1,283 s pour le commit et 13,066 s pour le LOD : respectivement
+−0,8 %, **−8,5 %** et −0,7 %. Le load médian est apparié à moins de 0,5 %, ce
+qui rend le gain de commit interprétable. La suite complète passe 28 fichiers
+et 157 tests, le lint, le typecheck et les builds local et BIGZEN. Le contrôle
+visuel humain est validé conforme au PLY original.
 
 ## Sources primaires
 

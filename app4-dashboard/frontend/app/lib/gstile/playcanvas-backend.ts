@@ -1745,15 +1745,23 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       }
       scale.unlock();
     }
-    const opacityStreams =
-      "properties" in tile ? tile.opacityStreams : gsTileOpacityStreams(tile);
-    OPACITY_STREAM_NAMES.forEach((name, index) => {
-      const texture = resource.getTexture(name);
-      if (!texture) throw new Error(`PlayCanvas did not allocate ${name}`);
-      const destination = texture.lock() as Float32Array;
-      destination.set(opacityStreams[index]);
-      texture.unlock();
-    });
+    if ("properties" in tile) {
+      adoptGsTileNativeRgbaStreams(
+        resource.streams,
+        resource.format,
+        OPACITY_STREAM_NAMES,
+        tile.opacityStreams,
+      );
+    } else {
+      const opacityStreams = gsTileOpacityStreams(tile);
+      OPACITY_STREAM_NAMES.forEach((name, index) => {
+        const texture = resource.getTexture(name);
+        if (!texture) throw new Error(`PlayCanvas did not allocate ${name}`);
+        const destination = texture.lock() as Float32Array;
+        destination.set(opacityStreams[index]);
+        texture.unlock();
+      });
+    }
     const streamUploadMs = performance.now() - streamUploadStarted;
 
     const sceneAttachStarted = performance.now();
