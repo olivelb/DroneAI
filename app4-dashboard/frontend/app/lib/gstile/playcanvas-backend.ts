@@ -41,7 +41,7 @@ import {
 } from "./merged-arena";
 import { packGsTileNativeTransforms } from "./native-transform";
 import { packGsTileNativeSh } from "./native-sh";
-import { adoptGsTileNativeRgba32Streams } from "./native-streams";
+import { adoptGsTileNativeRgbaStreams } from "./native-streams";
 
 type Pc = typeof import("playcanvas");
 type PcApplication = import("playcanvas").Application;
@@ -1561,16 +1561,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
             ) {
               const started = performance.now();
               if (tile.colorStream) {
-                const texture = this.getTexture("splatColor");
-                if (!texture) {
-                  throw new Error("GSTile native color stream is missing");
-                }
-                const stream = texture.lock() as Uint16Array;
-                try {
-                  stream.set(tile.colorStream);
-                } finally {
-                  texture.unlock();
-                }
+                adoptGsTileNativeRgbaStreams(
+                  this.streams,
+                  this.format,
+                  ["splatColor"],
+                  [tile.colorStream],
+                );
               } else {
                 super.updateColorData(gsplatData);
               }
@@ -1635,7 +1631,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
               ] as const;
               try {
                 if (tile.shStreams) {
-                  adoptGsTileNativeRgba32Streams(
+                  adoptGsTileNativeRgbaStreams(
                     this.streams,
                     this.format,
                     names,

@@ -395,7 +395,10 @@ describe("GSTile pack decoder", () => {
       0,
     );
 
-    expect(destination.colorStream).toEqual(expected);
+    expect(destination.colorStream?.subarray(0, count * 4)).toEqual(expected);
+    expect(destination.colorStream?.length).toBe(
+      gsTileTextureElementCapacity(count) * 4,
+    );
     expect(destination.colorDc.every((column) => column.length === 0)).toBe(
       true,
     );
@@ -454,9 +457,12 @@ describe("GSTile pack decoder", () => {
       (columns.colorStream?.byteLength ?? 0) +
       (columns.centerStream?.byteLength ?? 0);
 
-    const shPaddingBytes =
-      (gsTileTextureElementCapacity(count) - count) * 64;
-    expect(bytes).toBe(count * 176 + shPaddingBytes);
+    const texturePadding = gsTileTextureElementCapacity(count) - count;
+    const shPaddingBytes = texturePadding * 64;
+    const colorPaddingBytes = texturePadding * 8;
+    expect(bytes).toBe(
+      count * 176 + shPaddingBytes + colorPaddingBytes,
+    );
   });
 
   it("rejects a direct decode outside the preallocated cut", () => {

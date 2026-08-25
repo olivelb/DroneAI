@@ -1,4 +1,8 @@
-export type GsTileTextureSource = Uint32Array;
+export type GsTileRgbaTextureSource =
+  | Uint8Array
+  | Uint16Array
+  | Uint32Array
+  | Float32Array;
 
 type DisposableTexture = {
   destroy: () => void;
@@ -20,7 +24,7 @@ type StreamCollection<TTexture extends DisposableTexture, TSize> = {
     name: string,
     format: number,
     size: TSize,
-    data: GsTileTextureSource,
+    data: GsTileRgbaTextureSource,
   ) => TTexture;
 };
 
@@ -34,20 +38,20 @@ export const gsTileTextureElementCapacity = (count: number) => {
 };
 
 /**
- * Replace empty RGBA32U stream textures with textures adopting prepacked data.
+ * Replace empty RGBA stream textures with textures adopting prepacked data.
  *
  * All inputs and descriptors are validated and all replacements are created
  * before the stream map changes, so a failed allocation leaves the resource
  * untouched.
  */
-export const adoptGsTileNativeRgba32Streams = <
+export const adoptGsTileNativeRgbaStreams = <
   TTexture extends DisposableTexture,
   TSize,
 >(
   streams: StreamCollection<TTexture, TSize>,
   format: StreamFormat,
   names: readonly string[],
-  sources: readonly GsTileTextureSource[],
+  sources: readonly GsTileRgbaTextureSource[],
 ) => {
   if (names.length === 0 || names.length !== sources.length) {
     throw new Error("GSTile native stream adoption shape is inconsistent");
