@@ -152,4 +152,36 @@ describe("GSTile native stream adoption", () => {
     expect(textures.get("splatColor")).toBe(original);
     expect(original.destroyed).toBe(false);
   });
+
+  it("installs newly declared RGBA32F streams without empty allocations", () => {
+    const names = ["opacity0", "opacity1"] as const;
+    const sources = names.map(() => new Float32Array(24));
+    const textures = new Map<string, TestTexture>();
+    let allocationCount = 0;
+    const streams = {
+      textureDimensions: { x: 3, y: 2 },
+      textures,
+      createTexture: (
+        _name: string,
+        _format: number,
+        _size: { x: number; y: number },
+        data: GsTileRgbaTextureSource,
+      ) => {
+        allocationCount += 1;
+        return texture(data);
+      },
+    };
+
+    adoptGsTileNativeRgbaStreams(
+      streams,
+      { getStream: () => ({ format: 32 }) },
+      names,
+      sources,
+    );
+
+    expect(allocationCount).toBe(2);
+    names.forEach((name, index) => {
+      expect(textures.get(name)?.data).toBe(sources[index]);
+    });
+  });
 });

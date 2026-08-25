@@ -19,7 +19,6 @@ type StreamFormat = {
 type StreamCollection<TTexture extends DisposableTexture, TSize> = {
   textureDimensions: TSize & { x: number; y: number };
   textures: Map<string, TTexture>;
-  getTexture: (name: string) => TTexture | undefined;
   createTexture: (
     name: string,
     format: number,
@@ -38,7 +37,7 @@ export const gsTileTextureElementCapacity = (count: number) => {
 };
 
 /**
- * Replace empty RGBA stream textures with textures adopting prepacked data.
+ * Install or replace RGBA stream textures adopting prepacked data.
  *
  * All inputs and descriptors are validated and all replacements are created
  * before the stream map changes, so a failed allocation leaves the resource
@@ -58,12 +57,11 @@ export const adoptGsTileNativeRgbaStreams = <
   }
   const expectedLength =
     streams.textureDimensions.x * streams.textureDimensions.y * 4;
-  const originals = names.map((name) => streams.getTexture(name));
+  const originals = names.map((name) => streams.textures.get(name));
   const descriptors = names.map((name) => format.getStream(name));
   if (
     !Number.isSafeInteger(expectedLength) ||
     expectedLength < 4 ||
-    originals.some((texture) => !texture) ||
     descriptors.some((descriptor) => !descriptor) ||
     sources.some((source) => source.length !== expectedLength)
   ) {
@@ -89,6 +87,6 @@ export const adoptGsTileNativeRgbaStreams = <
 
   names.forEach((name, index) => {
     streams.textures.set(name, replacements[index]);
-    originals[index]!.destroy();
+    originals[index]?.destroy();
   });
 };

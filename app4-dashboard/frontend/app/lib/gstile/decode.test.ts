@@ -352,9 +352,13 @@ describe("GSTile pack decoder", () => {
         0,
       );
 
+    const opacityPaddingBytes =
+      (gsTileTextureElementCapacity(count) - count) * 64;
     expect(decodedBytes).toBe(count * 304);
-    expect(columnBytes).toBe(count * 300);
-    expect(decodedBytes + columnBytes).toBe(count * 604);
+    expect(columnBytes).toBe(count * 300 + opacityPaddingBytes);
+    expect(decodedBytes + columnBytes).toBe(
+      count * 604 + opacityPaddingBytes,
+    );
   });
 
   it("packs authenticated Q96 base color directly into exact PlayCanvas RGBA16F", () => {
@@ -460,8 +464,9 @@ describe("GSTile pack decoder", () => {
     const texturePadding = gsTileTextureElementCapacity(count) - count;
     const shPaddingBytes = texturePadding * 64;
     const colorPaddingBytes = texturePadding * 8;
+    const opacityPaddingBytes = texturePadding * 64;
     expect(bytes).toBe(
-      count * 176 + shPaddingBytes + colorPaddingBytes,
+      count * 176 + shPaddingBytes + colorPaddingBytes + opacityPaddingBytes,
     );
   });
 
