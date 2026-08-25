@@ -16,3 +16,4 @@ pytest
 ruff
 scipy
 shellcheck-py
+zstandard
