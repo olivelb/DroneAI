@@ -721,6 +721,59 @@ describe("GSTile range source", () => {
     expect(scheduler.statistics()).toMatchObject({
       criticalQueueWaits: 1,
       priorityPromotions: 1,
+      prefetchCompletedRequests: 2,
+      prefetchCompletedBytes: 8,
+      prefetchNetworkBytes: 8,
+      prefetchUsefulRequests: 1,
+      prefetchUsefulBytes: 4,
+    });
+  });
+
+  it("counts a completed prefetch as useful only on its first visible cache hit", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(new Uint8Array([1, 2, 3, 4]), {
+        status: 206,
+        headers: { "Content-Range": "bytes 0-3/4" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const scheduler = new GsTileRangeScheduler(1, 1024);
+    const range = { start: 0, length: 4 };
+    await scheduler.fetch(
+      "https://example.test/predicted.gst",
+      range,
+      undefined,
+      "sha256:predicted",
+      undefined,
+      "prefetch",
+    );
+
+    expect(scheduler.statistics()).toMatchObject({
+      prefetchCompletedRequests: 1,
+      prefetchCompletedBytes: 4,
+      prefetchNetworkBytes: 4,
+      prefetchPersistentBytes: 0,
+      prefetchUsefulRequests: 0,
+      prefetchUsefulBytes: 0,
+    });
+
+    await scheduler.fetch(
+      "https://example.test/predicted.gst?signature=rotated",
+      range,
+      undefined,
+      "sha256:predicted",
+    );
+    await scheduler.fetch(
+      "https://example.test/predicted.gst?signature=rotated-again",
+      range,
+      undefined,
+      "sha256:predicted",
+    );
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(scheduler.statistics()).toMatchObject({
+      prefetchUsefulRequests: 1,
+      prefetchUsefulBytes: 4,
     });
   });
 

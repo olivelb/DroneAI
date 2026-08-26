@@ -122,6 +122,12 @@ export type GsTileRangeSchedulerStatistics = {
   queuedPrefetch: number;
   priorityPromotions: number;
   prefetchCancellations: number;
+  prefetchCompletedRequests: number;
+  prefetchCompletedBytes: number;
+  prefetchNetworkBytes: number;
+  prefetchPersistentBytes: number;
+  prefetchUsefulRequests: number;
+  prefetchUsefulBytes: number;
   criticalQueueWaits: number;
   criticalQueueWaitMilliseconds: number;
   maximumCriticalQueueWaitMilliseconds: number;
@@ -152,6 +158,7 @@ type InFlightRange = {
   abortTimer: ReturnType<typeof setTimeout> | null;
   orphanGraceMilliseconds: number;
   priority: GsTileRangePriority;
+  originPriority: GsTileRangePriority;
   promote: (() => void) | null;
 };
 
@@ -189,10 +196,17 @@ export class GsTileRangeScheduler {
   #zstdFallbacks = 0;
   #priorityPromotions = 0;
   #prefetchCancellations = 0;
+  #prefetchCompletedRequests = 0;
+  #prefetchCompletedBytes = 0;
+  #prefetchNetworkBytes = 0;
+  #prefetchPersistentBytes = 0;
+  #prefetchUsefulRequests = 0;
+  #prefetchUsefulBytes = 0;
   #criticalQueueWaits = 0;
   #criticalQueueWaitMilliseconds = 0;
   #maximumCriticalQueueWaitMilliseconds = 0;
   #inFlight = new Map<string, InFlightRange>();
+  #prefetchedMemory = new Set<string>();
   #persistentBuffers = new WeakSet<ArrayBuffer>();
 
   constructor(
@@ -231,6 +245,12 @@ export class GsTileRangeScheduler {
       ).length,
       priorityPromotions: this.#priorityPromotions,
       prefetchCancellations: this.#prefetchCancellations,
+      prefetchCompletedRequests: this.#prefetchCompletedRequests,
+      prefetchCompletedBytes: this.#prefetchCompletedBytes,
+      prefetchNetworkBytes: this.#prefetchNetworkBytes,
+      prefetchPersistentBytes: this.#prefetchPersistentBytes,
+      prefetchUsefulRequests: this.#prefetchUsefulRequests,
+      prefetchUsefulBytes: this.#prefetchUsefulBytes,
       criticalQueueWaits: this.#criticalQueueWaits,
       criticalQueueWaitMilliseconds: this.#criticalQueueWaitMilliseconds,
       maximumCriticalQueueWaitMilliseconds:
@@ -336,6 +356,10 @@ export class GsTileRangeScheduler {
       this.#cache.delete(key);
       this.#cache.set(key, cached);
       this.#cacheHits += 1;
+      if (priority === "critical" && this.#prefetchedMemory.delete(key)) {
+        this.#prefetchUsefulRequests += 1;
+        this.#prefetchUsefulBytes += cached.byteLength;
+      }
       if (signal?.aborted) return Promise.reject(signal.reason);
       return cached;
     }
@@ -346,6 +370,8 @@ export class GsTileRangeScheduler {
         request.priority = "critical";
         request.orphanGraceMilliseconds = this.#orphanGraceMilliseconds;
         this.#priorityPromotions += 1;
+        this.#prefetchUsefulRequests += 1;
+        this.#prefetchUsefulBytes += range.length;
         request.promote?.();
       }
       return this.#subscribe(request, signal);
@@ -361,6 +387,7 @@ export class GsTileRangeScheduler {
       orphanGraceMilliseconds:
         priority === "prefetch" ? 0 : this.#orphanGraceMilliseconds,
       priority,
+      originPriority: priority,
       promote: null,
     };
     const entry = request;
@@ -432,7 +459,14 @@ export class GsTileRangeScheduler {
           if (persistent) {
             this.#persistentCacheHits += 1;
             this.#persistentBuffers.add(persistent);
-            this.#putMemory(key, persistent);
+            const admitted = this.#putMemory(key, persistent);
+            this.#recordPrefetchCompletion(
+              key,
+              request,
+              persistent.byteLength,
+              admitted,
+              "persistent",
+            );
             return persistent;
           }
           this.#persistentCacheMisses += 1;
@@ -491,7 +525,17 @@ export class GsTileRangeScheduler {
       if (transport?.encoding === "zstd" || transport?.encoding === "zstd-http") {
         this.#zstdResponses += 1;
       }
-      this.#putMemory(key, content);
+      const admitted = this.#putMemory(key, content);
+      this.#recordPrefetchCompletion(
+        key,
+        request,
+        content.byteLength,
+        admitted,
+        "network",
+        transport?.encoding === "zstd-http"
+          ? transport.byteLength
+          : encoded.byteLength,
+      );
       return content;
     } finally {
       this.#release();
@@ -512,11 +556,30 @@ export class GsTileRangeScheduler {
     return `${source}\0${range.start}\0${range.length}`;
   }
 
+  #recordPrefetchCompletion(
+    key: string,
+    request: InFlightRange,
+    decodedByteLength: number,
+    admitted: boolean,
+    source: "network" | "persistent",
+    networkByteLength = 0,
+  ) {
+    if (request.originPriority !== "prefetch") return;
+    this.#prefetchCompletedRequests += 1;
+    this.#prefetchCompletedBytes += decodedByteLength;
+    if (source === "network") this.#prefetchNetworkBytes += networkByteLength;
+    else this.#prefetchPersistentBytes += decodedByteLength;
+    if (admitted && request.priority === "prefetch") {
+      this.#prefetchedMemory.add(key);
+    }
+  }
+
   #putMemory(key: string, content: ArrayBuffer) {
-    if (content.byteLength > this.#maximumCacheBytes) return;
+    if (content.byteLength > this.#maximumCacheBytes) return false;
     const existing = this.#cache.get(key);
     if (existing) {
       this.#cache.delete(key);
+      this.#prefetchedMemory.delete(key);
       this.#cacheBytes -= existing.byteLength;
     }
     while (
@@ -528,10 +591,12 @@ export class GsTileRangeScheduler {
         | undefined;
       if (!oldest) break;
       this.#cache.delete(oldest[0]);
+      this.#prefetchedMemory.delete(oldest[0]);
       this.#cacheBytes -= oldest[1].byteLength;
     }
     this.#cache.set(key, content);
     this.#cacheBytes += content.byteLength;
+    return true;
   }
 
   #subscribe(request: InFlightRange, signal?: AbortSignal) {
