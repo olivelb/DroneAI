@@ -55,6 +55,8 @@ struct Options {
     std::string optimizer_profile = "dronegs-dev16";
     std::string pruning_policy = "original";
     std::string raster_profile = "auto";
+    std::string background_mode = "black";
+    std::string loss_pixel_mask = "active";
 };
 
 struct Camera {

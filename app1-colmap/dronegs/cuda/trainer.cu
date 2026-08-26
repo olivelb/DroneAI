@@ -48,6 +48,36 @@ constexpr float sh_c0 = 0.28209479177387814F;
 constexpr float minimum_depth = 1.0e-4F;
 constexpr float minimum_weight = 1.0e-8F;
 
+std::uint64_t splitmix64(std::uint64_t value) {
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31U);
+}
+
+float deterministic_unit_float(std::uint64_t value) {
+    constexpr float denominator = 16'777'216.0F;
+    return static_cast<float>(splitmix64(value) >> 40U) / denominator;
+}
+
+ImageObjectivePolicy training_objective_policy(
+    const Options& options, std::uint64_t iteration) {
+    ImageObjectivePolicy policy;
+    policy.include_empty_pixels = options.loss_pixel_mask == "all";
+    if (options.background_mode == "random") {
+        constexpr std::uint64_t iteration_stride = 0xd1b54a32d192ed03ULL;
+        constexpr std::uint64_t channel_stride = 0x94d049bb133111ebULL;
+        const auto iteration_seed =
+            options.seed ^ (iteration * iteration_stride);
+        for (std::size_t channel = 0U; channel < policy.background.size();
+             ++channel) {
+            policy.background[channel] = deterministic_unit_float(
+                iteration_seed + channel * channel_stride);
+        }
+    }
+    return policy;
+}
+
 void require_cuda(cudaError_t status, const char* operation) {
     if (status != cudaSuccess) {
         throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorString(status));
@@ -1485,6 +1515,8 @@ TrainingMetrics train_ordered_mrnf(
         << ";topology_cooldown=" << options.topology_cooldown
         << ";photometric_finish=" << options.photometric_finish
         << ";photometric_mse=" << options.photometric_mse_percent
+        << ";background_mode=" << options.background_mode
+        << ";loss_pixel_mask=" << options.loss_pixel_mask
         << ";adaptive_growth=2:"
         << options.adaptive_growth_target
         << ";profile_id=" << options.profile_id
@@ -1716,6 +1748,12 @@ TrainingMetrics train_ordered_mrnf(
             << options.photometric_mse_percent << "}\n"
             << std::flush;
     }
+    std::cout
+        << "{\"event\":\"image_objective_policy\","
+        << "\"background_mode\":\"" << options.background_mode << "\","
+        << "\"loss_pixel_mask\":\"" << options.loss_pixel_mask << "\","
+        << "\"evaluation_background_mode\":\"black\"}\n"
+        << std::flush;
     struct PendingCheckpointWrite {
         std::future<double> write_seconds;
         std::filesystem::path path;
@@ -1797,17 +1835,19 @@ TrainingMetrics train_ordered_mrnf(
                 iteration, topology_refine_end)
             ? RefinementStatisticsMode::collect
             : RefinementStatisticsMode::skip;
+        const auto objective_policy =
+            training_objective_policy(options, iteration);
         float loss = 0.0F;
         if (report_progress) {
             loss = workspace.train_step(
                 raster_camera, frame.image->rgb.data(),
                 frame.image->rgb.size(), mse_blend,
-                refinement_statistics);
+                refinement_statistics, objective_policy);
         } else {
             workspace.train_step_deferred(
                 raster_camera, frame.image->rgb.data(),
                 frame.image->rgb.size(), mse_blend,
-                refinement_statistics);
+                refinement_statistics, objective_policy);
         }
         if (workspace.active_sh_degree() != degree_before) {
             std::cout

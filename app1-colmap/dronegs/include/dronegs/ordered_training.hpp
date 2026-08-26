@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -17,6 +18,11 @@ namespace dronegs {
 enum class RefinementStatisticsMode {
     collect,
     skip,
+};
+
+struct ImageObjectivePolicy {
+    std::array<float, 3> background{0.0F, 0.0F, 0.0F};
+    bool include_empty_pixels = false;
 };
 
 struct TrainingCheckpointProgress {
@@ -86,24 +92,28 @@ public:
 
     float evaluate(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
-        std::size_t target_bytes, float mse_blend = 0.0F);
+        std::size_t target_bytes, float mse_blend = 0.0F,
+        const ImageObjectivePolicy& objective_policy = {});
     ImageQualityMetrics evaluate_quality(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
         std::size_t target_bytes,
         std::vector<float>* prediction = nullptr);
     ImageObjectiveOutput evaluate_objective_gradient(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
-        std::size_t target_bytes, float mse_blend = 0.0F);
+        std::size_t target_bytes, float mse_blend = 0.0F,
+        const ImageObjectivePolicy& objective_policy = {});
     float train_step(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
         std::size_t target_bytes, float mse_blend = 0.0F,
         RefinementStatisticsMode refinement_statistics =
-            RefinementStatisticsMode::collect);
+            RefinementStatisticsMode::collect,
+        const ImageObjectivePolicy& objective_policy = {});
     void train_step_deferred(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
         std::size_t target_bytes, float mse_blend = 0.0F,
         RefinementStatisticsMode refinement_statistics =
-            RefinementStatisticsMode::collect);
+            RefinementStatisticsMode::collect,
+        const ImageObjectivePolicy& objective_policy = {});
     TopologyRefinementResult refine_topology(
         float gradient_threshold = 0.003F,
         float grow_fraction = 0.07F,

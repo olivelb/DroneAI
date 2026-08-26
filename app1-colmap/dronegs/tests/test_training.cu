@@ -163,13 +163,14 @@ double reference_objective(
     const std::vector<float>& transmittance,
     const std::vector<std::uint8_t>& target,
     std::uint32_t width, std::uint32_t height,
-    double mse_blend = 0.0) {
+    double mse_blend = 0.0,
+    bool include_empty_pixels = false) {
     double l1_sum = 0.0;
     double squared_sum = 0.0;
     std::size_t active_pixels = 0U;
     for (std::size_t pixel = 0U;
          pixel < transmittance.size(); ++pixel) {
-        if (transmittance[pixel] >= 1.0F) {
+        if (!include_empty_pixels && transmittance[pixel] >= 1.0F) {
             continue;
         }
         ++active_pixels;
@@ -368,6 +369,43 @@ int main() {
             objective.transmittance.size() != 32U * 32U) {
             throw std::runtime_error(
                 "GPU L1+DSSIM objective mismatch");
+        }
+        const dronegs::ImageObjectivePolicy all_pixel_policy{
+            .background = {0.25F, 0.5F, 0.75F},
+            .include_empty_pixels = true,
+        };
+        const auto all_pixel_objective =
+            quality_context.evaluate_objective_gradient(
+                quality_camera, quality_target.rgb.data(),
+                quality_target.rgb.size(), 0.0F, all_pixel_policy);
+        const double expected_all_pixel_objective = reference_objective(
+            all_pixel_objective.prediction,
+            all_pixel_objective.transmittance,
+            quality_target.rgb, 32U, 32U, 0.0, true);
+        bool checked_background = false;
+        for (std::size_t pixel = 0U;
+             pixel < all_pixel_objective.transmittance.size(); ++pixel) {
+            if (all_pixel_objective.transmittance[pixel] < 1.0F) {
+                continue;
+            }
+            for (std::size_t channel = 0U; channel < 3U; ++channel) {
+                const auto sample = pixel * 3U + channel;
+                if (std::abs(
+                        all_pixel_objective.prediction[sample] -
+                        all_pixel_policy.background[channel]) > 1.0e-6F) {
+                    throw std::runtime_error(
+                        "empty pixel does not use configured background");
+                }
+            }
+            checked_background = true;
+            break;
+        }
+        if (!checked_background ||
+            std::abs(
+                all_pixel_objective.loss -
+                expected_all_pixel_objective) > 2.0e-4F) {
+            throw std::runtime_error(
+                "all-pixel random-background objective mismatch");
         }
         constexpr float finite_difference_epsilon = 1.0e-3F;
         const std::array<std::size_t, 8> gradient_samples{

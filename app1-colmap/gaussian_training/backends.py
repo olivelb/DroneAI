@@ -36,6 +36,13 @@ SUPPORTED_DRONEGS_PRUNING_POLICIES = {"original", "spatial-bounds"}
 SUPPORTED_DRONEGS_RASTER_PROFILES = {"auto", "bounded", "fastgs"}
 SUPPORTED_DRONEGS_INITIAL_SCALE_POLICIES = {"local-knn", "projected-knn"}
 SUPPORTED_DRONEGS_TEST_SPLITS = {"modulo", "spatial-block"}
+SUPPORTED_DRONEGS_BACKGROUND_MODES = {"black", "random"}
+SUPPORTED_DRONEGS_LOSS_PIXEL_MASKS = {"active", "all"}
+
+
+def _require_supported(name: str, value: str, supported: set[str]) -> None:
+    if value not in supported:
+        raise ValueError(f"unsupported DroneGS {name}")
 
 
 @dataclass(frozen=True)
@@ -47,6 +54,8 @@ class DroneGSTuning:
     optimizer_profile: str = DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile
     pruning_policy: str = DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy
     raster_profile: str = DRONEGS_PRODUCTION_PROFILE_V1.raster_profile
+    background_mode: str = "black"
+    loss_pixel_mask: str = "active"
     sh_degree_interval: int = DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval
     topology_cooldown: int = DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown
     photometric_finish: int = DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish
@@ -83,12 +92,23 @@ class DroneGSTuning:
             raise ValueError("adaptive_growth_target must be boolean")
         if not isinstance(self.adaptive_native_crop_tiles, bool):
             raise ValueError("adaptive_native_crop_tiles must be boolean")
-        if self.pruning_policy not in SUPPORTED_DRONEGS_PRUNING_POLICIES:
-            raise ValueError("unsupported DroneGS pruning_policy")
-        if self.raster_profile not in SUPPORTED_DRONEGS_RASTER_PROFILES:
-            raise ValueError("unsupported DroneGS raster_profile")
-        if self.initial_scale_policy not in SUPPORTED_DRONEGS_INITIAL_SCALE_POLICIES:
-            raise ValueError("unsupported DroneGS initial_scale_policy")
+        _require_supported(
+            "pruning_policy", self.pruning_policy, SUPPORTED_DRONEGS_PRUNING_POLICIES
+        )
+        _require_supported(
+            "raster_profile", self.raster_profile, SUPPORTED_DRONEGS_RASTER_PROFILES
+        )
+        _require_supported(
+            "background_mode", self.background_mode, SUPPORTED_DRONEGS_BACKGROUND_MODES
+        )
+        _require_supported(
+            "loss_pixel_mask", self.loss_pixel_mask, SUPPORTED_DRONEGS_LOSS_PIXEL_MASKS
+        )
+        _require_supported(
+            "initial_scale_policy",
+            self.initial_scale_policy,
+            SUPPORTED_DRONEGS_INITIAL_SCALE_POLICIES,
+        )
         if (
             not isinstance(self.initial_max_projected_sigma_pixels, (int, float))
             or isinstance(self.initial_max_projected_sigma_pixels, bool)
@@ -101,8 +121,9 @@ class DroneGSTuning:
             or not 1 <= self.maximum_scale_growth_factor <= 1024
         ):
             raise ValueError("maximum_scale_growth_factor must be in [1, 1024]")
-        if self.test_split not in SUPPORTED_DRONEGS_TEST_SPLITS:
-            raise ValueError("unsupported DroneGS test_split")
+        _require_supported(
+            "test_split", self.test_split, SUPPORTED_DRONEGS_TEST_SPLITS
+        )
         integer_ranges = {
             "sh_degree_interval": (self.sh_degree_interval, 1, None),
             "topology_cooldown": (self.topology_cooldown, 0, None),
@@ -431,6 +452,10 @@ class DroneGSBackend:
                 tuning.pruning_policy,
                 "--raster-profile",
                 tuning.raster_profile,
+                "--background-mode",
+                tuning.background_mode,
+                "--loss-pixel-mask",
+                tuning.loss_pixel_mask,
                 "--sh-degree-interval",
                 str(tuning.sh_degree_interval),
                 "--topology-cooldown",

@@ -137,6 +137,15 @@ an active-pixel MSE contribution whose final weight is `P%`. Both native CLI
 defaults are zero, preserving dev.44 training math and cost outside explicit
 photometric convergence ablations. The DroneAI pipeline selects the validated
 1,000-step cooldown and photometric finish explicitly.
+False-transparency experiments can opt into
+`--background-mode random --loss-pixel-mask all`. The trainer then derives a
+deterministic uniform RGB background from the run seed and iteration, and L1
+or MSE normalization covers every decoded crop pixel rather than only pixels
+touched by a Gaussian. Held-out evaluation remains on black for comparable
+PSNR/SSIM. Defaults remain `black` and `active`, so production recipes and old
+checkpoints are unchanged. This mode is intended for opaque in-the-wild crops:
+datasets with real alpha should composite targets against the sampled
+background instead of enabling `all` indiscriminately.
 Dev.46 adds atomic versioned full-state checkpoints, strict scene/config
 fingerprints, deterministic resume, deliberate pause exit code 75, and
 held-out deployment canaries at the Python orchestration boundary.

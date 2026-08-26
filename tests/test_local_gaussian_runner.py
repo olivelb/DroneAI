@@ -35,6 +35,8 @@ def _arguments(**overrides):
         "canary_min_ssim": None,
         "checkpoint_every": None,
         "host_image_cache_mib": None,
+        "background_mode": None,
+        "loss_pixel_mask": None,
         "filter_enabled": None,
     }
     values.update(overrides)
@@ -258,6 +260,23 @@ def test_projected_initialization_override_is_an_explicit_training_recipe():
     assert profile.initial_max_projected_sigma_pixels == 4.0
     assert profile.maximum_scale_growth_factor == 8.0
     assert profile.capacity_targeted_growth is True
+
+
+def test_image_objective_override_is_explicit_and_defaults_stay_compatible():
+    default = resolve_profile(_arguments(profile="facade-hd"))
+    experiment = resolve_profile(
+        _arguments(
+            profile="facade-hd",
+            background_mode="random",
+            loss_pixel_mask="all",
+        )
+    )
+
+    assert default.background_mode == "black"
+    assert default.loss_pixel_mask == "active"
+    assert experiment.background_mode == "random"
+    assert experiment.loss_pixel_mask == "all"
+    assert experiment.profile_id == "custom"
 
 
 def test_facade_hd_overrides_preserve_separate_recipe_identities():
