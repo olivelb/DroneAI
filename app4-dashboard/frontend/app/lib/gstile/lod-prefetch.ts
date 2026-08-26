@@ -1,6 +1,57 @@
 import type { GsTileManifest, GsTilePack, Vec3 } from "./contracts";
 
 export const DEFAULT_GSTILE_PREFETCH_BYTES = 384 * 1024 * 1024;
+export const MINIMUM_GSTILE_PREFETCH_BYTES = 96 * 1024 * 1024;
+export const GSTILE_PREFETCH_UTILITY_SAMPLE_BYTES = 128 * 1024 * 1024;
+export const GSTILE_PREFETCH_TARGET_UTILITY = 0.5;
+
+export type GsTilePrefetchBudget = {
+  maximumBytes: number;
+  adaptive: boolean;
+  utilityRatio: number | null;
+};
+
+/**
+ * Scale speculative traffic only after one meaningful cohort has had an
+ * opportunity to be consumed. Visible-cut requests never use this budget.
+ * MiB quantization keeps plans stable when a few packs are promoted between
+ * consecutive camera samples.
+ */
+export const gstileAdaptivePrefetchBudget = (
+  completedBytes: number,
+  usefulBytes: number,
+): GsTilePrefetchBudget => {
+  if (
+    !Number.isSafeInteger(completedBytes) ||
+    completedBytes < 0 ||
+    !Number.isSafeInteger(usefulBytes) ||
+    usefulBytes < 0 ||
+    usefulBytes > completedBytes
+  ) {
+    throw new Error("Invalid GSTile prefetch utility sample");
+  }
+  const utilityRatio = completedBytes > 0 ? usefulBytes / completedBytes : null;
+  if (completedBytes < GSTILE_PREFETCH_UTILITY_SAMPLE_BYTES) {
+    return {
+      maximumBytes: DEFAULT_GSTILE_PREFETCH_BYTES,
+      adaptive: false,
+      utilityRatio,
+    };
+  }
+  const scaledBytes =
+    DEFAULT_GSTILE_PREFETCH_BYTES *
+    ((utilityRatio ?? 0) / GSTILE_PREFETCH_TARGET_UTILITY);
+  const boundedBytes = Math.max(
+    MINIMUM_GSTILE_PREFETCH_BYTES,
+    Math.min(DEFAULT_GSTILE_PREFETCH_BYTES, scaledBytes),
+  );
+  const mebibyte = 1024 * 1024;
+  return {
+    maximumBytes: Math.round(boundedBytes / mebibyte) * mebibyte,
+    adaptive: true,
+    utilityRatio,
+  };
+};
 
 export type GsTilePrefetchProjection = {
   verticalFovRadians: number;

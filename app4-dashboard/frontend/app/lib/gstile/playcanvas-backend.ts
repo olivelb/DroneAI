@@ -37,6 +37,7 @@ import {
 import { selectGsTileLod } from "./lod-selection";
 import {
   DEFAULT_GSTILE_PREFETCH_BYTES,
+  gstileAdaptivePrefetchBudget,
   gstilePrefetchProjection,
   planGsTilePrefetchPacks,
   predictGsTileCameraPose,
@@ -926,6 +927,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodReusedGaussians = 0;
   #lodPrefetchPlannedNodes = 0;
   #lodPrefetchPlannedBytes = 0;
+  #lodPrefetchBudgetBytes = DEFAULT_GSTILE_PREFETCH_BYTES;
+  #lodPrefetchBudgetAdaptive = false;
+  #lodPrefetchUtilityRatio: number | null = null;
   #lodPrefetchCompletedNodes = 0;
   #lodPrefetchCompletedBytes = 0;
   #lodPrefetchErrors = 0;
@@ -1416,6 +1420,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodReusedGaussians = 0;
     this.#lodPrefetchPlannedNodes = 0;
     this.#lodPrefetchPlannedBytes = 0;
+    this.#lodPrefetchBudgetBytes = DEFAULT_GSTILE_PREFETCH_BYTES;
+    this.#lodPrefetchBudgetAdaptive = false;
+    this.#lodPrefetchUtilityRatio = null;
     this.#lodPrefetchCompletedNodes = 0;
     this.#lodPrefetchCompletedBytes = 0;
     this.#lodPrefetchErrors = 0;
@@ -3057,6 +3064,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     );
     this.#lodPrefetchPlannedNodes = 0;
     this.#lodPrefetchPlannedBytes = 0;
+    this.#lodPrefetchBudgetBytes = DEFAULT_GSTILE_PREFETCH_BYTES;
+    this.#lodPrefetchBudgetAdaptive = false;
+    this.#lodPrefetchUtilityRatio = null;
     this.#lodPrefetchCompletedNodes = 0;
     this.#lodPrefetchCompletedBytes = 0;
     this.#lodPrefetchErrors = 0;
@@ -3168,11 +3178,19 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       (total, packId) => total + (packsById.get(packId)?.byteLength ?? 0),
       0,
     );
+    const schedulerStatistics = scheduler.statistics();
+    const budget = gstileAdaptivePrefetchBudget(
+      schedulerStatistics.prefetchCompletedBytes,
+      schedulerStatistics.prefetchUsefulBytes,
+    );
+    this.#lodPrefetchBudgetBytes = budget.maximumBytes;
+    this.#lodPrefetchBudgetAdaptive = budget.adaptive;
+    this.#lodPrefetchUtilityRatio = budget.utilityRatio;
     const planned = planGsTilePrefetchPacks(
       manifest,
       residentNodeIds,
       candidateNodeIds,
-      DEFAULT_GSTILE_PREFETCH_BYTES,
+      budget.maximumBytes,
       locallyAvailablePackIds,
     );
     this.#lodPrefetchPlannedNodes = planned.length;
@@ -3444,6 +3462,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         lodRemovedGaussians: this.#lodRemovedGaussians,
         lodReusedGaussians: this.#lodReusedGaussians,
         lodPrefetch: {
+          budgetBytes: this.#lodPrefetchBudgetBytes,
+          budgetAdaptive: this.#lodPrefetchBudgetAdaptive,
+          utilityRatio: this.#lodPrefetchUtilityRatio,
           plannedNodes: this.#lodPrefetchPlannedNodes,
           plannedBytes: this.#lodPrefetchPlannedBytes,
           predictedNodes: this.#lodPrefetchPredictedNodes,
