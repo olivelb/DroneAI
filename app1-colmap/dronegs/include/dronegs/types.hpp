@@ -57,6 +57,7 @@ struct Options {
     std::string raster_profile = "auto";
     std::string background_mode = "black";
     std::string loss_pixel_mask = "active";
+    bool opacity_sh_enabled = false;
 };
 
 struct Camera {

@@ -189,9 +189,34 @@ int main() {
                     std::abs(gaussian.opacity_sh[coefficient]) > 1.0e-9F;
             }
         }
+        if (learned_directional_opacity) {
+            throw std::runtime_error(
+                "opacity-SH coefficients changed without opt-in");
+        }
+
+        auto directional_gaussians =
+            dronegs::initialize_fixed_topology(make_scene());
+        auto directional_options = options;
+        directional_options.output_path = root / "opacity-sh-output";
+        directional_options.run_manifest =
+            directional_options.output_path / "trainer_run.json";
+        directional_options.checkpoint_path =
+            root / "opacity-sh-training.ckpt";
+        directional_options.opacity_sh_enabled = true;
+        static_cast<void>(dronegs::train_ordered_mrnf(
+            directional_options, make_scene(), directional_gaussians));
+        learned_directional_opacity = false;
+        for (const auto& gaussian : directional_gaussians) {
+            for (std::size_t coefficient = 0U;
+                 coefficient < 3U; ++coefficient) {
+                learned_directional_opacity =
+                    learned_directional_opacity ||
+                    std::abs(gaussian.opacity_sh[coefficient]) > 1.0e-9F;
+            }
+        }
         if (!learned_directional_opacity) {
             throw std::runtime_error(
-                "opacity-SH coefficients were not trained");
+                "opacity-SH coefficients were not trained after opt-in");
         }
 
         const auto checkpoint = root / "opacity-sh-v4.ckpt";

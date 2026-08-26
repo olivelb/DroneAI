@@ -61,7 +61,7 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 const char* help_text() {
     return
         "DroneGS complete MRNF lifecycle "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.64\n"
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.65\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
@@ -109,7 +109,8 @@ const char* help_text() {
         "[--pruning-policy original|spatial-bounds] "
         "[--raster-profile auto|bounded|fastgs] "
         "[--background-mode black|random] "
-        "[--loss-pixel-mask active|all]\n";
+        "[--loss-pixel-mask active|all] "
+        "[--opacity-sh 0|1]\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -133,6 +134,7 @@ Options parse_options(int argc, char** argv) {
         "--optimizer-profile", "--sh-degree-interval",
         "--initial-ply", "--pruning-policy", "--raster-profile",
         "--background-mode", "--loss-pixel-mask",
+        "--opacity-sh",
         "--profile-id", "--dataset-fingerprint",
     };
     const std::unordered_set<std::string> required{
@@ -281,6 +283,14 @@ Options parse_options(int argc, char** argv) {
     }
     if (values.contains("--loss-pixel-mask")) {
         options.loss_pixel_mask = values.at("--loss-pixel-mask");
+    }
+    if (values.contains("--opacity-sh")) {
+        const auto opacity_sh =
+            parse_u32(values.at("--opacity-sh"), "--opacity-sh");
+        if (opacity_sh > 1U) {
+            throw std::invalid_argument("--opacity-sh must be 0 or 1");
+        }
+        options.opacity_sh_enabled = opacity_sh != 0U;
     }
     validate_options(options);
     return options;

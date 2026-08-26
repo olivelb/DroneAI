@@ -152,6 +152,7 @@ class TestColmapStageHelpers(unittest.TestCase):
         )
 
         self.assertEqual(config.profile_id, DRONEGS_PRODUCTION_PROFILE_V1.profile_id)
+        self.assertFalse(config.opacity_sh_enabled)
         self.assertEqual(config.qualification_policy_id, DRONEGS_QUALIFICATION_POLICY_ID)
         self.assertEqual(config.filter_max_scale, 5.0)
         self.assertEqual(config.filter_min_retained_ratio, 0.80)
@@ -177,6 +178,15 @@ class TestColmapStageHelpers(unittest.TestCase):
             data_factor=DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
         )
         self.assertEqual(overridden.profile_id, "custom")
+        self.assertTrue(warnings)
+
+        opacity_sh, warnings = dronegs_config.resolve_dronegs_config(
+            {**params, "gs_opacity_sh_enabled": "true"},
+            facade_mode=False,
+            data_factor=DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
+        )
+        self.assertTrue(opacity_sh.opacity_sh_enabled)
+        self.assertEqual(opacity_sh.profile_id, "custom")
         self.assertTrue(warnings)
 
         expert, warnings = dronegs_config.resolve_dronegs_config(

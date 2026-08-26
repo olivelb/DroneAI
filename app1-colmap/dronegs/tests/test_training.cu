@@ -1088,7 +1088,7 @@ int main() {
             fastgs_sh_fixture.size(),
             dronegs::MrnfOptimizerProfile::
                 dev38_staged_rotation008_absgrad050_fastgs,
-            3U, 1000U, 123U, true);
+            3U, 1000U, 123U, true, 54.59815F, true);
         fastgs_sh_context.set_active_sh_degree(3U);
         static_cast<void>(fastgs_sh_context.train_step(
             quality_camera, split_target.data(), split_target.size()));

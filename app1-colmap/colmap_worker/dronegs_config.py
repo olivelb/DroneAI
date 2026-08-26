@@ -29,6 +29,7 @@ class DroneGsRunConfig:
     target_gaussian_spacing_pixels: float
     resident_partitioning: bool
     sh_degree: int
+    opacity_sh_enabled: bool
     backend: str
     seed: int
     profile_id: str
@@ -178,6 +179,10 @@ def resolve_dronegs_config(
             name="gs_resident_partitioning",
         ),
         sh_degree=int(params.get("gs_sh_degree", DRONEGS_PRODUCTION_PROFILE_V1.sh_degree)),
+        opacity_sh_enabled=_boolean_parameter(
+            params.get("gs_opacity_sh_enabled", False),
+            name="gs_opacity_sh_enabled",
+        ),
         backend=str(params.get("gs_backend", "dronegs")),
         seed=int(params.get("gs_seed", 42)),
         profile_id=profile_id,
@@ -310,6 +315,11 @@ def resolve_dronegs_config(
         config = replace(config, profile_id="custom")
         warnings.append(
             "DroneGS expert overrides detected; the run is recorded as custom instead of its named profile."
+        )
+    if config.opacity_sh_enabled and config.profile_id != "custom":
+        config = replace(config, profile_id="custom")
+        warnings.append(
+            "DroneGS opacity SH was explicitly enabled; the run is recorded as custom."
         )
 
     expected_qualification = qualification_identity(config.qualification_policy_id)

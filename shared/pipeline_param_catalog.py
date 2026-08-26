@@ -992,6 +992,15 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "group": "Orthomosaic",
         "options": ["1", "2", "3"],
     },
+    "gs_opacity_sh_enabled": {
+        "label": "View-dependent Opacity SH",
+        "description": (
+            "Expert opt-in for directional opacity-logit residuals. Keep disabled "
+            "when geometric consistency is more important than view-dependent effects."
+        ),
+        "type": "bool",
+        "group": "Orthomosaic",
+    },
     "gs_seed": {
         "label": "Deterministic Seed",
         "description": "Keeps benchmark and production runs reproducible.",

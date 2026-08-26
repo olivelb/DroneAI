@@ -37,6 +37,7 @@ def _manifest(ply: Path) -> dict:
             "pruning_policy": "spatial-bounds",
             "raster_profile": "fastgs",
             "effective_raster_profile": "fastgs",
+            "opacity_sh_enabled": False,
             "initial_scale_policy": "local-knn",
             "initial_max_projected_sigma_pixels": 2.0,
             "maximum_scale_growth_factor": 54.59815,
@@ -93,6 +94,22 @@ def test_manifest_parameter_comparison_accepts_float32_round_trip_only():
     assert manifest_parameter_matches(8, 8.0)
     assert not manifest_parameter_matches(54.59, 54.59815)
     assert not manifest_parameter_matches(True, 1.0)
+
+
+def test_manifest_rejects_non_boolean_opacity_sh_flag(tmp_path):
+    ply = tmp_path / "point_cloud.ply"
+    ply.write_bytes(b"ply\nfixture")
+    manifest = _manifest(ply)
+    manifest["parameters"]["opacity_sh_enabled"] = 0
+    path = tmp_path / "trainer_run.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="opacity_sh_enabled"):
+        promote_run_manifest(
+            path,
+            ply_path=ply,
+            trainer_binary_sha256="a" * 64,
+        )
 
 
 def test_incompatible_completed_output_is_preserved_before_retraining(

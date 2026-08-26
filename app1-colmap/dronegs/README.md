@@ -7,6 +7,12 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
+Version `0.5.0-dev.65` makes view-dependent opacity SH an explicit opt-in.
+The default scalar-opacity path skips opacity-SH forward evaluation, backward
+gradients, and Adam lanes while retaining color SH and the scalar opacity
+optimizer. Existing directional-opacity behavior remains available with
+`--opacity-sh 1`.
+
 Version `0.5.0-dev.64` schedules four independent FastGS backward buckets per
 CUDA block while retaining one 32-thread NVIDIA warp per bucket. The
 per-bucket traversal, checkpoint state and derivative equations are unchanged,
@@ -158,8 +164,9 @@ Dev.48 turns `tile_mode` into real source-image crops with crop-relative
 intrinsics and grouped train/test assignment. Geographic block datasets may
 also provide `image_regions.tsv`; DroneGS composes each base crop with
 `tile_mode` while decoding the untouched source JPEG. Dataset identity v3
-binds the crop contract to checkpoint and result reuse. Dev.48 also adds the explicitly
-scoped `opacity-SH-v1` capability from the opacity-only FAGK ablation: SH
+binds the crop contract to checkpoint and result reuse. Dev.48 also adds the
+explicitly scoped, opt-in `opacity-SH-v1` capability from the opacity-only
+FAGK ablation: SH
 degrees 1 through 3 learn
 view-dependent opacity-logit residuals, persist them as `opacity_sh_*` PLY
 properties, and render them consistently in the native and orthomosaic CUDA
@@ -167,6 +174,8 @@ paths. Scale and rotation remain view-independent and are not claimed as full
 FAGK. This bounded variant follows the opacity-only ablation from
 [TOrtho-Gaussian](https://doi.org/10.1080/10095020.2026.2622788); it is kept
 separate from the paper's view-dependent scale and rotation extensions.
+It is disabled by default to keep opacity view-independent; pass
+`--opacity-sh 1` only for a deliberate appearance-model experiment.
 Dev.49 can instead derive each initial scale from the actual crop-relative
 camera projections, with a configurable screen-space ceiling. Its adaptive
 growth and topology/noise boundary are computed from the requested iteration

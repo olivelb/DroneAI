@@ -82,6 +82,7 @@ class GaussianProfile:
     host_image_cache_mib: int = 0
     background_mode: str = "black"
     loss_pixel_mask: str = "active"
+    opacity_sh_enabled: bool = False
 
 
 PROFILES: dict[str, GaussianProfile] = {
@@ -289,6 +290,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--background-mode", choices=("black", "random"))
     parser.add_argument("--loss-pixel-mask", choices=("active", "all"))
     parser.add_argument(
+        "--opacity-sh",
+        dest="opacity_sh_enabled",
+        action="store_true",
+        default=None,
+        help=(
+            "opt in to view-dependent opacity-logit SH residuals; colour SH "
+            "remains controlled independently by --sh-degree"
+        ),
+    )
+    parser.add_argument(
         "--checkpoint-every",
         type=int,
         help=(
@@ -416,6 +427,7 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
             "capacity_targeted_growth",
             "background_mode",
             "loss_pixel_mask",
+            "opacity_sh_enabled",
         }
     )
     if (
@@ -698,6 +710,7 @@ def main() -> int:
             resolution=profile.resolution,
             iterations=profile.iterations,
             sh_degree=profile.sh_degree,
+            opacity_sh_enabled=profile.opacity_sh_enabled,
             data_factor=profile.data_factor,
             max_width=profile.max_width,
             tile_mode=profile.tile_mode,
