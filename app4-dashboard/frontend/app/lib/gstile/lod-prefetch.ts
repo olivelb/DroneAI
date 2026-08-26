@@ -1,4 +1,4 @@
-import type { GsTileManifest, GsTilePack } from "./contracts";
+import type { GsTileManifest, GsTilePack, Vec3 } from "./contracts";
 
 export const DEFAULT_GSTILE_PREFETCH_BYTES = 384 * 1024 * 1024;
 
@@ -6,6 +6,204 @@ export type GsTilePrefetchProjection = {
   verticalFovRadians: number;
   viewportWidth: number;
   viewportHeight: number;
+};
+
+export type GsTileCameraPose = {
+  position: Vec3;
+  direction: Vec3;
+  up: Vec3;
+};
+
+export type GsTileCameraMotion = {
+  pose: GsTileCameraPose;
+  timestampMs: number;
+  positionVelocity: Vec3;
+  directionVelocity: Vec3;
+  upVelocity: Vec3;
+  samples: number;
+};
+
+const vectorLength = (value: Vec3) =>
+  Math.hypot(value[0], value[1], value[2]);
+
+const normalized = (value: Vec3, fallback: Vec3): Vec3 => {
+  const length = vectorLength(value);
+  if (!Number.isFinite(length) || length < 1e-9) return [...fallback];
+  return [value[0] / length, value[1] / length, value[2] / length];
+};
+
+const scaledToMaximumLength = (value: Vec3, maximumLength: number): Vec3 => {
+  const length = vectorLength(value);
+  if (length <= maximumLength || length < 1e-9) return value;
+  const scale = maximumLength / length;
+  return [value[0] * scale, value[1] * scale, value[2] * scale];
+};
+
+const clampDirectionDelta = (
+  current: Vec3,
+  predicted: Vec3,
+  maximumAngleRadians: number,
+): Vec3 => {
+  const from = normalized(current, [0, 0, -1]);
+  const to = normalized(predicted, from);
+  const dot = Math.max(
+    -1,
+    Math.min(1, from[0] * to[0] + from[1] * to[1] + from[2] * to[2]),
+  );
+  const angle = Math.acos(dot);
+  if (angle <= maximumAngleRadians || angle < 1e-9) return to;
+  const ratio = maximumAngleRadians / angle;
+  return normalized(
+    [
+      from[0] + (to[0] - from[0]) * ratio,
+      from[1] + (to[1] - from[1]) * ratio,
+      from[2] + (to[2] - from[2]) * ratio,
+    ],
+    from,
+  );
+};
+
+/**
+ * Estimate camera velocity from render-time poses. Long gaps deliberately
+ * reset the estimate so tab suspension and programmatic camera jumps cannot
+ * trigger a large speculative transfer burst.
+ */
+export const updateGsTileCameraMotion = (
+  previous: GsTileCameraMotion | null,
+  pose: GsTileCameraPose,
+  timestampMs: number,
+  smoothing = 0.6,
+  maximumSampleIntervalMs = 2_000,
+): GsTileCameraMotion => {
+  if (
+    !Number.isFinite(timestampMs) ||
+    !Number.isFinite(smoothing) ||
+    smoothing < 0 ||
+    smoothing > 1 ||
+    !Number.isFinite(maximumSampleIntervalMs) ||
+    maximumSampleIntervalMs <= 0
+  ) {
+    throw new Error("Invalid GSTile camera motion sample");
+  }
+  const snapshot: GsTileCameraPose = {
+    position: [...pose.position],
+    direction: normalized(pose.direction, [0, 0, -1]),
+    up: normalized(pose.up, [0, 1, 0]),
+  };
+  const elapsedMs = previous ? timestampMs - previous.timestampMs : 0;
+  if (!previous || elapsedMs <= 0 || elapsedMs > maximumSampleIntervalMs) {
+    return {
+      pose: snapshot,
+      timestampMs,
+      positionVelocity: [0, 0, 0],
+      directionVelocity: [0, 0, 0],
+      upVelocity: [0, 0, 0],
+      samples: 1,
+    };
+  }
+  const velocity = (current: Vec3, prior: Vec3, estimate: Vec3): Vec3 => [
+    smoothing * ((current[0] - prior[0]) / elapsedMs) +
+      (1 - smoothing) * estimate[0],
+    smoothing * ((current[1] - prior[1]) / elapsedMs) +
+      (1 - smoothing) * estimate[1],
+    smoothing * ((current[2] - prior[2]) / elapsedMs) +
+      (1 - smoothing) * estimate[2],
+  ];
+  return {
+    pose: snapshot,
+    timestampMs,
+    positionVelocity: velocity(
+      snapshot.position,
+      previous.pose.position,
+      previous.positionVelocity,
+    ),
+    directionVelocity: velocity(
+      snapshot.direction,
+      previous.pose.direction,
+      previous.directionVelocity,
+    ),
+    upVelocity: velocity(snapshot.up, previous.pose.up, previous.upVelocity),
+    samples: previous.samples + 1,
+  };
+};
+
+/**
+ * Extrapolate one short camera horizon, with strict translation and angular
+ * caps. Returning null for negligible motion keeps stationary halo prefetch
+ * behavior unchanged.
+ */
+export const predictGsTileCameraPose = (
+  motion: GsTileCameraMotion | null,
+  horizonMs: number,
+  maximumPositionDelta: number,
+  maximumAngleRadians: number,
+): GsTileCameraPose | null => {
+  if (
+    !Number.isFinite(horizonMs) ||
+    horizonMs < 0 ||
+    !Number.isFinite(maximumPositionDelta) ||
+    maximumPositionDelta < 0 ||
+    !Number.isFinite(maximumAngleRadians) ||
+    maximumAngleRadians < 0 ||
+    maximumAngleRadians >= Math.PI
+  ) {
+    throw new Error("Invalid GSTile camera prediction bounds");
+  }
+  if (!motion || motion.samples < 2 || horizonMs === 0) return null;
+  const positionDelta = scaledToMaximumLength(
+    motion.positionVelocity.map((value) => value * horizonMs) as Vec3,
+    maximumPositionDelta,
+  );
+  const rawDirection: Vec3 = motion.directionVelocity.map(
+    (value, index) => motion.pose.direction[index] + value * horizonMs,
+  ) as Vec3;
+  const rawUp: Vec3 = motion.upVelocity.map(
+    (value, index) => motion.pose.up[index] + value * horizonMs,
+  ) as Vec3;
+  const direction = clampDirectionDelta(
+    motion.pose.direction,
+    rawDirection,
+    maximumAngleRadians,
+  );
+  const up = clampDirectionDelta(
+    motion.pose.up,
+    rawUp,
+    maximumAngleRadians,
+  );
+  const directionDot = Math.max(
+    -1,
+    Math.min(
+      1,
+      direction[0] * motion.pose.direction[0] +
+        direction[1] * motion.pose.direction[1] +
+        direction[2] * motion.pose.direction[2],
+    ),
+  );
+  const upDot = Math.max(
+    -1,
+    Math.min(
+      1,
+      up[0] * motion.pose.up[0] +
+        up[1] * motion.pose.up[1] +
+        up[2] * motion.pose.up[2],
+    ),
+  );
+  const angularDelta = Math.max(Math.acos(directionDot), Math.acos(upDot));
+  if (
+    vectorLength(positionDelta) < Math.max(maximumPositionDelta * 0.01, 1e-6) &&
+    angularDelta < (0.25 * Math.PI) / 180
+  ) {
+    return null;
+  }
+  return {
+    position: [
+      motion.pose.position[0] + positionDelta[0],
+      motion.pose.position[1] + positionDelta[1],
+      motion.pose.position[2] + positionDelta[2],
+    ],
+    direction,
+    up,
+  };
 };
 
 /**

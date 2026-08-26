@@ -3,6 +3,8 @@ import type { GsTileManifest, GsTileNode, GsTilePack } from "./contracts";
 import {
   gstilePrefetchProjection,
   planGsTilePrefetchPacks,
+  predictGsTileCameraPose,
+  updateGsTileCameraMotion,
 } from "./lod-prefetch";
 
 const pack = (id: string, byteLength: number): GsTilePack => ({
@@ -57,6 +59,135 @@ const manifest = (): GsTileManifest => {
 };
 
 describe("GSTile LOD halo prefetch", () => {
+  it("predicts a smoothed camera trajectory over a bounded horizon", () => {
+    const first = updateGsTileCameraMotion(
+      null,
+      {
+        position: [0, 0, 10],
+        direction: [0, 0, -1],
+        up: [0, 1, 0],
+      },
+      100,
+    );
+    const second = updateGsTileCameraMotion(
+      first,
+      {
+        position: [1, 0, 10],
+        direction: [0.1, 0, -0.995],
+        up: [0, 1, 0],
+      },
+      200,
+      1,
+    );
+    const predicted = predictGsTileCameraPose(
+      second,
+      100,
+      10,
+      Math.PI / 4,
+    );
+
+    expect(predicted).not.toBeNull();
+    expect(predicted?.position).toEqual([2, 0, 10]);
+    expect(predicted?.direction[0]).toBeGreaterThan(0.19);
+    expect(Math.hypot(...(predicted?.direction ?? []))).toBeCloseTo(1, 10);
+  });
+
+  it("caps prediction distance and angle", () => {
+    const first = updateGsTileCameraMotion(
+      null,
+      {
+        position: [0, 0, 0],
+        direction: [0, 0, -1],
+        up: [0, 1, 0],
+      },
+      0,
+    );
+    const second = updateGsTileCameraMotion(
+      first,
+      {
+        position: [100, 0, 0],
+        direction: [1, 0, 0],
+        up: [0, 1, 0],
+      },
+      10,
+      1,
+    );
+    const predicted = predictGsTileCameraPose(
+      second,
+      100,
+      2,
+      Math.PI / 12,
+    );
+
+    expect(predicted?.position).toEqual([102, 0, 0]);
+    const directionDot = predicted
+      ? predicted.direction[0] * second.pose.direction[0] +
+        predicted.direction[1] * second.pose.direction[1] +
+        predicted.direction[2] * second.pose.direction[2]
+      : -1;
+    expect(
+      Math.acos(Math.max(-1, Math.min(1, directionDot))),
+    ).toBeLessThanOrEqual(Math.PI / 12 + 1e-9);
+  });
+
+  it("ignores stationary and stale motion samples", () => {
+    const stationary = updateGsTileCameraMotion(
+      null,
+      {
+        position: [1, 2, 3],
+        direction: [0, 0, -1],
+        up: [0, 1, 0],
+      },
+      0,
+    );
+    const unchanged = updateGsTileCameraMotion(
+      stationary,
+      stationary.pose,
+      16,
+    );
+    expect(
+      predictGsTileCameraPose(unchanged, 200, 10, Math.PI / 4),
+    ).toBeNull();
+
+    const stale = updateGsTileCameraMotion(
+      unchanged,
+      {
+        ...unchanged.pose,
+        position: [100, 2, 3],
+      },
+      3_000,
+    );
+    expect(stale.samples).toBe(1);
+    expect(predictGsTileCameraPose(stale, 200, 10, Math.PI / 4)).toBeNull();
+  });
+
+  it("retains a slow deliberate pan sampled more than one second apart", () => {
+    const first = updateGsTileCameraMotion(
+      null,
+      {
+        position: [0, 0, 10],
+        direction: [0, 0, -1],
+        up: [0, 1, 0],
+      },
+      0,
+    );
+    const slowPan = updateGsTileCameraMotion(
+      first,
+      {
+        position: [1, 0, 10],
+        direction: [0, 0, -1],
+        up: [0, 1, 0],
+      },
+      1_500,
+      1,
+    );
+
+    expect(slowPan.samples).toBe(2);
+    expect(
+      predictGsTileCameraPose(slowPan, 1_500, 10, Math.PI / 4)?.position,
+    ).toEqual([2, 0, 10]);
+  });
+
   it("expands the frustum while preserving rendered pixel density", () => {
     const verticalFovRadians = (42 * Math.PI) / 180;
     const projection = gstilePrefetchProjection(

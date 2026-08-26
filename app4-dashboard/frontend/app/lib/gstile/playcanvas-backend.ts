@@ -39,6 +39,10 @@ import {
   DEFAULT_GSTILE_PREFETCH_BYTES,
   gstilePrefetchProjection,
   planGsTilePrefetchPacks,
+  predictGsTileCameraPose,
+  updateGsTileCameraMotion,
+  type GsTileCameraMotion,
+  type GsTileCameraPose,
 } from "./lod-prefetch";
 import {
   calculateMergedArenaBounds,
@@ -472,6 +476,9 @@ const DEFAULT_LOD_UPDATE_DELAY_MILLISECONDS = 120;
 const DEFAULT_LOD_PREFETCH_DELAY_MILLISECONDS = 600;
 const LOD_PREFETCH_FOV_MULTIPLIER = 1.75;
 const LOD_PREFETCH_BUDGET_MULTIPLIER = 4;
+const LOD_PREFETCH_PREDICTION_HORIZON_MILLISECONDS = 1_500;
+const LOD_PREFETCH_MAXIMUM_POSITION_DELTA_MULTIPLIER = 0.75;
+const LOD_PREFETCH_MAXIMUM_ANGLE_RADIANS = (35 * Math.PI) / 180;
 
 export const gstileLodUpdateDelayMilliseconds = (
   requested: number | null | undefined,
@@ -922,6 +929,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodPrefetchCompletedNodes = 0;
   #lodPrefetchCompletedBytes = 0;
   #lodPrefetchErrors = 0;
+  #lodPrefetchPredictedNodes = 0;
+  #lodPrefetchPredictedBytes = 0;
+  #lodPrefetchPredictionActive = false;
+  #lodPrefetchPredictionCandidateNodes = 0;
+  #lodPrefetchMotionSamples = 0;
+  #lodPrefetchPositionSpeed = 0;
+  #lodPrefetchDirectionSpeed = 0;
+  #lodCameraMotion: GsTileCameraMotion | null = null;
   #debugTraceEnabled = false;
   #debugSnapshotElement: HTMLScriptElement | null = null;
   #lastDebugSnapshotTimestampMs = -Infinity;
@@ -1224,6 +1239,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       );
     }
     this.#cameraDirty = false;
+    this.#recordLodCameraMotion(performance.now());
     this.#updateOpacityCameraUniform();
     this.#scheduleLodUpdate();
     this.#requestRender();
@@ -2252,6 +2268,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     options: {
       verticalFovMultiplier?: number;
       retainOffscreenCoverage?: boolean;
+      cameraPose?: GsTileCameraPose;
     } = {},
   ) {
     const manifest = this.#lodManifest;
@@ -2261,6 +2278,11 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const position = camera.getPosition();
     const forward = camera.forward;
     const up = camera.up;
+    const cameraPose = options.cameraPose ?? {
+      position: [position.x, position.y, position.z],
+      direction: [forward.x, forward.y, forward.z],
+      up: [up.x, up.y, up.z],
+    };
     const origin = manifest.coordinateFrame.origin;
     const verticalFovRadians = (camera.camera.fov * Math.PI) / 180;
     const projection = options.verticalFovMultiplier
@@ -2278,12 +2300,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         };
     return selectGsTileLod(manifest, {
       cameraPosition: [
-        position.x + origin[0],
-        position.y + origin[1],
-        position.z + origin[2],
+        cameraPose.position[0] + origin[0],
+        cameraPose.position[1] + origin[1],
+        cameraPose.position[2] + origin[2],
       ],
-      cameraDirection: [forward.x, forward.y, forward.z],
-      cameraUp: [up.x, up.y, up.z],
+      cameraDirection: cameraPose.direction,
+      cameraUp: cameraPose.up,
       verticalFovRadians: projection.verticalFovRadians,
       viewportWidth: projection.viewportWidth,
       viewportHeight: projection.viewportHeight,
@@ -3034,6 +3056,13 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodPrefetchCompletedNodes = 0;
     this.#lodPrefetchCompletedBytes = 0;
     this.#lodPrefetchErrors = 0;
+    this.#lodPrefetchPredictedNodes = 0;
+    this.#lodPrefetchPredictedBytes = 0;
+    this.#lodPrefetchPredictionActive = false;
+    this.#lodPrefetchPredictionCandidateNodes = 0;
+    this.#lodPrefetchMotionSamples = 0;
+    this.#lodPrefetchPositionSpeed = 0;
+    this.#lodPrefetchDirectionSpeed = 0;
     this.#lodPrefetchTimer = setTimeout(() => {
       this.#lodPrefetchTimer = null;
       void this.#prefetchLodHalo(residentNodeIds, signal).catch((error) => {
@@ -3062,14 +3091,52 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       },
     );
     if (!expanded) return;
+    const motion = this.#lodCameraMotion;
+    this.#lodPrefetchMotionSamples = motion?.samples ?? 0;
+    this.#lodPrefetchPositionSpeed = motion
+      ? Math.hypot(...motion.positionVelocity)
+      : 0;
+    this.#lodPrefetchDirectionSpeed = motion
+      ? Math.hypot(...motion.directionVelocity)
+      : 0;
+    const predictedPose = predictGsTileCameraPose(
+      motion,
+      LOD_PREFETCH_PREDICTION_HORIZON_MILLISECONDS,
+      Math.max(
+        this.#distance * LOD_PREFETCH_MAXIMUM_POSITION_DELTA_MULTIPLIER,
+        0.01,
+      ),
+      LOD_PREFETCH_MAXIMUM_ANGLE_RADIANS,
+    );
+    const predicted = predictedPose
+      ? this.#lodSelection(
+          this.#maximumResidentGaussians * LOD_PREFETCH_BUDGET_MULTIPLIER,
+          {
+            cameraPose: predictedPose,
+            retainOffscreenCoverage: false,
+          },
+        )
+      : null;
+    const predictedNodeIds = predicted?.selectedNodeIds ?? [];
+    this.#lodPrefetchPredictionActive = predictedPose !== null;
+    this.#lodPrefetchPredictionCandidateNodes = predictedNodeIds.length;
+    const predictedNodeIdSet = new Set(predictedNodeIds);
     const planned = planGsTilePrefetchPacks(
       manifest,
       residentNodeIds,
-      expanded.selectedNodeIds,
+      [...predictedNodeIds, ...expanded.selectedNodeIds],
       DEFAULT_GSTILE_PREFETCH_BYTES,
     );
     this.#lodPrefetchPlannedNodes = planned.length;
     this.#lodPrefetchPlannedBytes = planned.reduce(
+      (total, entry) => total + entry.pack.byteLength,
+      0,
+    );
+    const predictedPlanned = planned.filter((entry) =>
+      predictedNodeIdSet.has(entry.nodeId),
+    );
+    this.#lodPrefetchPredictedNodes = predictedPlanned.length;
+    this.#lodPrefetchPredictedBytes = predictedPlanned.reduce(
       (total, entry) => total + entry.pack.byteLength,
       0,
     );
@@ -3337,6 +3404,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         lodPrefetch: {
           plannedNodes: this.#lodPrefetchPlannedNodes,
           plannedBytes: this.#lodPrefetchPlannedBytes,
+          predictedNodes: this.#lodPrefetchPredictedNodes,
+          predictedBytes: this.#lodPrefetchPredictedBytes,
+          predictionActive: this.#lodPrefetchPredictionActive,
+          predictionCandidateNodes:
+            this.#lodPrefetchPredictionCandidateNodes,
+          motionSamples: this.#lodPrefetchMotionSamples,
+          positionSpeed: this.#lodPrefetchPositionSpeed,
+          directionSpeed: this.#lodPrefetchDirectionSpeed,
           completedNodes: this.#lodPrefetchCompletedNodes,
           completedBytes: this.#lodPrefetchCompletedBytes,
           errors: this.#lodPrefetchErrors,
@@ -3467,9 +3542,27 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       basis.up[2],
     );
     this.#cameraDirty = false;
+    this.#recordLodCameraMotion(performance.now());
     this.#updateOpacityCameraUniform();
     this.#scheduleLodUpdate();
     this.#requestRender();
+  }
+
+  #recordLodCameraMotion(timestampMs: number) {
+    const camera = this.#camera;
+    if (!camera) return;
+    const position = camera.getPosition();
+    const forward = camera.forward;
+    const up = camera.up;
+    this.#lodCameraMotion = updateGsTileCameraMotion(
+      this.#lodCameraMotion,
+      {
+        position: [position.x, position.y, position.z],
+        direction: [forward.x, forward.y, forward.z],
+        up: [up.x, up.y, up.z],
+      },
+      timestampMs,
+    );
   }
 
   #updateOpacityCameraUniform() {
@@ -3498,6 +3591,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           : "orbit";
       this.#pointerX = event.clientX;
       this.#pointerY = event.clientY;
+      this.#lodCameraMotion = null;
+      this.#recordLodCameraMotion(performance.now());
       canvas.setPointerCapture(event.pointerId);
     };
     const onPointerMove = (event: PointerEvent) => {
