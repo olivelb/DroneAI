@@ -267,6 +267,7 @@ export const planGsTilePrefetchPacks = (
   residentNodeIds: Iterable<string>,
   expandedNodeIds: Iterable<string>,
   maximumBytes = DEFAULT_GSTILE_PREFETCH_BYTES,
+  locallyAvailablePackIds: Iterable<string> = [],
 ): GsTilePrefetchPack[] => {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
     throw new Error("GSTile prefetch budget must be a non-negative integer");
@@ -274,6 +275,7 @@ export const planGsTilePrefetchPacks = (
   const resident = new Set(residentNodeIds);
   const nodes = new Map(manifest.nodes.map((node) => [node.id, node]));
   const packs = new Map(manifest.packs.map((pack) => [pack.id, pack]));
+  const locallyAvailablePacks = new Set(locallyAvailablePackIds);
   const scheduledPacks = new Set<string>();
   const planned: GsTilePrefetchPack[] = [];
   let plannedBytes = 0;
@@ -286,6 +288,7 @@ export const planGsTilePrefetchPacks = (
     if (!node || !tile || !pack) {
       throw new Error(`GSTile prefetch node ${nodeId} is incomplete`);
     }
+    if (locallyAvailablePacks.has(pack.id)) continue;
     if (scheduledPacks.has(pack.id)) continue;
     if (plannedBytes + pack.byteLength > maximumBytes) continue;
     scheduledPacks.add(pack.id);
