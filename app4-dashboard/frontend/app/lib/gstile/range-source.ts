@@ -240,6 +240,15 @@ export class GsTileRangeScheduler {
     };
   }
 
+  hasLocallyAvailable(
+    url: string,
+    range: ByteRange,
+    immutableIdentity?: string,
+  ) {
+    const key = this.#rangeKey(url, range, immutableIdentity);
+    return this.#cache.has(key) || this.#inFlight.has(key);
+  }
+
   async fetch(
     url: string,
     range: ByteRange,

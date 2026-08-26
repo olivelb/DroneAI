@@ -936,6 +936,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodPrefetchMotionSamples = 0;
   #lodPrefetchPositionSpeed = 0;
   #lodPrefetchDirectionSpeed = 0;
+  #lodPrefetchLocallyAvailablePacks = 0;
+  #lodPrefetchLocallyAvailableBytes = 0;
+  #lodPrefetchSkippedCandidatePacks = 0;
+  #lodPrefetchSkippedCandidateBytes = 0;
   #lodCameraMotion: GsTileCameraMotion | null = null;
   #debugTraceEnabled = false;
   #debugSnapshotElement: HTMLScriptElement | null = null;
@@ -3063,6 +3067,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodPrefetchMotionSamples = 0;
     this.#lodPrefetchPositionSpeed = 0;
     this.#lodPrefetchDirectionSpeed = 0;
+    this.#lodPrefetchLocallyAvailablePacks = 0;
+    this.#lodPrefetchLocallyAvailableBytes = 0;
+    this.#lodPrefetchSkippedCandidatePacks = 0;
+    this.#lodPrefetchSkippedCandidateBytes = 0;
     this.#lodPrefetchTimer = setTimeout(() => {
       this.#lodPrefetchTimer = null;
       void this.#prefetchLodHalo(residentNodeIds, signal).catch((error) => {
@@ -3121,11 +3129,45 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodPrefetchPredictionActive = predictedPose !== null;
     this.#lodPrefetchPredictionCandidateNodes = predictedNodeIds.length;
     const predictedNodeIdSet = new Set(predictedNodeIds);
+    const locallyAvailablePackIds = new Set<string>();
+    for (const pack of manifest.packs) {
+      const immutableIdentity = `sha256:${pack.sha256.toLowerCase()}`;
+      if (
+        scheduler.hasLocallyAvailable(
+          "",
+          { start: 0, length: pack.byteLength },
+          immutableIdentity,
+        )
+      ) {
+        locallyAvailablePackIds.add(pack.id);
+        this.#lodPrefetchLocallyAvailableBytes += pack.byteLength;
+      }
+    }
+    this.#lodPrefetchLocallyAvailablePacks = locallyAvailablePackIds.size;
+    const residentNodeIdSet = new Set(residentNodeIds);
+    const nodesById = new Map(manifest.nodes.map((node) => [node.id, node]));
+    const packsById = new Map(manifest.packs.map((pack) => [pack.id, pack]));
+    const candidateNodeIds = [...predictedNodeIds, ...expanded.selectedNodeIds];
+    const skippedCandidatePackIds = new Set<string>();
+    for (const nodeId of candidateNodeIds) {
+      if (residentNodeIdSet.has(nodeId)) continue;
+      const node = nodesById.get(nodeId);
+      const packId = (node?.tile ?? node?.lodTile)?.pack;
+      if (packId && locallyAvailablePackIds.has(packId)) {
+        skippedCandidatePackIds.add(packId);
+      }
+    }
+    this.#lodPrefetchSkippedCandidatePacks = skippedCandidatePackIds.size;
+    this.#lodPrefetchSkippedCandidateBytes = [...skippedCandidatePackIds].reduce(
+      (total, packId) => total + (packsById.get(packId)?.byteLength ?? 0),
+      0,
+    );
     const planned = planGsTilePrefetchPacks(
       manifest,
       residentNodeIds,
-      [...predictedNodeIds, ...expanded.selectedNodeIds],
+      candidateNodeIds,
       DEFAULT_GSTILE_PREFETCH_BYTES,
+      locallyAvailablePackIds,
     );
     this.#lodPrefetchPlannedNodes = planned.length;
     this.#lodPrefetchPlannedBytes = planned.reduce(
@@ -3412,6 +3454,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           motionSamples: this.#lodPrefetchMotionSamples,
           positionSpeed: this.#lodPrefetchPositionSpeed,
           directionSpeed: this.#lodPrefetchDirectionSpeed,
+          locallyAvailablePacks: this.#lodPrefetchLocallyAvailablePacks,
+          locallyAvailableBytes: this.#lodPrefetchLocallyAvailableBytes,
+          skippedCandidatePacks: this.#lodPrefetchSkippedCandidatePacks,
+          skippedCandidateBytes: this.#lodPrefetchSkippedCandidateBytes,
           completedNodes: this.#lodPrefetchCompletedNodes,
           completedBytes: this.#lodPrefetchCompletedBytes,
           errors: this.#lodPrefetchErrors,

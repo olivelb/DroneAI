@@ -252,6 +252,21 @@ describe("GSTile LOD halo prefetch", () => {
     expect(planned[0].pack.byteLength).toBe(200);
   });
 
+  it("spends the transfer budget only on packs absent from local memory", () => {
+    const planned = planGsTilePrefetchPacks(
+      manifest(),
+      [],
+      ["r1", "r0", "r"],
+      250,
+      ["c"],
+    );
+
+    expect(planned.map((entry) => entry.nodeId)).toEqual(["r0", "r"]);
+    expect(
+      planned.reduce((total, entry) => total + entry.pack.byteLength, 0),
+    ).toBe(250);
+  });
+
   it("rejects incomplete expanded selections", () => {
     expect(() =>
       planGsTilePrefetchPacks(manifest(), [], ["missing"], 1_000),

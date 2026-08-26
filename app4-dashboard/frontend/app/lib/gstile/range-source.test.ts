@@ -97,6 +97,52 @@ describe("GSTile range source", () => {
     });
   });
 
+  it("reports immutable ranges that are in flight or cached locally", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        await gate;
+        return new Response(new Uint8Array([1, 2, 3, 4]), {
+          status: 206,
+          headers: { "Content-Range": "bytes 0-3/4" },
+        });
+      }),
+    );
+    const scheduler = new GsTileRangeScheduler(1, 1024);
+    const range = { start: 0, length: 4 };
+    const pending = scheduler.fetch(
+      "https://example.test/signed.gst",
+      range,
+      undefined,
+      "sha256:stable",
+    );
+
+    expect(
+      scheduler.hasLocallyAvailable(
+        "https://example.test/rotated.gst",
+        range,
+        "sha256:stable",
+      ),
+    ).toBe(true);
+    expect(
+      scheduler.hasLocallyAvailable(
+        "https://example.test/signed.gst",
+        range,
+        "sha256:different",
+      ),
+    ).toBe(false);
+
+    release();
+    await pending;
+    expect(
+      scheduler.hasLocallyAvailable("", range, "sha256:stable"),
+    ).toBe(true);
+  });
+
   it("accepts browser-decoded HTTP zstd bytes under the raw identity", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, init?: RequestInit) => {
