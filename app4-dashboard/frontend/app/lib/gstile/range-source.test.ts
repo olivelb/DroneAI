@@ -472,4 +472,176 @@ describe("GSTile range source", () => {
     ]);
     expect(scheduler.statistics()).toMatchObject({ active: 0, queued: 0 });
   });
+
+  it("serves a critical tile before queued prefetch work", async () => {
+    let releaseActive!: () => void;
+    const activeGate = new Promise<void>((resolve) => {
+      releaseActive = resolve;
+    });
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith("active.gst")) await activeGate;
+      return new Response(new Uint8Array([1, 2, 3, 4]), {
+        status: 206,
+        headers: { "Content-Range": "bytes 0-3/4" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const scheduler = new GsTileRangeScheduler(1, 1024);
+    const active = scheduler.fetch("https://example.test/active.gst", {
+      start: 0,
+      length: 4,
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const prefetch = scheduler.fetch(
+      "https://example.test/prefetch.gst",
+      { start: 0, length: 4 },
+      undefined,
+      undefined,
+      undefined,
+      "prefetch",
+    );
+    const critical = scheduler.fetch("https://example.test/critical.gst", {
+      start: 0,
+      length: 4,
+    });
+    expect(scheduler.statistics()).toMatchObject({
+      queued: 2,
+      queuedCritical: 1,
+      queuedPrefetch: 1,
+    });
+
+    releaseActive();
+    await Promise.all([active, critical, prefetch]);
+
+    expect(calls).toEqual([
+      "https://example.test/active.gst",
+      "https://example.test/critical.gst",
+      "https://example.test/prefetch.gst",
+    ]);
+    expect(scheduler.statistics()).toMatchObject({
+      criticalQueueWaits: 1,
+      priorityPromotions: 0,
+      prefetchCancellations: 0,
+    });
+  });
+
+  it("promotes a queued prefetch when the visible cut needs it", async () => {
+    let releaseActive!: () => void;
+    const activeGate = new Promise<void>((resolve) => {
+      releaseActive = resolve;
+    });
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith("active.gst")) await activeGate;
+      return new Response(new Uint8Array([1, 2, 3, 4]), {
+        status: 206,
+        headers: { "Content-Range": "bytes 0-3/4" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const scheduler = new GsTileRangeScheduler(1, 1024);
+    const active = scheduler.fetch("https://example.test/active.gst", {
+      start: 0,
+      length: 4,
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const unrelated = scheduler.fetch(
+      "https://example.test/unrelated.gst",
+      { start: 0, length: 4 },
+      undefined,
+      undefined,
+      undefined,
+      "prefetch",
+    );
+    const predicted = scheduler.fetch(
+      "https://example.test/predicted.gst",
+      { start: 0, length: 4 },
+      undefined,
+      "sha256:predicted",
+      undefined,
+      "prefetch",
+    );
+    const visible = scheduler.fetch(
+      "https://example.test/predicted.gst?signature=rotated",
+      { start: 0, length: 4 },
+      undefined,
+      "sha256:predicted",
+    );
+
+    releaseActive();
+    const [predictedContent, visibleContent] = await Promise.all([
+      predicted,
+      visible,
+    ]);
+    await Promise.all([active, unrelated]);
+
+    expect(visibleContent).toBe(predictedContent);
+    expect(calls).toEqual([
+      "https://example.test/active.gst",
+      "https://example.test/predicted.gst",
+      "https://example.test/unrelated.gst",
+    ]);
+    expect(scheduler.statistics()).toMatchObject({
+      criticalQueueWaits: 1,
+      priorityPromotions: 1,
+    });
+  });
+
+  it("abandons an interrupted prefetch without the critical grace delay", async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          const url = String(input);
+          calls.push(url);
+          const abort = () => reject(init?.signal?.reason);
+          init?.signal?.addEventListener("abort", abort, { once: true });
+          if (url.endsWith("critical.gst")) {
+            init?.signal?.removeEventListener("abort", abort);
+            resolve(
+              new Response(new Uint8Array([1, 2, 3, 4]), {
+                status: 206,
+                headers: { "Content-Range": "bytes 0-3/4" },
+              }),
+            );
+          }
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const scheduler = new GsTileRangeScheduler(1, 1024, 300);
+    const controller = new AbortController();
+    const prefetch = scheduler.fetch(
+      "https://example.test/prefetch.gst",
+      { start: 0, length: 4 },
+      controller.signal,
+      undefined,
+      undefined,
+      "prefetch",
+    );
+    const critical = scheduler.fetch("https://example.test/critical.gst", {
+      start: 0,
+      length: 4,
+    });
+
+    controller.abort(new DOMException("camera moved", "AbortError"));
+    await expect(prefetch).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(critical).resolves.toHaveProperty("byteLength", 4);
+
+    expect(calls).toEqual([
+      "https://example.test/prefetch.gst",
+      "https://example.test/critical.gst",
+    ]);
+    expect(scheduler.statistics()).toMatchObject({
+      active: 0,
+      queued: 0,
+      prefetchCancellations: 1,
+    });
+  });
 });

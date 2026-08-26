@@ -3101,6 +3101,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
             controller.signal,
             immutableIdentity,
             transport,
+            "prefetch",
           );
           await this.#verifyLodPackContent(
             pack,

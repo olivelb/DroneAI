@@ -7,6 +7,7 @@ export type GsTileNetworkTransport = {
   encoding: "identity" | "zstd" | "zstd-http";
   fallbackUrl?: string;
 };
+export type GsTileRangePriority = "critical" | "prefetch";
 
 export const DEFAULT_GSTILE_MEMORY_CACHE_BYTES = 768 * 1024 * 1024;
 export const DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS = 300;
@@ -111,6 +112,13 @@ const decompressZstd = async (
 export type GsTileRangeSchedulerStatistics = {
   active: number;
   queued: number;
+  queuedCritical: number;
+  queuedPrefetch: number;
+  priorityPromotions: number;
+  prefetchCancellations: number;
+  criticalQueueWaits: number;
+  criticalQueueWaitMilliseconds: number;
+  maximumCriticalQueueWaitMilliseconds: number;
   cacheEntries: number;
   cacheBytes: number;
   cacheHits: number;
@@ -133,6 +141,9 @@ type InFlightRange = {
   consumers: number;
   settled: boolean;
   abortTimer: ReturnType<typeof setTimeout> | null;
+  orphanGraceMilliseconds: number;
+  priority: GsTileRangePriority;
+  promote: (() => void) | null;
 };
 
 type QueueEntry = {
@@ -140,6 +151,7 @@ type QueueEntry = {
   reject: (reason?: unknown) => void;
   signal?: AbortSignal;
   abort?: () => void;
+  priority: GsTileRangePriority;
 };
 
 export class GsTileRangeScheduler {
@@ -163,6 +175,11 @@ export class GsTileRangeScheduler {
   #decodedBytes = 0;
   #zstdResponses = 0;
   #zstdFallbacks = 0;
+  #priorityPromotions = 0;
+  #prefetchCancellations = 0;
+  #criticalQueueWaits = 0;
+  #criticalQueueWaitMilliseconds = 0;
+  #maximumCriticalQueueWaitMilliseconds = 0;
   #inFlight = new Map<string, InFlightRange>();
   #persistentBuffers = new WeakSet<ArrayBuffer>();
 
@@ -194,6 +211,18 @@ export class GsTileRangeScheduler {
     return {
       active: this.#active,
       queued: this.#queue.length,
+      queuedCritical: this.#queue.filter(
+        (entry) => entry.priority === "critical",
+      ).length,
+      queuedPrefetch: this.#queue.filter(
+        (entry) => entry.priority === "prefetch",
+      ).length,
+      priorityPromotions: this.#priorityPromotions,
+      prefetchCancellations: this.#prefetchCancellations,
+      criticalQueueWaits: this.#criticalQueueWaits,
+      criticalQueueWaitMilliseconds: this.#criticalQueueWaitMilliseconds,
+      maximumCriticalQueueWaitMilliseconds:
+        this.#maximumCriticalQueueWaitMilliseconds,
       cacheEntries: this.#cache.size,
       cacheBytes: this.#cacheBytes,
       cacheHits: this.#cacheHits,
@@ -217,6 +246,7 @@ export class GsTileRangeScheduler {
     signal?: AbortSignal,
     immutableIdentity?: string,
     transport?: GsTileNetworkTransport,
+    priority: GsTileRangePriority = "critical",
   ) {
     if (signal?.aborted) return Promise.reject(signal.reason);
     const key = this.#rangeKey(url, range, immutableIdentity);
@@ -231,6 +261,12 @@ export class GsTileRangeScheduler {
     let request = this.#inFlight.get(key);
     if (request) {
       this.#inFlightHits += 1;
+      if (priority === "critical" && request.priority === "prefetch") {
+        request.priority = "critical";
+        request.orphanGraceMilliseconds = this.#orphanGraceMilliseconds;
+        this.#priorityPromotions += 1;
+        request.promote?.();
+      }
       return this.#subscribe(request, signal);
     }
     this.#cacheMisses += 1;
@@ -241,6 +277,10 @@ export class GsTileRangeScheduler {
       consumers: 0,
       settled: false,
       abortTimer: null,
+      orphanGraceMilliseconds:
+        priority === "prefetch" ? 0 : this.#orphanGraceMilliseconds,
+      priority,
+      promote: null,
     };
     const entry = request;
     entry.promise = this.#fetchAndCache(
@@ -248,6 +288,7 @@ export class GsTileRangeScheduler {
       url,
       range,
       controller.signal,
+      entry,
       transport,
     ).finally(() => {
         entry.settled = true;
@@ -295,9 +336,10 @@ export class GsTileRangeScheduler {
     url: string,
     range: ByteRange,
     signal: AbortSignal,
+    request: InFlightRange,
     transport?: GsTileNetworkTransport,
   ) {
-    await this.#acquire(signal);
+    await this.#acquire(signal, request);
     try {
       if (this.#persistentCache && key.startsWith("immutable:")) {
         try {
@@ -426,11 +468,14 @@ export class GsTileRangeScheduler {
         request.abortTimer = setTimeout(() => {
           request.abortTimer = null;
           if (request.consumers === 0 && !request.settled) {
+            if (request.priority === "prefetch") {
+              this.#prefetchCancellations += 1;
+            }
             request.controller.abort(
               new DOMException("Superseded GSTile range", "AbortError"),
             );
           }
-        }, this.#orphanGraceMilliseconds);
+        }, request.orphanGraceMilliseconds);
       }
     };
     return new Promise<ArrayBuffer>((resolve, reject) => {
@@ -454,29 +499,61 @@ export class GsTileRangeScheduler {
     });
   }
 
-  #acquire(signal?: AbortSignal): Promise<void> {
+  #enqueue(entry: QueueEntry) {
+    if (entry.priority === "prefetch") {
+      this.#queue.push(entry);
+      return;
+    }
+    const firstPrefetch = this.#queue.findIndex(
+      (candidate) => candidate.priority === "prefetch",
+    );
+    if (firstPrefetch < 0) this.#queue.push(entry);
+    else this.#queue.splice(firstPrefetch, 0, entry);
+  }
+
+  #acquire(signal: AbortSignal | undefined, request: InFlightRange): Promise<void> {
     if (signal?.aborted) return Promise.reject(signal.reason);
     if (this.#active < this.#maximumConcurrency) {
       this.#active += 1;
       return Promise.resolve();
     }
     return new Promise((resolve, reject) => {
+      const queuedAt = performance.now();
       const queued: QueueEntry = {
         resume: () => {
           signal?.removeEventListener("abort", queued.abort!);
+          request.promote = null;
+          if (queued.priority === "critical") {
+            const queueWaitMilliseconds = performance.now() - queuedAt;
+            this.#criticalQueueWaits += 1;
+            this.#criticalQueueWaitMilliseconds += queueWaitMilliseconds;
+            this.#maximumCriticalQueueWaitMilliseconds = Math.max(
+              this.#maximumCriticalQueueWaitMilliseconds,
+              queueWaitMilliseconds,
+            );
+          }
           this.#active += 1;
           resolve();
         },
         reject,
         signal,
+        priority: request.priority,
       };
       queued.abort = () => {
         const index = this.#queue.indexOf(queued);
         if (index >= 0) this.#queue.splice(index, 1);
+        request.promote = null;
         reject(signal?.reason);
       };
+      request.promote = () => {
+        const index = this.#queue.indexOf(queued);
+        if (index < 0 || queued.priority === "critical") return;
+        this.#queue.splice(index, 1);
+        queued.priority = "critical";
+        this.#enqueue(queued);
+      };
       signal?.addEventListener("abort", queued.abort, { once: true });
-      this.#queue.push(queued);
+      this.#enqueue(queued);
     });
   }
 
