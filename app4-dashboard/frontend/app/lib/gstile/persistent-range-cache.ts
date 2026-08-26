@@ -32,6 +32,10 @@ export interface GsTilePersistentCache {
   ): Promise<ArrayBuffer | null>;
   write(key: string, content: ArrayBuffer): Promise<void>;
   delete(key: string): Promise<void>;
+  hasMany?(
+    entries: readonly { key: string; expectedByteLength: number }[],
+    signal?: AbortSignal,
+  ): Promise<Set<string>>;
 }
 
 const requestResult = <T>(request: IDBRequest<T>) =>
@@ -135,6 +139,33 @@ export class IndexedDbGsTilePersistentCache implements GsTilePersistentCache {
     }
     void this.#touch(key, expectedByteLength);
     return content;
+  }
+
+  async hasMany(
+    entries: readonly { key: string; expectedByteLength: number }[],
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
+    if (entries.length === 0) return new Set<string>();
+    const requested = new Map(
+      entries.map((entry) => [entry.key, entry.expectedByteLength]),
+    );
+    const database = await this.#database;
+    signal?.throwIfAborted();
+    const transaction = database.transaction(ACCESS_STORE, "readonly");
+    const records = await requestResult(
+      transaction.objectStore(ACCESS_STORE).getAll() as IDBRequest<
+        AccessRecord[]
+      >,
+    );
+    signal?.throwIfAborted();
+    return new Set(
+      records
+        .filter(
+          (record) => requested.get(record.key) === record.byteLength,
+        )
+        .map((record) => record.key),
+    );
   }
 
   write(key: string, content: ArrayBuffer) {

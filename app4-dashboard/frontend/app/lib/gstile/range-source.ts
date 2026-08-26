@@ -8,6 +8,12 @@ export type GsTileNetworkTransport = {
   fallbackUrl?: string;
 };
 export type GsTileRangePriority = "critical" | "prefetch";
+export type GsTileRangeAvailabilityRequest = {
+  id: string;
+  url: string;
+  range: ByteRange;
+  immutableIdentity?: string;
+};
 
 export const DEFAULT_GSTILE_MEMORY_CACHE_BYTES = 768 * 1024 * 1024;
 export const DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS = 300;
@@ -129,6 +135,9 @@ export type GsTileRangeSchedulerStatistics = {
   persistentWrites: number;
   persistentWriteBytes: number;
   persistentErrors: number;
+  persistentAvailabilityQueries: number;
+  persistentAvailabilityCandidates: number;
+  persistentAvailabilityHits: number;
   networkBytes: number;
   decodedBytes: number;
   zstdResponses: number;
@@ -171,6 +180,9 @@ export class GsTileRangeScheduler {
   #persistentWrites = 0;
   #persistentWriteBytes = 0;
   #persistentErrors = 0;
+  #persistentAvailabilityQueries = 0;
+  #persistentAvailabilityCandidates = 0;
+  #persistentAvailabilityHits = 0;
   #networkBytes = 0;
   #decodedBytes = 0;
   #zstdResponses = 0;
@@ -233,6 +245,10 @@ export class GsTileRangeScheduler {
       persistentWrites: this.#persistentWrites,
       persistentWriteBytes: this.#persistentWriteBytes,
       persistentErrors: this.#persistentErrors,
+      persistentAvailabilityQueries: this.#persistentAvailabilityQueries,
+      persistentAvailabilityCandidates:
+        this.#persistentAvailabilityCandidates,
+      persistentAvailabilityHits: this.#persistentAvailabilityHits,
       networkBytes: this.#networkBytes,
       decodedBytes: this.#decodedBytes,
       zstdResponses: this.#zstdResponses,
@@ -247,6 +263,62 @@ export class GsTileRangeScheduler {
   ) {
     const key = this.#rangeKey(url, range, immutableIdentity);
     return this.#cache.has(key) || this.#inFlight.has(key);
+  }
+
+  async locallyAvailable(
+    requests: readonly GsTileRangeAvailabilityRequest[],
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
+    const available = new Set<string>();
+    const persistentRequests = new Map<
+      string,
+      { expectedByteLength: number; ids: string[] }
+    >();
+    for (const request of requests) {
+      const key = this.#rangeKey(
+        request.url,
+        request.range,
+        request.immutableIdentity,
+      );
+      if (this.#cache.has(key) || this.#inFlight.has(key)) {
+        available.add(request.id);
+      } else if (request.immutableIdentity && this.#persistentCache?.hasMany) {
+        const candidate = persistentRequests.get(key);
+        if (candidate) candidate.ids.push(request.id);
+        else {
+          persistentRequests.set(key, {
+            expectedByteLength: request.range.length,
+            ids: [request.id],
+          });
+        }
+      }
+    }
+    if (!this.#persistentCache?.hasMany || persistentRequests.size === 0) {
+      return available;
+    }
+    this.#persistentAvailabilityQueries += 1;
+    this.#persistentAvailabilityCandidates += persistentRequests.size;
+    try {
+      const persistent = await this.#persistentCache.hasMany(
+        [...persistentRequests].map(([key, entry]) => ({
+          key,
+          expectedByteLength: entry.expectedByteLength,
+        })),
+        signal,
+      );
+      signal?.throwIfAborted();
+      this.#persistentAvailabilityHits += persistent.size;
+      for (const key of persistent) {
+        for (const id of persistentRequests.get(key)?.ids ?? []) {
+          available.add(id);
+        }
+      }
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      this.#persistentErrors += 1;
+    }
+    return available;
   }
 
   async fetch(

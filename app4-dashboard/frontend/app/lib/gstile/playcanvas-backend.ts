@@ -3091,6 +3091,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const manifest = this.#lodManifest;
     const scheduler = this.#lodScheduler;
     if (!manifest || !scheduler || signal.aborted) return;
+    const controller = new AbortController();
+    this.#lodPrefetchController = controller;
+    const abort = () => controller.abort(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    try {
     const expanded = this.#lodSelection(
       this.#maximumResidentGaussians * LOD_PREFETCH_BUDGET_MULTIPLIER,
       {
@@ -3129,24 +3135,24 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodPrefetchPredictionActive = predictedPose !== null;
     this.#lodPrefetchPredictionCandidateNodes = predictedNodeIds.length;
     const predictedNodeIdSet = new Set(predictedNodeIds);
-    const locallyAvailablePackIds = new Set<string>();
-    for (const pack of manifest.packs) {
-      const immutableIdentity = `sha256:${pack.sha256.toLowerCase()}`;
-      if (
-        scheduler.hasLocallyAvailable(
-          "",
-          { start: 0, length: pack.byteLength },
-          immutableIdentity,
-        )
-      ) {
-        locallyAvailablePackIds.add(pack.id);
-        this.#lodPrefetchLocallyAvailableBytes += pack.byteLength;
-      }
-    }
+    const packsById = new Map(manifest.packs.map((pack) => [pack.id, pack]));
+    const locallyAvailablePackIds = await scheduler.locallyAvailable(
+      manifest.packs.map((pack) => ({
+        id: pack.id,
+        url: "",
+        range: { start: 0, length: pack.byteLength },
+        immutableIdentity: `sha256:${pack.sha256.toLowerCase()}`,
+      })),
+      controller.signal,
+    );
+    controller.signal.throwIfAborted();
+    this.#lodPrefetchLocallyAvailableBytes = [...locallyAvailablePackIds].reduce(
+      (total, packId) => total + (packsById.get(packId)?.byteLength ?? 0),
+      0,
+    );
     this.#lodPrefetchLocallyAvailablePacks = locallyAvailablePackIds.size;
     const residentNodeIdSet = new Set(residentNodeIds);
     const nodesById = new Map(manifest.nodes.map((node) => [node.id, node]));
-    const packsById = new Map(manifest.packs.map((pack) => [pack.id, pack]));
     const candidateNodeIds = [...predictedNodeIds, ...expanded.selectedNodeIds];
     const skippedCandidatePackIds = new Set<string>();
     for (const nodeId of candidateNodeIds) {
@@ -3189,12 +3195,6 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       return;
     }
 
-    const controller = new AbortController();
-    this.#lodPrefetchController = controller;
-    const abort = () => controller.abort(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
-    if (signal.aborted) abort();
-    try {
       const results = await Promise.allSettled(
         planned.map(async ({ pack }) => {
           const range = { start: 0, length: pack.byteLength };

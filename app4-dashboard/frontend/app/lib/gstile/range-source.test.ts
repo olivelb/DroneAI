@@ -143,6 +143,92 @@ describe("GSTile range source", () => {
     ).toBe(true);
   });
 
+  it("queries persistent availability in one metadata batch", async () => {
+    const persistentCache = {
+      read: vi.fn(async () => null),
+      write: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      hasMany: vi.fn(
+        async (entries: readonly { key: string; expectedByteLength: number }[]) =>
+          new Set([entries[0].key]),
+      ),
+    };
+    const scheduler = new GsTileRangeScheduler(1, 1024, 300, persistentCache);
+    const available = await scheduler.locallyAvailable([
+      {
+        id: "cached-pack",
+        url: "https://example.test/cached.gst",
+        range: { start: 0, length: 4 },
+        immutableIdentity: "sha256:cached",
+      },
+      {
+        id: "missing-pack",
+        url: "https://example.test/missing.gst",
+        range: { start: 0, length: 8 },
+        immutableIdentity: "sha256:missing",
+      },
+    ]);
+
+    expect([...available]).toEqual(["cached-pack"]);
+    expect(persistentCache.hasMany).toHaveBeenCalledOnce();
+    expect(persistentCache.hasMany.mock.calls[0]?.[0]).toEqual([
+      {
+        key: "immutable:sha256:cached\u00000\u00004",
+        expectedByteLength: 4,
+      },
+      {
+        key: "immutable:sha256:missing\u00000\u00008",
+        expectedByteLength: 8,
+      },
+    ]);
+    expect(scheduler.statistics()).toMatchObject({
+      persistentAvailabilityQueries: 1,
+      persistentAvailabilityCandidates: 2,
+      persistentAvailabilityHits: 1,
+    });
+  });
+
+  it("aborts a persistent availability batch when camera planning is superseded", async () => {
+    const persistentCache = {
+      read: vi.fn(async () => null),
+      write: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      hasMany: vi.fn(
+        async (
+          _entries: readonly { key: string; expectedByteLength: number }[],
+          signal?: AbortSignal,
+        ) =>
+          new Promise<Set<string>>((_resolve, reject) => {
+            const abort = () => reject(signal?.reason);
+            if (signal?.aborted) abort();
+            else signal?.addEventListener("abort", abort, { once: true });
+          }),
+      ),
+    };
+    const scheduler = new GsTileRangeScheduler(1, 1024, 300, persistentCache);
+    const controller = new AbortController();
+    const pending = scheduler.locallyAvailable(
+      [
+        {
+          id: "obsolete-pack",
+          url: "",
+          range: { start: 0, length: 4 },
+          immutableIdentity: "sha256:obsolete",
+        },
+      ],
+      controller.signal,
+    );
+
+    controller.abort(new DOMException("camera moved", "AbortError"));
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(scheduler.statistics()).toMatchObject({
+      persistentAvailabilityQueries: 1,
+      persistentAvailabilityHits: 0,
+      persistentErrors: 0,
+    });
+  });
+
   it("accepts browser-decoded HTTP zstd bytes under the raw identity", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, init?: RequestInit) => {
