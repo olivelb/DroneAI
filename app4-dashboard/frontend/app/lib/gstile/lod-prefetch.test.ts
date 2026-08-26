@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { GsTileManifest, GsTileNode, GsTilePack } from "./contracts";
 import {
+  DEFAULT_GSTILE_PREFETCH_BYTES,
+  GSTILE_PREFETCH_UTILITY_SAMPLE_BYTES,
+  MINIMUM_GSTILE_PREFETCH_BYTES,
+  gstileAdaptivePrefetchBudget,
   gstilePrefetchProjection,
   planGsTilePrefetchPacks,
   predictGsTileCameraPose,
@@ -59,6 +63,43 @@ const manifest = (): GsTileManifest => {
 };
 
 describe("GSTile LOD halo prefetch", () => {
+  it("keeps the full budget until a meaningful utility cohort exists", () => {
+    expect(
+      gstileAdaptivePrefetchBudget(
+        GSTILE_PREFETCH_UTILITY_SAMPLE_BYTES - 1,
+        0,
+      ),
+    ).toEqual({
+      maximumBytes: DEFAULT_GSTILE_PREFETCH_BYTES,
+      adaptive: false,
+      utilityRatio: 0,
+    });
+  });
+
+  it("scales the budget from observed useful bytes within strict bounds", () => {
+    const observed = gstileAdaptivePrefetchBudget(2_469_911_680, 714_668_736);
+    expect(observed.adaptive).toBe(true);
+    expect(observed.utilityRatio).toBeCloseTo(0.2893499155, 10);
+    expect(observed.maximumBytes).toBe(222 * 1024 * 1024);
+
+    expect(
+      gstileAdaptivePrefetchBudget(
+        GSTILE_PREFETCH_UTILITY_SAMPLE_BYTES,
+        0,
+      ).maximumBytes,
+    ).toBe(MINIMUM_GSTILE_PREFETCH_BYTES);
+    expect(
+      gstileAdaptivePrefetchBudget(
+        GSTILE_PREFETCH_UTILITY_SAMPLE_BYTES,
+        GSTILE_PREFETCH_UTILITY_SAMPLE_BYTES,
+      ).maximumBytes,
+    ).toBe(DEFAULT_GSTILE_PREFETCH_BYTES);
+  });
+
+  it("rejects inconsistent utility counters", () => {
+    expect(() => gstileAdaptivePrefetchBudget(100, 101)).toThrow(/utility/);
+  });
+
   it("predicts a smoothed camera trajectory over a bounded horizon", () => {
     const first = updateGsTileCameraMotion(
       null,
