@@ -89,6 +89,8 @@ def test_dronegs_adapter_uses_canonical_contract():
     assert command[command.index("--test-guard-percent") + 1] == "0"
     assert command[command.index("--adaptive-growth-target") + 1] == "0"
     assert command[command.index("--host-image-cache-mib") + 1] == "2048"
+    assert command[command.index("--background-mode") + 1] == "black"
+    assert command[command.index("--loss-pixel-mask") + 1] == "active"
     assert "--resize_factor" not in command
 
 
@@ -99,6 +101,8 @@ def test_dronegs_adapter_passes_validated_production_tuning():
             optimizer_profile="dev38-staged-rotation008-absgrad050-fastgs",
             pruning_policy="spatial-bounds",
             raster_profile="fastgs",
+            background_mode="random",
+            loss_pixel_mask="all",
             topology_cooldown=100,
             photometric_finish=100,
             photometric_mse_percent=100,
@@ -114,6 +118,8 @@ def test_dronegs_adapter_passes_validated_production_tuning():
     assert command[command.index("--optimizer-profile") + 1] == ("dev38-staged-rotation008-absgrad050-fastgs")
     assert command[command.index("--pruning-policy") + 1] == "spatial-bounds"
     assert command[command.index("--raster-profile") + 1] == "fastgs"
+    assert command[command.index("--background-mode") + 1] == "random"
+    assert command[command.index("--loss-pixel-mask") + 1] == "all"
     assert command[command.index("--topology-cooldown") + 1] == "100"
     assert command[command.index("--photometric-finish") + 1] == "100"
     assert command[command.index("--photometric-mse-percent") + 1] == "100"
@@ -123,6 +129,15 @@ def test_dronegs_adapter_passes_validated_production_tuning():
 def test_dronegs_tuning_rejects_non_boolean_adaptive_growth():
     with pytest.raises(ValueError, match="adaptive_growth_target"):
         DroneGSTuning(adaptive_growth_target=1)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("background_mode", "white"), ("loss_pixel_mask", "foreground")],
+)
+def test_dronegs_tuning_rejects_invalid_image_objective_policy(field, value):
+    with pytest.raises(ValueError, match=field):
+        DroneGSTuning(**{field: value})
 
 
 @pytest.mark.parametrize("value", [255, 65_537, True])

@@ -2524,11 +2524,12 @@ __global__ void backward_projected_geometry_kernel(
 __global__ void ordered_l1_loss_kernel(
     const float* prediction, const float* transmittance,
     const std::uint8_t* target, float* loss_sum,
-    unsigned int* active_pixels, std::size_t pixel_count) {
+    unsigned int* active_pixels, std::size_t pixel_count,
+    bool include_empty_pixels) {
     const std::size_t pixel =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (pixel >= pixel_count ||
-        transmittance[pixel] >= 1.0F) {
+        (!include_empty_pixels && transmittance[pixel] >= 1.0F)) {
         return;
     }
     float pixel_loss = 0.0F;
@@ -2546,14 +2547,14 @@ __global__ void ordered_l1_loss_kernel(
 __global__ void active_squared_error_values_kernel(
     const float* prediction, const float* transmittance,
     const std::uint8_t* target, float* values,
-    std::size_t sample_count) {
+    std::size_t sample_count, bool include_empty_pixels) {
     const std::size_t sample =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (sample >= sample_count) {
         return;
     }
     const std::size_t pixel = sample / 3U;
-    if (transmittance[pixel] >= 1.0F) {
+    if (!include_empty_pixels && transmittance[pixel] >= 1.0F) {
         values[sample] = 0.0F;
         return;
     }
@@ -2723,7 +2724,8 @@ __global__ void ordered_objective_gradient_kernel(
     const std::uint8_t* target, const unsigned int* active_pixels,
     const float* ssim_backward_terms, float* image_gradient,
     std::uint32_t width, std::uint32_t height,
-    float base_objective_weight, float mse_objective_weight) {
+    float base_objective_weight, float mse_objective_weight,
+    bool include_empty_pixels) {
     const std::size_t pixel_count =
         static_cast<std::size_t>(width) * height;
     const std::size_t pixel =
@@ -2733,7 +2735,8 @@ __global__ void ordered_objective_gradient_kernel(
     }
     const unsigned int active = *active_pixels;
     const bool contributes =
-        active != 0U && transmittance[pixel] < 1.0F;
+        active != 0U &&
+        (include_empty_pixels || transmittance[pixel] < 1.0F);
     const float effective_base_weight =
         mixed_mse ? base_objective_weight : 1.0F;
     const float l1_normalizer =
@@ -2826,7 +2829,8 @@ __global__ void fused_ordered_l1_ssim_forward_kernel(
     const std::uint8_t* target,
     float* loss_sum, unsigned int* active_pixels,
     float* ssim_values, float* backward_terms,
-    std::uint32_t width, std::uint32_t height) {
+    std::uint32_t width, std::uint32_t height,
+    bool include_empty_pixels) {
     constexpr int block_width = 16;
     constexpr int block_height = 16;
     constexpr int halo = static_cast<int>(ssim_window_radius);
@@ -3023,7 +3027,8 @@ __global__ void fused_ordered_l1_ssim_forward_kernel(
     }
 
     const bool active =
-        in_bounds && transmittance[pixel] < 1.0F;
+        in_bounds &&
+        (include_empty_pixels || transmittance[pixel] < 1.0F);
     block_loss[flat_thread] = active ? pixel_l1 : 0.0F;
     block_active[flat_thread] = active ? 1U : 0U;
     __syncthreads();
@@ -3053,7 +3058,8 @@ __global__ void fused_ordered_l1_ssim_backward_kernel(
     const float* backward_terms,
     float* image_gradient,
     std::uint32_t width, std::uint32_t height,
-    float base_objective_weight, float mse_objective_weight) {
+    float base_objective_weight, float mse_objective_weight,
+    bool include_empty_pixels) {
     constexpr int block_width = 16;
     constexpr int block_height = 16;
     constexpr int halo = static_cast<int>(ssim_window_radius);
@@ -3200,7 +3206,8 @@ __global__ void fused_ordered_l1_ssim_backward_kernel(
             const unsigned int active = *active_pixels;
             const bool contributes =
                 active != 0U &&
-                transmittance[pixel] < 1.0F;
+                (include_empty_pixels ||
+                 transmittance[pixel] < 1.0F);
             const float l1_normalizer =
                 contributes
                 ? effective_base_weight * l1_objective_weight /
@@ -5206,7 +5213,8 @@ struct OrderedAlphaTrainingContext::Impl {
         float mse_blend,
         bool readback_metrics = true,
         RefinementStatisticsMode refinement_statistics =
-            RefinementStatisticsMode::collect) {
+            RefinementStatisticsMode::collect,
+        const ImageObjectivePolicy& objective_policy = {}) {
         if (target_rgb == nullptr) {
             throw std::invalid_argument(
                 "ordered training target is null");
@@ -5240,6 +5248,12 @@ struct OrderedAlphaTrainingContext::Impl {
             mse_blend < 0.0F || mse_blend > 1.0F) {
             throw std::invalid_argument(
                 "ordered training MSE blend must be between 0 and 1");
+        }
+        for (const float channel : objective_policy.background) {
+            if (!std::isfinite(channel) || channel < 0.0F || channel > 1.0F) {
+                throw std::invalid_argument(
+                    "ordered training background channels must be finite and between 0 and 1");
+            }
         }
         const auto telemetry_step = optimizer_steps + 1U;
         const auto telemetry_interval =
@@ -5353,7 +5367,9 @@ struct OrderedAlphaTrainingContext::Impl {
             fastgs_compatibility
                 ? fastgs_maximum_fragment_alpha
                 : alpha_maximum,
-            0.0F, 0.0F, 0.0F,
+            objective_policy.background[0],
+            objective_policy.background[1],
+            objective_policy.background[2],
             rgb.data(), transmittance.data(),
             active_ends.data(),
             use_structural_fastgs ? bucket_offsets.data() : nullptr,
@@ -5378,14 +5394,16 @@ struct OrderedAlphaTrainingContext::Impl {
                 compute_gradient
                     ? ssim_backward_terms.data()
                     : nullptr,
-                camera.width, camera.height);
+                camera.width, camera.height,
+                objective_policy.include_empty_pixels);
             require_cuda(
                 cudaGetLastError(),
                 "launch fused ordered L1/SSIM forward");
         } else {
             ordered_l1_loss_kernel<<<pixel_blocks, block_size>>>(
                 rgb.data(), transmittance.data(), target.data(),
-                loss_sum.data(), active_pixels.data(), pixel_count);
+                loss_sum.data(), active_pixels.data(), pixel_count,
+                objective_policy.include_empty_pixels);
             require_cuda(
                 cudaGetLastError(),
                 "launch persistent ordered L1 loss");
@@ -5485,7 +5503,8 @@ struct OrderedAlphaTrainingContext::Impl {
             active_squared_error_values_kernel<<<
                 sample_blocks, block_size>>>(
                 rgb.data(), transmittance.data(), target.data(),
-                metric_horizontal_moments.data(), sample_count);
+                metric_horizontal_moments.data(), sample_count,
+                objective_policy.include_empty_pixels);
             require_cuda(
                 cudaGetLastError(),
                 "launch ordered active squared-error objective");
@@ -5546,7 +5565,8 @@ struct OrderedAlphaTrainingContext::Impl {
                         ssim_backward_terms.data(),
                         image_gradient.data(),
                         camera.width, camera.height,
-                        base_objective_weight, mse_blend);
+                        base_objective_weight, mse_blend,
+                        objective_policy.include_empty_pixels);
                 } else {
                     fused_ordered_l1_ssim_backward_kernel<false><<<
                         render_blocks, render_threads>>>(
@@ -5555,7 +5575,8 @@ struct OrderedAlphaTrainingContext::Impl {
                         ssim_backward_terms.data(),
                         image_gradient.data(),
                         camera.width, camera.height,
-                        1.0F, 0.0F);
+                        1.0F, 0.0F,
+                        objective_policy.include_empty_pixels);
                 }
             } else {
                 if (mse_blend > 0.0F) {
@@ -5566,7 +5587,8 @@ struct OrderedAlphaTrainingContext::Impl {
                         ssim_backward_terms.data(),
                         image_gradient.data(),
                         camera.width, camera.height,
-                        base_objective_weight, mse_blend);
+                        base_objective_weight, mse_blend,
+                        objective_policy.include_empty_pixels);
                 } else {
                     ordered_objective_gradient_kernel<false><<<
                         pixel_blocks, block_size>>>(
@@ -5575,7 +5597,8 @@ struct OrderedAlphaTrainingContext::Impl {
                         ssim_backward_terms.data(),
                         image_gradient.data(),
                         camera.width, camera.height,
-                        1.0F, 0.0F);
+                        1.0F, 0.0F,
+                        objective_policy.include_empty_pixels);
                 }
             }
             require_cuda(
@@ -6534,10 +6557,12 @@ OrderedAlphaTrainingContext& OrderedAlphaTrainingContext::operator=(
 
 float OrderedAlphaTrainingContext::evaluate(
     const RasterCamera& camera, const std::uint8_t* target_rgb,
-    std::size_t target_bytes, float mse_blend) {
+    std::size_t target_bytes, float mse_blend,
+    const ImageObjectivePolicy& objective_policy) {
     return impl_->render_loss(
         camera, target_rgb, target_bytes, false, false,
-        nullptr, nullptr, nullptr, mse_blend);
+        nullptr, nullptr, nullptr, mse_blend, true,
+        RefinementStatisticsMode::collect, objective_policy);
 }
 
 ImageQualityMetrics OrderedAlphaTrainingContext::evaluate_quality(
@@ -6554,32 +6579,36 @@ ImageQualityMetrics OrderedAlphaTrainingContext::evaluate_quality(
 ImageObjectiveOutput
 OrderedAlphaTrainingContext::evaluate_objective_gradient(
     const RasterCamera& camera, const std::uint8_t* target_rgb,
-    std::size_t target_bytes, float mse_blend) {
+    std::size_t target_bytes, float mse_blend,
+    const ImageObjectivePolicy& objective_policy) {
     ImageObjectiveOutput result;
     static_cast<void>(impl_->render_loss(
         camera, target_rgb, target_bytes, true, false,
-        nullptr, nullptr, &result, mse_blend));
+        nullptr, nullptr, &result, mse_blend, true,
+        RefinementStatisticsMode::collect, objective_policy));
     return result;
 }
 
 float OrderedAlphaTrainingContext::train_step(
     const RasterCamera& camera, const std::uint8_t* target_rgb,
     std::size_t target_bytes, float mse_blend,
-    RefinementStatisticsMode refinement_statistics) {
+    RefinementStatisticsMode refinement_statistics,
+    const ImageObjectivePolicy& objective_policy) {
     return impl_->render_loss(
         camera, target_rgb, target_bytes, true, true,
         nullptr, nullptr, nullptr, mse_blend, true,
-        refinement_statistics);
+        refinement_statistics, objective_policy);
 }
 
 void OrderedAlphaTrainingContext::train_step_deferred(
     const RasterCamera& camera, const std::uint8_t* target_rgb,
     std::size_t target_bytes, float mse_blend,
-    RefinementStatisticsMode refinement_statistics) {
+    RefinementStatisticsMode refinement_statistics,
+    const ImageObjectivePolicy& objective_policy) {
     static_cast<void>(impl_->render_loss(
         camera, target_rgb, target_bytes, true, true,
         nullptr, nullptr, nullptr, mse_blend, false,
-        refinement_statistics));
+        refinement_statistics, objective_policy));
 }
 
 TopologyRefinementResult

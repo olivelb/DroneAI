@@ -80,6 +80,8 @@ class GaussianProfile:
     qualification_policy_id: str = DRONEGS_QUALIFICATION_POLICY_ID
     tile_mode_auto: bool = True
     host_image_cache_mib: int = 0
+    background_mode: str = "black"
+    loss_pixel_mask: str = "active"
 
 
 PROFILES: dict[str, GaussianProfile] = {
@@ -284,6 +286,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--topology-cooldown", type=int)
     parser.add_argument("--photometric-finish", type=int)
     parser.add_argument("--photometric-mse-percent", type=int)
+    parser.add_argument("--background-mode", choices=("black", "random"))
+    parser.add_argument("--loss-pixel-mask", choices=("active", "all"))
     parser.add_argument(
         "--checkpoint-every",
         type=int,
@@ -410,6 +414,8 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
             "initial_max_projected_sigma_pixels",
             "maximum_scale_growth_factor",
             "capacity_targeted_growth",
+            "background_mode",
+            "loss_pixel_mask",
         }
     )
     if (
@@ -464,6 +470,10 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
         raise ValueError("host-image-cache-mib must be 0 (auto) or between 256 and 65536")
     if not 0 <= resolved.photometric_mse_percent <= 100:
         raise ValueError("photometric-mse-percent must be between 0 and 100")
+    if resolved.background_mode not in {"black", "random"}:
+        raise ValueError("background-mode must be black or random")
+    if resolved.loss_pixel_mask not in {"active", "all"}:
+        raise ValueError("loss-pixel-mask must be active or all")
     if resolved.canary_min_psnr < 0:
         raise ValueError("canary-min-psnr must be non-negative")
     if not 0 <= resolved.canary_min_ssim <= 1:
@@ -715,6 +725,8 @@ def main() -> int:
             dronegs_photometric_mse_percent=profile.photometric_mse_percent,
             dronegs_checkpoint_every=profile.checkpoint_every,
             dronegs_host_image_cache_mib=profile.host_image_cache_mib,
+            dronegs_background_mode=profile.background_mode,
+            dronegs_loss_pixel_mask=profile.loss_pixel_mask,
             dronegs_test_every=profile.test_every,
             dronegs_test_split=profile.test_split,
             dronegs_test_guard_percent=profile.test_guard_percent,

@@ -107,7 +107,9 @@ const char* help_text() {
         "dev37-staged-rotation008-absgrad050-aa030|"
         "dev38-staged-rotation008-absgrad050-fastgs] "
         "[--pruning-policy original|spatial-bounds] "
-        "[--raster-profile auto|bounded|fastgs]\n";
+        "[--raster-profile auto|bounded|fastgs] "
+        "[--background-mode black|random] "
+        "[--loss-pixel-mask active|all]\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -130,6 +132,7 @@ Options parse_options(int argc, char** argv) {
         "--photometric-mse-percent", "--adaptive-growth-target",
         "--optimizer-profile", "--sh-degree-interval",
         "--initial-ply", "--pruning-policy", "--raster-profile",
+        "--background-mode", "--loss-pixel-mask",
         "--profile-id", "--dataset-fingerprint",
     };
     const std::unordered_set<std::string> required{
@@ -272,6 +275,12 @@ Options parse_options(int argc, char** argv) {
     }
     if (values.contains("--raster-profile")) {
         options.raster_profile = values.at("--raster-profile");
+    }
+    if (values.contains("--background-mode")) {
+        options.background_mode = values.at("--background-mode");
+    }
+    if (values.contains("--loss-pixel-mask")) {
+        options.loss_pixel_mask = values.at("--loss-pixel-mask");
     }
     validate_options(options);
     return options;
@@ -430,6 +439,16 @@ void validate_options(const Options& options) {
         options.raster_profile != "fastgs") {
         throw std::invalid_argument(
             "--raster-profile must be auto, bounded, or fastgs");
+    }
+    if (options.background_mode != "black" &&
+        options.background_mode != "random") {
+        throw std::invalid_argument(
+            "--background-mode must be black or random");
+    }
+    if (options.loss_pixel_mask != "active" &&
+        options.loss_pixel_mask != "all") {
+        throw std::invalid_argument(
+            "--loss-pixel-mask must be active or all");
     }
     if (options.profile_id.empty()) {
         throw std::invalid_argument("--profile-id must not be empty");

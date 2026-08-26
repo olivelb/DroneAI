@@ -362,6 +362,8 @@ class GaussianOrthoConfig:
     # Compatibility default for integrations constructing this transport
     # object directly. Public product entry points opt in explicitly.
     tile_mode_auto: bool = False
+    dronegs_background_mode: str = "black"
+    dronegs_loss_pixel_mask: str = "active"
     # Optional run-scoped fast filesystem used only for reconstructible COLMAP
     # subsets. Checkpoints and final products remain under checkpoint_dir.
     training_workspace_root: str | None = None
@@ -1219,6 +1221,8 @@ def train_and_merge_gaussian_models(
                 prefetch_depth=prefetch_depth,
                 decode_workers=decode_workers,
                 host_image_cache_mib=config.dronegs_host_image_cache_mib,
+                background_mode=getattr(config, "dronegs_background_mode", "black"),
+                loss_pixel_mask=getattr(config, "dronegs_loss_pixel_mask", "active"),
                 checkpoint_every=config.dronegs_checkpoint_every,
                 resume_from=resume_from,
                 test_every=config.dronegs_test_every,
@@ -2339,6 +2343,8 @@ def generate_gaussian_orthophoto(
     dronegs_photometric_mse_percent: int = (DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent),
     dronegs_checkpoint_every: int = (DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every),
     dronegs_host_image_cache_mib: int = 0,
+    dronegs_background_mode: str = "black",
+    dronegs_loss_pixel_mask: str = "active",
     dronegs_test_every: int = DRONEGS_PRODUCTION_PROFILE_V1.test_every,
     dronegs_test_split: str = DRONEGS_PRODUCTION_PROFILE_V1.test_split,
     dronegs_test_guard_percent: int = (DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent),
@@ -2524,6 +2530,8 @@ def generate_gaussian_orthophoto(
         dronegs_photometric_mse_percent=dronegs_photometric_mse_percent,
         dronegs_checkpoint_every=dronegs_checkpoint_every,
         dronegs_host_image_cache_mib=host_cache_plan.limit_mib,
+        dronegs_background_mode=dronegs_background_mode,
+        dronegs_loss_pixel_mask=dronegs_loss_pixel_mask,
         dronegs_test_every=dronegs_test_every,
         dronegs_test_split=dronegs_test_split,
         dronegs_test_guard_percent=dronegs_test_guard_percent,

@@ -619,6 +619,10 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(
         parsed.raster_profile == "auto",
         "CLI raster profile default mismatch");
+    check(
+        parsed.background_mode == "black" &&
+            parsed.loss_pixel_mask == "active",
+        "CLI image objective defaults mismatch");
 
     const auto checkpoint = output / "training.ckpt";
     std::ofstream(checkpoint, std::ios::binary).put('\0');
@@ -646,6 +650,8 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "dev38-staged-rotation008-absgrad050-fastgs",
         "--pruning-policy", "spatial-bounds",
         "--raster-profile", "fastgs",
+        "--background-mode", "random",
+        "--loss-pixel-mask", "all",
         "--checkpoint-every", "1",
         "--checkpoint-path", checkpoint.string(),
         "--resume-from", checkpoint.string(),
@@ -699,6 +705,10 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(
         tuned.raster_profile == "fastgs",
         "CLI raster profile mismatch");
+    check(
+        tuned.background_mode == "random" &&
+            tuned.loss_pixel_mask == "all",
+        "CLI image objective policy mismatch");
     check(tuned.checkpoint_every == 1U, "CLI checkpoint interval mismatch");
     check(tuned.checkpoint_path == checkpoint, "CLI checkpoint path mismatch");
     check(tuned.resume_from == checkpoint, "CLI resume path mismatch");
@@ -706,7 +716,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.initial_ply ==
               data.parent_path() / "native-output" / "point_cloud.ply",
           "CLI initial PLY mismatch");
-    values.resize(values.size() - 44U);
+    values.resize(values.size() - 48U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);
