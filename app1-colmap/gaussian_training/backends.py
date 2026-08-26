@@ -56,6 +56,7 @@ class DroneGSTuning:
     raster_profile: str = DRONEGS_PRODUCTION_PROFILE_V1.raster_profile
     background_mode: str = "black"
     loss_pixel_mask: str = "active"
+    opacity_sh_enabled: bool = False
     sh_degree_interval: int = DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval
     topology_cooldown: int = DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown
     photometric_finish: int = DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish
@@ -92,6 +93,8 @@ class DroneGSTuning:
             raise ValueError("adaptive_growth_target must be boolean")
         if not isinstance(self.adaptive_native_crop_tiles, bool):
             raise ValueError("adaptive_native_crop_tiles must be boolean")
+        if not isinstance(self.opacity_sh_enabled, bool):
+            raise ValueError("opacity_sh_enabled must be boolean")
         _require_supported(
             "pruning_policy", self.pruning_policy, SUPPORTED_DRONEGS_PRUNING_POLICIES
         )
@@ -456,6 +459,8 @@ class DroneGSBackend:
                 tuning.background_mode,
                 "--loss-pixel-mask",
                 tuning.loss_pixel_mask,
+                "--opacity-sh",
+                "1" if tuning.opacity_sh_enabled else "0",
                 "--sh-degree-interval",
                 str(tuning.sh_degree_interval),
                 "--topology-cooldown",
@@ -621,6 +626,10 @@ class DroneGSBackend:
             or parameters["optimizer_profile"] != request.dronegs.optimizer_profile
             or parameters["pruning_policy"] != request.dronegs.pruning_policy
             or parameters["raster_profile"] != request.dronegs.raster_profile
+            or (
+                parameters.get("opacity_sh_enabled")
+                is not request.dronegs.opacity_sh_enabled
+            )
             or parameters.get("initial_scale_policy") != request.dronegs.initial_scale_policy
             or not manifest_parameter_matches(
                 parameters.get("initial_max_projected_sigma_pixels"),

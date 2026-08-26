@@ -78,7 +78,8 @@ public:
         std::uint64_t noise_seed = 0U,
         std::optional<bool> fastgs_compatibility_override =
             std::nullopt,
-        float maximum_scale_growth_factor = 54.59815F);
+        float maximum_scale_growth_factor = 54.59815F,
+        bool opacity_sh_enabled = false);
     ~OrderedAlphaTrainingContext();
 
     OrderedAlphaTrainingContext(

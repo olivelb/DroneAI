@@ -86,6 +86,11 @@ def validate_run_manifest(manifest: dict[str, Any]) -> None:
             raise ValueError(f"run manifest has no valid parameters.{key}")
     if parameters["test_split"] not in {"modulo", "spatial-block"}:
         raise ValueError("run manifest has invalid parameters.test_split")
+    opacity_sh_enabled = parameters.get("opacity_sh_enabled")
+    if "opacity_sh_enabled" in parameters and not isinstance(
+        opacity_sh_enabled, bool
+    ):
+        raise ValueError("run manifest has invalid parameters.opacity_sh_enabled")
     if parameters.get("initial_scale_policy") not in {
         "local-knn",
         "projected-knn",

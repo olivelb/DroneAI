@@ -265,6 +265,13 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         (std::istreambuf_iterator<char>(manifest)), std::istreambuf_iterator<char>());
     check(manifest_text.find("\"contract_version\": 1") != std::string::npos,
           "manifest contract version missing");
+    check(
+        manifest_text.find(
+            "\"appearance_model\": \"color-sh-plus-scalar-opacity-v1\"") !=
+            std::string::npos &&
+            manifest_text.find("\"opacity_sh_enabled\": false") !=
+            std::string::npos,
+        "manifest scalar-opacity default missing");
     check(manifest_text.find("\"initial_ply\": null") != std::string::npos,
           "manifest initial PLY provenance missing");
     check(manifest_text.find("\"git_revision\": null") == std::string::npos,
@@ -577,6 +584,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         static_cast<int>(arguments.size()), arguments.data());
     check(parsed.seed == 42, "CLI seed mismatch");
     check(parsed.sh_degree == 1, "CLI SH degree mismatch");
+    check(!parsed.opacity_sh_enabled, "CLI opacity SH must default off");
     check(
         parsed.adaptive_native_crop_tiles == 0U,
         "CLI adaptive native crop tile default mismatch");
@@ -652,6 +660,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--raster-profile", "fastgs",
         "--background-mode", "random",
         "--loss-pixel-mask", "all",
+        "--opacity-sh", "1",
         "--checkpoint-every", "1",
         "--checkpoint-path", checkpoint.string(),
         "--resume-from", checkpoint.string(),
@@ -709,6 +718,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         tuned.background_mode == "random" &&
             tuned.loss_pixel_mask == "all",
         "CLI image objective policy mismatch");
+    check(tuned.opacity_sh_enabled, "CLI opacity SH opt-in mismatch");
     check(tuned.checkpoint_every == 1U, "CLI checkpoint interval mismatch");
     check(tuned.checkpoint_path == checkpoint, "CLI checkpoint path mismatch");
     check(tuned.resume_from == checkpoint, "CLI resume path mismatch");

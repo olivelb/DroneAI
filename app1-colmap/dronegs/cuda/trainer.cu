@@ -1433,6 +1433,11 @@ TrainingMetrics train_ordered_mrnf(
         throw std::invalid_argument(
             "ordered training requires images and initialized Gaussians");
     }
+    if (!options.opacity_sh_enabled) {
+        for (auto& gaussian : gaussians) {
+            gaussian.opacity_sh.fill(0.0F);
+        }
+    }
     std::size_t maximum_pixels = 0U;
     std::size_t generated_views = 0U;
     const auto descriptors = make_frame_descriptors(
@@ -1485,14 +1490,15 @@ TrainingMetrics train_ordered_mrnf(
         static_cast<std::size_t>(options.max_cap),
         optimizer_profile, options.sh_degree,
         options.sh_degree_interval, options.seed,
-        raster_override, options.maximum_scale_growth_factor);
+        raster_override, options.maximum_scale_growth_factor,
+        options.opacity_sh_enabled);
     const auto checkpoint_dataset_fingerprint =
         options.dataset_fingerprint.empty()
             ? dataset_fingerprint(scene, options.data_path)
             : options.dataset_fingerprint;
     std::ostringstream checkpoint_configuration;
     checkpoint_configuration
-        << "contract=5"
+        << "contract=" << (options.opacity_sh_enabled ? 5 : 6)
         << ";iterations=" << options.iterations
         << ";strategy=" << options.strategy
         << ";sh=" << options.sh_degree
@@ -1523,6 +1529,9 @@ TrainingMetrics train_ordered_mrnf(
         << ";optimizer=" << options.optimizer_profile
         << ";pruning=" << options.pruning_policy
         << ";raster=" << options.raster_profile;
+    if (!options.opacity_sh_enabled) {
+        checkpoint_configuration << ";opacity_sh=0";
+    }
     const auto checkpoint_configuration_fingerprint =
         checkpoint_configuration.str();
     const bool imported_model = !options.initial_ply.empty();

@@ -37,6 +37,7 @@ def _arguments(**overrides):
         "host_image_cache_mib": None,
         "background_mode": None,
         "loss_pixel_mask": None,
+        "opacity_sh_enabled": None,
         "filter_enabled": None,
     }
     values.update(overrides)
@@ -276,6 +277,17 @@ def test_image_objective_override_is_explicit_and_defaults_stay_compatible():
     assert default.loss_pixel_mask == "active"
     assert experiment.background_mode == "random"
     assert experiment.loss_pixel_mask == "all"
+    assert experiment.profile_id == "custom"
+
+
+def test_opacity_sh_is_an_explicit_custom_profile_opt_in():
+    default = resolve_profile(_arguments(profile="facade-hd"))
+    experiment = resolve_profile(
+        _arguments(profile="facade-hd", opacity_sh_enabled=True)
+    )
+
+    assert default.opacity_sh_enabled is False
+    assert experiment.opacity_sh_enabled is True
     assert experiment.profile_id == "custom"
 
 

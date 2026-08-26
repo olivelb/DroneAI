@@ -975,6 +975,7 @@ __global__ void project_alpha_splats_kernel(
     float* projected_sh_basis, std::uint64_t* depth_keys,
     unsigned long long* visible_splats,
     std::uint32_t active_sh_degree,
+    std::uint32_t active_opacity_sh_degree,
     float antialias_filter_variance,
     bool fastgs_compatibility) {
     const std::uint32_t index =
@@ -1018,9 +1019,13 @@ __global__ void project_alpha_splats_kernel(
             gaussian, camera, active_sh_degree, sh_basis);
         const std::uint32_t active_coefficients =
             (active_sh_degree + 1U) * (active_sh_degree + 1U) - 1U;
+        const std::uint32_t active_opacity_coefficients =
+            (active_opacity_sh_degree + 1U) *
+                (active_opacity_sh_degree + 1U) -
+            1U;
         float opacity_logit = gaussian.opacity_logit;
         for (std::uint32_t coefficient = 0U;
-             coefficient < active_coefficients; ++coefficient) {
+             coefficient < active_opacity_coefficients; ++coefficient) {
             opacity_logit += sh_basis[coefficient + 1U] *
                 gaussian.opacity_sh[coefficient];
         }
@@ -1393,6 +1398,7 @@ __global__ void backward_alpha_tiles_kernel(
     float* sh_rest_gradient, std::uint32_t active_sh_degree,
     float* opacity_logit_gradient,
     float* opacity_sh_gradient,
+    std::uint32_t active_opacity_sh_degree,
     float* projected_geometry_gradient,
     const float* densification_error_map,
     const float* densification_edge_map,
@@ -1547,12 +1553,12 @@ __global__ void backward_alpha_tiles_kernel(
             atomicAdd(
                 &opacity_logit_gradient[source],
                 logit_gradient);
-            const std::uint32_t active_coefficients =
-                (active_sh_degree + 1U) *
-                    (active_sh_degree + 1U) -
+            const std::uint32_t active_opacity_coefficients =
+                (active_opacity_sh_degree + 1U) *
+                    (active_opacity_sh_degree + 1U) -
                 1U;
             for (std::uint32_t coefficient = 0U;
-                 coefficient < active_coefficients; ++coefficient) {
+                 coefficient < active_opacity_coefficients; ++coefficient) {
                 atomicAdd(
                     &opacity_sh_gradient[
                         source * maximum_opacity_sh_coefficients +
@@ -3649,7 +3655,9 @@ __global__ void ordered_sh_adam_update_kernel(
     static_assert(
         ActiveCoefficients == 3U || ActiveCoefficients == 8U ||
         ActiveCoefficients == 15U);
-    static_assert(LanesPerGaussian == ActiveCoefficients * 4U);
+    static_assert(
+        LanesPerGaussian == ActiveCoefficients * 3U ||
+        LanesPerGaussian == ActiveCoefficients * 4U);
     const std::size_t item_index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const std::size_t item_count = gaussian_count * LanesPerGaussian;
@@ -3660,7 +3668,7 @@ __global__ void ordered_sh_adam_update_kernel(
     constexpr float beta_second = 0.999F;
     const std::size_t gaussian_index = item_index / LanesPerGaussian;
     const std::size_t local_index = item_index % LanesPerGaussian;
-    constexpr std::size_t active_items = ActiveCoefficients * 4U;
+    constexpr std::size_t active_items = LanesPerGaussian;
     if (local_index >= active_items) {
         return;
     }
@@ -3690,6 +3698,9 @@ __global__ void ordered_sh_adam_update_kernel(
             moments.x * inverse_bias_first /
             (sqrtf(moments.y * inverse_bias_second) +
              dc_epsilon);
+        return;
+    }
+    if constexpr (LanesPerGaussian == ActiveCoefficients * 3U) {
         return;
     }
     const std::size_t coefficient = local_index - color_item_count;
@@ -4298,7 +4309,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_gaussians.data(), gaussian_count, device_camera,
         device_records.data(), device_projected_sh_basis.data(),
         device_depth_keys.data(),
-        device_visible_splats.data(), active_sh_degree, 0.0F, false);
+        device_visible_splats.data(), active_sh_degree,
+        active_sh_degree, 0.0F, false);
     require_cuda(cudaGetLastError(), "launch alpha projection");
 
     sort_projected_records(
@@ -4430,6 +4442,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
             device_sh_rest_gradient->data(), active_sh_degree,
             device_opacity_logit_gradient->data(),
             device_opacity_sh_gradient->data(),
+            active_sh_degree,
             device_projected_geometry_gradient->data(),
             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
         require_cuda(cudaGetLastError(), "launch tiled alpha backward");
@@ -4890,7 +4903,8 @@ struct OrderedAlphaTrainingContext::Impl {
         std::uint32_t requested_sh_degree_interval,
         std::uint64_t requested_noise_seed,
         std::optional<bool> fastgs_compatibility_override,
-        float requested_maximum_scale_growth_factor)
+        float requested_maximum_scale_growth_factor,
+        bool requested_opacity_sh_enabled)
         : gaussian_count(initial_gaussians.size()),
           gaussian_capacity(std::max(
               initial_gaussians.size(),
@@ -4910,6 +4924,7 @@ struct OrderedAlphaTrainingContext::Impl {
                   MrnfOptimizerProfile::
                       dev38_staged_rotation008_absgrad050_fastgs)),
           maximum_active_sh_degree(requested_maximum_sh_degree),
+          opacity_sh_enabled(requested_opacity_sh_enabled),
           sh_degree_interval(requested_sh_degree_interval),
           noise_seed(requested_noise_seed) {
         if (gaussian_count == 0U ||
@@ -5281,7 +5296,9 @@ struct OrderedAlphaTrainingContext::Impl {
             gaussians.data(), gaussian_items, device_camera,
             records.data(), projected_sh_basis.data(), depth_keys.data(),
             visible_splats.data(),
-            active_sh_degree, antialias_filter_variance,
+            active_sh_degree,
+            opacity_sh_enabled ? active_sh_degree : 0U,
+            antialias_filter_variance,
             fastgs_compatibility);
         require_cuda(
             cudaGetLastError(),
@@ -5612,8 +5629,10 @@ struct OrderedAlphaTrainingContext::Impl {
             if (!use_structural_fastgs) {
                 sh_rest_gradient.zero(
                     gaussian_count * maximum_sh_rest_values);
-                opacity_sh_gradient.zero(
-                    gaussian_count * maximum_opacity_sh_coefficients);
+                if (opacity_sh_enabled) {
+                    opacity_sh_gradient.zero(
+                        gaussian_count * maximum_opacity_sh_coefficients);
+                }
             }
             projected_geometry_gradient.zero(gaussian_count * 6U);
             if (collect_refinement_statistics) {
@@ -5691,6 +5710,7 @@ struct OrderedAlphaTrainingContext::Impl {
                     sh_rest_gradient.data(), active_sh_degree,
                     opacity_gradient.data(),
                     opacity_sh_gradient.data(),
+                    opacity_sh_enabled ? active_sh_degree : 0U,
                     projected_geometry_gradient.data(),
                     collect_refinement_statistics
                         ? densification_error_map.data()
@@ -5869,17 +5889,35 @@ struct OrderedAlphaTrainingContext::Impl {
                                 use_structural_fastgs);
                         };
                     if (active_coefficients == 3U) {
-                        launch_sh_adam(
-                            std::integral_constant<std::uint32_t, 3U>{},
-                            std::integral_constant<std::size_t, 12U>{});
+                        if (opacity_sh_enabled) {
+                            launch_sh_adam(
+                                std::integral_constant<std::uint32_t, 3U>{},
+                                std::integral_constant<std::size_t, 12U>{});
+                        } else {
+                            launch_sh_adam(
+                                std::integral_constant<std::uint32_t, 3U>{},
+                                std::integral_constant<std::size_t, 9U>{});
+                        }
                     } else if (active_coefficients == 8U) {
-                        launch_sh_adam(
-                            std::integral_constant<std::uint32_t, 8U>{},
-                            std::integral_constant<std::size_t, 32U>{});
+                        if (opacity_sh_enabled) {
+                            launch_sh_adam(
+                                std::integral_constant<std::uint32_t, 8U>{},
+                                std::integral_constant<std::size_t, 32U>{});
+                        } else {
+                            launch_sh_adam(
+                                std::integral_constant<std::uint32_t, 8U>{},
+                                std::integral_constant<std::size_t, 24U>{});
+                        }
                     } else if (active_coefficients == 15U) {
-                        launch_sh_adam(
-                            std::integral_constant<std::uint32_t, 15U>{},
-                            std::integral_constant<std::size_t, 60U>{});
+                        if (opacity_sh_enabled) {
+                            launch_sh_adam(
+                                std::integral_constant<std::uint32_t, 15U>{},
+                                std::integral_constant<std::size_t, 60U>{});
+                        } else {
+                            launch_sh_adam(
+                                std::integral_constant<std::uint32_t, 15U>{},
+                                std::integral_constant<std::size_t, 45U>{});
+                        }
                     } else {
                         throw std::logic_error(
                             "unsupported active SH coefficient count");
@@ -6405,6 +6443,7 @@ struct OrderedAlphaTrainingContext::Impl {
     std::uint64_t noise_until_iteration = 0U;
     std::uint64_t optimizer_steps = 0U;
     std::uint32_t maximum_active_sh_degree = 0U;
+    bool opacity_sh_enabled = false;
     std::uint32_t sh_degree_interval = 1000U;
     std::uint32_t active_sh_degree = 0U;
     std::uint64_t noise_seed = 0U;
@@ -6539,13 +6578,14 @@ OrderedAlphaTrainingContext::OrderedAlphaTrainingContext(
     std::uint32_t sh_degree_interval,
     std::uint64_t noise_seed,
     std::optional<bool> fastgs_compatibility_override,
-    float maximum_scale_growth_factor)
+    float maximum_scale_growth_factor,
+    bool opacity_sh_enabled)
     : impl_(std::make_unique<Impl>(
           gaussians, maximum_pixels, maximum_steps,
           maximum_gaussians, optimizer_profile,
           maximum_sh_degree, sh_degree_interval,
           noise_seed, fastgs_compatibility_override,
-          maximum_scale_growth_factor)) {}
+          maximum_scale_growth_factor, opacity_sh_enabled)) {}
 
 OrderedAlphaTrainingContext::~OrderedAlphaTrainingContext() = default;
 

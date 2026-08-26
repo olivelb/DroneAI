@@ -103,6 +103,7 @@ def test_dronegs_adapter_passes_validated_production_tuning():
             raster_profile="fastgs",
             background_mode="random",
             loss_pixel_mask="all",
+            opacity_sh_enabled=True,
             topology_cooldown=100,
             photometric_finish=100,
             photometric_mse_percent=100,
@@ -124,6 +125,15 @@ def test_dronegs_adapter_passes_validated_production_tuning():
     assert command[command.index("--photometric-finish") + 1] == "100"
     assert command[command.index("--photometric-mse-percent") + 1] == "100"
     assert command[command.index("--adaptive-growth-target") + 1] == "1"
+    assert command[command.index("--opacity-sh") + 1] == "1"
+
+
+def test_dronegs_opacity_sh_is_opt_in():
+    command = DroneGSBackend("/opt/dronegs").build_command(request())
+
+    assert command[command.index("--opacity-sh") + 1] == "0"
+    with pytest.raises(ValueError, match="opacity_sh_enabled"):
+        DroneGSTuning(opacity_sh_enabled=1)
 
 
 def test_dronegs_tuning_rejects_non_boolean_adaptive_growth():
@@ -179,6 +189,7 @@ manifest.write_text(
             "pruning_policy": arguments["--pruning-policy"],
             "raster_profile": arguments["--raster-profile"],
             "effective_raster_profile": arguments["--raster-profile"],
+            "opacity_sh_enabled": bool(int(arguments["--opacity-sh"])),
             "initial_scale_policy": arguments["--initial-scale-policy"],
             "initial_max_projected_sigma_pixels": float(
                 arguments["--initial-max-projected-sigma-pixels"]
@@ -291,6 +302,7 @@ Path(arguments["--run-manifest"]).write_text(
             "pruning_policy": arguments["--pruning-policy"],
             "raster_profile": arguments["--raster-profile"],
             "effective_raster_profile": arguments["--raster-profile"],
+            "opacity_sh_enabled": bool(int(arguments["--opacity-sh"])),
             "initial_scale_policy": arguments["--initial-scale-policy"],
             "initial_max_projected_sigma_pixels": float(
                 arguments["--initial-max-projected-sigma-pixels"]
