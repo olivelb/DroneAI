@@ -276,7 +276,14 @@ après la construction des feuilles.
 Acceptance : speedup par nombre de workers, RSS/disque bornés, mêmes hashes,
 annulation propre et absence de sursouscription BLAS/NumPy.
 
-État : non commencé.
+État au 28 août : **préparation Q96/SHA/Zstd implémentée en option**, avec
+2/4 workers, file bornée en octets et tâches, writer unique ordonné et jointure
+avant nettoyage sur erreur/annulation. Pour les packs agrégés, seul Q96 est
+parallélisé ; assemblage et compression restent dans le writer. V4, partition
+et sous-arbres restent séquentiels. Le défaut est un worker ; la réservation
+ne constitue pas un plafond RSS et aucune absence générale de sursouscription
+BLAS n'est revendiquée. Voir la
+[qualification complète et ses résultats limités au pilote](../benchmarks/gstile-parallel-preparation-qualification.md).
 
 ### 10. Opacité directionnelle évaluée par frame sans réupload global — impact moyen à élevé
 

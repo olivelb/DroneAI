@@ -38,6 +38,7 @@ implemented system as it exists now.
 | Production boundaries and release gates | [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md) |
 | DroneGS architecture and backend boundary | [`dronegs/ARCHITECTURE.md`](dronegs/ARCHITECTURE.md), [`dronegs/BACKENDS.md`](dronegs/BACKENDS.md) |
 | GSTile tiler/renderer performance audit and implementation ledger | [`dronegs/TILER_RENDERER_PERFORMANCE_AUDIT_2026-08-24.md`](dronegs/TILER_RENDERER_PERFORMANCE_AUDIT_2026-08-24.md) |
+| GSTile bounded parallel pack preparation (opt-in) | [`benchmarks/gstile-parallel-preparation-qualification.md`](benchmarks/gstile-parallel-preparation-qualification.md) |
 | Trainer command-line contract | [`dronegs/contracts/trainer-cli-v1.md`](dronegs/contracts/trainer-cli-v1.md) |
 | Third-party and GPL provenance | [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md), [`dronegs/GPL_COMPONENTS.md`](dronegs/GPL_COMPONENTS.md) |
 

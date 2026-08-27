@@ -5,6 +5,9 @@ sur les PR de qualification #277–279, pas seulement le `main` cité dans
 l’audit. L’audit fourni par l’utilisateur est une proposition à vérifier ;
 ses recommandations ne constituent pas des résultats expérimentaux.
 
+Mise à jour du 28 août : intégration de la préparation des packs en parallèle
+et qualification complète 1/2/4 workers ; voir le point 7 et le lot 3 ci-dessous.
+
 ## Conclusion
 
 Les deux axes principaux sont pertinents : réduire les E/S de construction
@@ -29,7 +32,7 @@ observés ; pour un objectif producteur 100 M, le tri externe remonte en tête.
 | 4. Q96 GPU decode/scatter | **Projet distinct**, non réfuté par l’essai négatif `writeTexture`. La sortie native actuelle vaut environ 172 octets/splat, l’entrée Q96 96. | Potentiel élevé, risque élevé. Le rapport 96/172 n’est ni un speedup garanti ni une mesure exacte des octets GPU actuels. Vérifier formats storage, limites de bindings, arrondis/half/quaternions et synchronisation des slots. |
 | 5. Transport transposé + Zstd | **À mesurer.** Q96 est AoS ; grouper les colonnes peut aider la compression. Le ratio de 13,1 % cité provient d’un ancien lot de prefetch, pas du corpus entier ni du dernier parcours. | Commencer par une transformation réversible hors ligne, sans changer le contrat canonique. Des entiers Q96 transposés ne sont pas directement les textures natives PlayCanvas : conversion et packing restent nécessaires. |
 | 6. Source IDs en sidecar | **Arithmétique confirmée** : 8/96 = 8,33 % bruts. `decode.ts` conserve un décodeur scientifique avec IDs, mais les streams renderer les omettent. | C’est un nouveau contrat, pas un champ à supprimer du Q96 v1. Préserver identité, intégrité, reconstruction et usages d’interaction. Les IDs ne sont pas nécessairement monotones après tri spatial ; mesurer delta/varint au lieu de promettre un sidecar minuscule. |
-| 7. Encode/V4/Zstd parallèles | **Non implémenté comme pool borné** dans `gaussian_tiles`. `_visit_branch` parcourt gauche/droite séquentiellement ; `format.py` compresse chaque pack avec Zstd niveau 1. | Expérience 1/2/4 workers, plafond en octets et tâches, un writer déterministe. Commencer par encode/compression indépendants, puis V4 après profilage ; ne pas supposer que toutes les boucles Python libèrent le GIL. |
+| 7. Encode/V4/Zstd parallèles | **Préparation des packs implémentée en option** : Q96 et, hors agrégation, SHA/Zstd en pool 2/4 workers. File bornée en octets/tâches, writer unique ordonné. Avec agrégation, compression dans le writer ; `_visit_branch` et V4 restent séquentiels. | Défaut conservé à 1. Comparaison de constructions complètes et parité de fichiers dans la [qualification](../benchmarks/gstile-parallel-preparation-qualification.md). Les gains codec seuls ne valent pas gains tiler ; profiler V4 avant de paralléliser les sous-arbres. |
 | 8. Agrégation directe 2 Mio | **Déjà implémentée.** `pack_tile` regroupe par `(kind, depth)` lors du parcours spatial, `pack_target_bytes` est exposé par le CLI ; `_enforce_aggregate_memory_bound` limite les payloads en attente à 256 Mio. Tests de déterminisme, payloads, Zstd et séparation des profondeurs. | Ne pas refaire cette fonctionnalité. Conserver le choix de profil ; l’observation historique 10,257 s contre 12,354 s ne démontre pas un bénéfice universel. Repack reste utile aux anciens bundles immuables. |
 | 9. Concurrence HTTP adaptative | **Possible, priorité conditionnelle.** Six accès réseau et deux lectures IndexedDB sont déjà indépendants ; la demande passe avant le prefetch. | Ce n’est pas « faible risque » sans garde de mémoire/backpressure. Les relectures chaudes actuelles n’ont pas de réseau critique ; augmenter à 12–16 n’y résout pas le décodage. D’abord un sweep froid 4/6/8/12 sur un transport HTTP/2 réellement vérifié. |
 | 10. Précision du prefetch | **Bonne direction, constat chiffré ancien.** L’expiration à 1 500 ms est corrigée ; le plancher spéculatif passe de 96 à 64 Mio, sur replay à utilité 8–12 %. | Replay : −18,73 % de payload spéculatif, pas une mesure de latence. Avant un score probabiliste, compléter l’attribution de l’utilité aux hits IndexedDB après éviction RAM ; elle est encore partielle. |
@@ -80,11 +83,13 @@ et le PlayCanvas 2.21.4 patché dans `node_modules/playcanvas/build/playcanvas/s
    quatre caches de 1,5 Gio. Comparer copie d’entrée, allocations, latence et
    fidélité byte-for-byte. Rejeter un Worker unique qui élimine une copie mais
    sérialise assez de décodage pour dégrader le temps mur.
-3. **Microbenchmark tiler encode/Zstd 1/2/4** : changement plus local que
-   Morton, qui peut conserver le bundle canonique identique. Writer dans
-   l’ordre, backpressure par octets, cancellation et propagation d’erreur,
-   aucun relâchement de publication atomique/fsync. Mesurer CPU/E/S/RSS avant
-   de modifier V4 ou de lancer des sous-arbres en parallèle.
+3. **Microbenchmark et intégration tiler encode/Zstd 1/2/4 terminés** :
+   préparation parallèle, writer dans l’ordre, backpressure par octets et
+   tâches, cancellation et propagation d’erreur, sans relâcher publication
+   atomique/fsync. Le pilote de constructions complètes et ses limites sont
+   [documentés séparément](../benchmarks/gstile-parallel-preparation-qualification.md).
+   L’option ne change aucun fichier du bundle. Garder un worker par défaut et
+   profiler V4 avant de modifier ses calculs ou ses sous-arbres.
 4. **Prototype tri externe Morton** (priorité producteur 100 M) : runs bornés,
    fusion multi-voies, tie-break source ID, feuilles contiguës et métadonnées
    bottom-up. Tester centres confondus, distributions très déséquilibrées,
