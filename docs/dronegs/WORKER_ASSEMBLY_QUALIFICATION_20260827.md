@@ -117,6 +117,11 @@ All 36 pairs below use the compiled c352fa2 client/Worker, not the prototype.
 | 7,449,455 | 6 | 430.85 | 9.35 | 97.88% | -3.62% |
 | 2,062,926 | 6 | 117.70 | 2.05 | 98.24% | +1.39% |
 
+The main-work counter compares the explicitly timed copy call with `postMessage`
+calls. Candidate-side JavaScript validation, admission bookkeeping and message
+callbacks are not fully included in that counter; total wall time includes them.
+The ~98% result must not be read as a measurement of all UI-thread CPU activity.
+
 These component results support moving the copy away from the UI thread above
 the threshold, not a universal loading speedup. Total wall results vary by run.
 Median per-sample maximum timer gaps (main vs off-thread) were 85.75/55.40 ms,
