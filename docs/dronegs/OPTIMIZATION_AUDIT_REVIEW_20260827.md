@@ -64,9 +64,13 @@ et le PlayCanvas 2.21.4 patché dans `node_modules/playcanvas/build/playcanvas/s
 
 ## Ordre d’implémentation proposé, avec portes de décision
 
-1. **Terminer le pilote RAM** : latence après geste, hits RAM/IndexedDB,
-   long tasks et pics mémoire. Ne généraliser 1,5 Gio qu’après qualification
-   de mémoire totale et d’autres appareils. Aucun gain encore revendiqué.
+1. **Pilote RAM terminé et visuel confirmé** : réduction de latence après geste
+   de 13,24–21,47 % sur deux paires AB/BA, mais +44,01 % de réseau pendant les
+   trois gestes. Livraison opt-in autorisée par l'utilisateur ; mémoire totale
+   explicitement retirée des prérequis de merge, pas déclarée qualifiée.
+   Avant le chantier Worker, plafonner le halo de mouvement périmé : les budgets
+   156/126/109 Mio restent financés par une utilité historique, sans nouvelles
+   consommations utiles dans les phases mesurées. Garder 768 Mio par défaut.
 2. **Prototype de propriété cache/décodage Worker** : commencer sur des packs
    et un trace replay figés. Protocole explicite pour lecture, pinning, annulation,
    éviction, retour de buffers et panne Worker. Garder un budget global, pas

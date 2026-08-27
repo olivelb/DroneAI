@@ -28,8 +28,8 @@ cover both pools, not just network contention.
 `cacheProtectedBytes` and `prefetchCacheAdmissionRejections` make the policy
 observable. SHA verification, immutable range keys, the IndexedDB schema and
 2 GiB production cache ceiling, Zstd transport, final cut selection, and GPU
-data are unchanged. See the [component and camera-path qualification,
-with the remaining process-memory gate](../benchmarks/gstile-cache-isolation-qualification.md).
+data are unchanged. See the [component and camera-path qualification
+and delivery decision](../benchmarks/gstile-cache-isolation-qualification.md).
 
 Camera prediction expires when its last motion sample is one prediction
 horizon old (1,500 ms currently), even if no new input arrives. The backend
@@ -49,7 +49,7 @@ traffic, not a measured browser speedup. The same evidence motivates a separate
 The default remains 768 MiB; the explicit `gstileMemoryCache=desktop` query
 selects a bounded 1,536 MiB profile, without eager allocation. Unknown values
 fall back to the standard profile. See the
-[manual RAM pilot and remaining gates](../benchmarks/gstile-memory-profile-qualification.md) and
+[completed RAM pilot and documented network tradeoff](../benchmarks/gstile-memory-profile-qualification.md) and
 [budget replay and memory-cache analysis](../benchmarks/gstile-prefetch-budget-qualification.md).
 
 ## Decisions

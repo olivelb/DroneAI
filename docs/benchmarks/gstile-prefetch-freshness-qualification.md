@@ -113,8 +113,11 @@ modified utility feedback, IndexedDB latency, GPU execution or browser memory.
 
 ## Delivery limits
 
-This phase remains separate from draft PR #277 and inherits its unresolved
-Chrome process-memory gate. There is no new visual approval for this revision,
-no universal speedup claim, no server restart, no production activation, no
-cache reset and no dataset deletion. All earlier accepted and failed runs are
-retained. Rollback is a code revert with no migration.
+This phase remains separate from PR #277. The later
+[complete RAM cohort](gstile-memory-profile-qualification.md) includes this
+correction in both arms and received operator visual approval on 2026-08-27;
+it cannot isolate the correction's individual speedup. The user retired total
+Chrome process-memory testing as a merge prerequisite and authorized delivery
+with green CI. No universal speedup or total-memory qualification is claimed.
+All earlier accepted and failed runs are retained; no caches or datasets were
+deleted. Rollback is a code revert with no migration.
