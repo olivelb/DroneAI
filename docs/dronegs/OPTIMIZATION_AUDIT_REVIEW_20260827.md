@@ -12,6 +12,10 @@ L'essai suivant de réutilisation des temporaires des coûts V4 est **rejeté** 
 1,83 % de gain médian, sous son seuil fixé à 3 %, sans baisse du RSS observé.
 Le runtime a été restauré ; [preuves et contrats](../benchmarks/gstile-v4-costs-qualification.md)
 sont conservés. Ce résultat ne remet pas en cause le gain du matcher précédent.
+L'expérience distincte de **distances par blocs de 4 096 arêtes est qualifiée** :
+29,741 → 28,158 s, soit 5,32 % de temps médian en moins sur le pilote synthétique
+1 M, quatre paires plus rapides et 630 fichiers identiques. Pas de baisse du
+RSS global observée ; [protocole et résultats](../benchmarks/gstile-v4-blocked-costs-qualification.md).
 
 ## Conclusion
 
@@ -22,7 +26,7 @@ chiffres précèdent les optimisations récentes. Aucune accélération annoncé
 ci-dessous n’est acquise sans benchmark. La conformité au PLY reste requise,
 y compris quand on change le pipeline de rendu.
 
-Le travail livré maintenant est le
+Le premier travail livré pour cet audit est le
 [profil RAM 768/1 536 Mio et son comparatif manuel](../benchmarks/gstile-memory-profile-qualification.md).
 L’ordre proposé ci-dessous privilégie ensuite les déplacements interactifs
 observés ; pour un objectif producteur 100 M, le tri externe remonte en tête.
@@ -37,7 +41,7 @@ observés ; pour un objectif producteur 100 M, le tri externe remonte en tête.
 | 4. Q96 GPU decode/scatter | **Projet distinct**, non réfuté par l’essai négatif `writeTexture`. La sortie native actuelle vaut environ 172 octets/splat, l’entrée Q96 96. | Potentiel élevé, risque élevé. Le rapport 96/172 n’est ni un speedup garanti ni une mesure exacte des octets GPU actuels. Vérifier formats storage, limites de bindings, arrondis/half/quaternions et synchronisation des slots. |
 | 5. Transport transposé + Zstd | **À mesurer.** Q96 est AoS ; grouper les colonnes peut aider la compression. Le ratio de 13,1 % cité provient d’un ancien lot de prefetch, pas du corpus entier ni du dernier parcours. | Commencer par une transformation réversible hors ligne, sans changer le contrat canonique. Des entiers Q96 transposés ne sont pas directement les textures natives PlayCanvas : conversion et packing restent nécessaires. |
 | 6. Source IDs en sidecar | **Arithmétique confirmée** : 8/96 = 8,33 % bruts. `decode.ts` conserve un décodeur scientifique avec IDs, mais les streams renderer les omettent. | C’est un nouveau contrat, pas un champ à supprimer du Q96 v1. Préserver identité, intégrité, reconstruction et usages d’interaction. Les IDs ne sont pas nécessairement monotones après tri spatial ; mesurer delta/varint au lieu de promettre un sidecar minuscule. |
-| 7. Encode/V4/Zstd parallèles | **Préparation des packs implémentée en option** : Q96 et, hors agrégation, SHA/Zstd en pool 2/4 workers. File bornée en octets/tâches, writer unique ordonné. Avec agrégation, compression dans le writer ; `_visit_branch` et V4 restent séquentiels. Le profilage V4 a mené à un suivi direct des paires, sans union-find ni changement des fusions. | Défaut workers conservé à 1. Qualifications des [packs](../benchmarks/gstile-parallel-preparation-qualification.md) et du [matcher V4](../benchmarks/gstile-v4-pairs-qualification.md) séparées. Les gains ne s'additionnent pas ; aucun gain de parallélisme des sous-arbres n'est démontré. |
+| 7. Encode/V4/Zstd parallèles | **Préparation des packs implémentée en option** : Q96 et, hors agrégation, SHA/Zstd en pool 2/4 workers. File bornée en octets/tâches, writer unique ordonné. Avec agrégation, compression dans le writer ; `_visit_branch` et V4 restent séquentiels. Le profilage V4 a mené à un suivi direct des paires, puis aux distances par blocs, sans changement des fusions. | Défaut workers conservé à 1. Qualifications des [packs](../benchmarks/gstile-parallel-preparation-qualification.md), du [matcher V4](../benchmarks/gstile-v4-pairs-qualification.md) et des [distances V4](../benchmarks/gstile-v4-blocked-costs-qualification.md) séparées. Les gains ne s'additionnent pas ; aucun gain de parallélisme des sous-arbres n'est démontré. |
 | 8. Agrégation directe 2 Mio | **Déjà implémentée.** `pack_tile` regroupe par `(kind, depth)` lors du parcours spatial, `pack_target_bytes` est exposé par le CLI ; `_enforce_aggregate_memory_bound` limite les payloads en attente à 256 Mio. Tests de déterminisme, payloads, Zstd et séparation des profondeurs. | Ne pas refaire cette fonctionnalité. Conserver le choix de profil ; l’observation historique 10,257 s contre 12,354 s ne démontre pas un bénéfice universel. Repack reste utile aux anciens bundles immuables. |
 | 9. Concurrence HTTP adaptative | **Possible, priorité conditionnelle.** Six accès réseau et deux lectures IndexedDB sont déjà indépendants ; la demande passe avant le prefetch. | Ce n’est pas « faible risque » sans garde de mémoire/backpressure. Les relectures chaudes actuelles n’ont pas de réseau critique ; augmenter à 12–16 n’y résout pas le décodage. D’abord un sweep froid 4/6/8/12 sur un transport HTTP/2 réellement vérifié. |
 | 10. Précision du prefetch | **Bonne direction, constat chiffré ancien.** L’expiration à 1 500 ms est corrigée ; le plancher spéculatif passe de 96 à 64 Mio, sur replay à utilité 8–12 %. | Replay : −18,73 % de payload spéculatif, pas une mesure de latence. Avant un score probabiliste, compléter l’attribution de l’utilité aux hits IndexedDB après éviction RAM ; elle est encore partielle. |
@@ -103,6 +107,12 @@ et le PlayCanvas 2.21.4 patché dans `node_modules/playcanvas/build/playcanvas/s
    identiques, mais les quatre paires AB/BA n'atteignent pas le seuil médian
    déclaré. Pas de modification de production livrée pour cet essai ; garder
    ses tests numériques pour une prochaine expérience distincte.
+   **Distances V4 par blocs : expérience suivante retenue.** Quatre termes
+   multi-colonnes calculés par blocs de 4 096, normes d'échelle pré-calculées,
+   normalisations globales et ordre numérique conservés. Dix constructions
+   exactes et 5,32 % de gain médian, au-dessus du seuil figé de 3 % ; voir la
+   [qualification](../benchmarks/gstile-v4-blocked-costs-qualification.md).
+   Aucun gain global de RSS ni extrapolation au vrai Saint-Étienne 50 M.
 4. **Prototype tri externe Morton** (priorité producteur 100 M) : runs bornés,
    fusion multi-voies, tie-break source ID, feuilles contiguës et métadonnées
    bottom-up. Tester centres confondus, distributions très déséquilibrées,

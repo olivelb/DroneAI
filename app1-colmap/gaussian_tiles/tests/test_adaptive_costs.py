@@ -1,4 +1,4 @@
-"""Bit-exact edge costs against the expression used before scratch reuse."""
+"""Bit-exact edge costs against the original, unblocked scoring expression."""
 from __future__ import annotations
 
 import sys
@@ -79,6 +79,56 @@ def test_cost_and_candidate_order_are_bit_exact(width, neighbors, mode):
             assert a.shape == b.shape
             assert a.tobytes() == b.tobytes()
         assert records.tobytes() == before
+
+
+@pytest.mark.parametrize("width", [1, 3, 8, 15])
+@pytest.mark.parametrize("layout", ["C", "F", "strided"])
+@pytest.mark.parametrize("mean", [False, True])
+def test_blocked_reduction_preserves_exact_bytes_and_inputs(width, layout, mean):
+    rng = np.random.default_rng(31)
+    values = rng.normal(size=(137, width))
+    if layout == "F":
+        values = np.asfortranarray(values)
+    elif layout == "strided":
+        values = rng.normal(size=(274, 2 * width))[::2, ::2]
+    values[0] = -0.0
+    values.flags.writeable = False
+    before = values.tobytes()
+    for count in (0, 1, 4095, 4096, 4097, 8193):
+        left = rng.integers(0, len(values), size=count, dtype=np.intp)
+        right = rng.integers(0, len(values), size=count, dtype=np.intp)
+        right[::7] = left[::7]  # Self/repeated endpoints across partial blocks.
+        left.flags.writeable = right.flags.writeable = False
+        endpoints = left.tobytes(), right.tobytes()
+        squared = np.square(values[left] - values[right])
+        expected = np.mean(squared, axis=1) if mean else np.sum(squared, axis=1)
+        actual = tiler._squared_edge_distances(values, left, right, mean=mean)
+        assert actual.dtype == np.float64
+        assert actual.shape == (count,)
+        assert actual.tobytes() == expected.tobytes()
+        assert not np.shares_memory(actual, values)
+        assert values.tobytes() == before
+        assert (left.tobytes(), right.tobytes()) == endpoints
+
+
+def test_edge_scratch_is_bounded_and_owned(monkeypatch):
+    values = np.arange(150, dtype=np.float64).reshape(10, 15)
+    left = np.arange(8193) % 10
+    right = (left + 1) % 10
+    subtract = np.subtract
+    shapes = []
+
+    def checked_subtract(a, b, *, out):
+        shapes.append(a.shape)
+        assert a.shape == b.shape
+        assert out is a
+        assert not np.shares_memory(a, values)
+        assert not np.shares_memory(b, values)
+        return subtract(a, b, out=out)
+
+    monkeypatch.setattr(tiler.np, "subtract", checked_subtract)
+    tiler._squared_edge_distances(values, left, right)
+    assert shapes == [(4096, 15), (4096, 15), (1, 15)]
 
 
 def test_large_cost_arrays_preserve_exact_bytes():

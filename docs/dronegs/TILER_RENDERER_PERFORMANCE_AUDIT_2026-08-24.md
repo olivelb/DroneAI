@@ -295,6 +295,16 @@ gain médian 1,83 %, inférieur au seuil préannoncé de 3 %, malgré une parit�
 complète. Le code de production est restauré ; seuls les contrats numériques
 et le [résultat négatif](../benchmarks/gstile-v4-costs-qualification.md) sont conservés.
 
+L'expérience suivante, distincte, de distances par blocs de 4 096 arêtes est
+**retenue** : 29,741 → 28,158 s sur les constructions complètes du pilote
+synthétique 1 M, soit 5,32 % de temps médian en moins. Quatre paires plus
+rapides, 630 fichiers identiques, coûts et fusions inchangés. Les normalisations
+restent globales, la mémoire de travail matricielle est bornée mais aucun gain
+de RSS total n'est démontré. Voir la
+[qualification des distances V4](../benchmarks/gstile-v4-blocked-costs-qualification.md).
+Ce n'est pas une mesure du vrai Saint-Étienne 50 M ni un gain à additionner aux
+lots précédents. Renderer et format inchangés.
+
 ### 10. Opacité directionnelle évaluée par frame sans réupload global — impact moyen à élevé
 
 Déplacer la dépendance caméra du work-buffer vers le vertex/compute shader de
