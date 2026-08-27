@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import {cameraState,interpolatePose,numericDelta} from './camera.mjs';
+const a={target:[0,0,0],distance:5},b={target:[2,4,6],distance:9};
+assert.deepEqual(interpolatePose(a,b,0),a);assert.deepEqual(interpolatePose(a,b,1),b);
+assert.deepEqual(interpolatePose(a,b,.5),{target:[1,2,3],distance:7});
+assert.throws(()=>interpolatePose(a,b,NaN));assert.throws(()=>interpolatePose(a,b,2));
+const c=cameraState(a,{up:[0,1,0],outward:[0,0,1]},{width:1200,height:675,fov:42});
+assert.deepEqual([...c.view].map(x=>x===0?0:x),[1,0,0,0,0,1,0,0,0,0,1,0,0,0,-5,1]);
+assert(Math.abs(c.projection[5]-1/Math.tan(21*Math.PI/180))<1e-10);
+assert.deepEqual(numericDelta({hits:2,bytes:5},{hits:5,bytes:9}),{hits:3,bytes:4});
+assert.throws(()=>cameraState({...a,distance:-1},{up:[0,1,0],outward:[0,0,1]},{fov:42}));
+console.log('Camera interpolation/view and counter contracts pass');

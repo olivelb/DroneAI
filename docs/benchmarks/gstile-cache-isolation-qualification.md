@@ -2,7 +2,9 @@
 
 Date: 2026-08-27. Status: code, real-browser component checks, operator
 visual acceptance and the complete compressed/persistent camera pilot pass.
-Total process peak-memory qualification remains pending; PR #277 stays draft.
+Total process peak memory remains unmeasured, but the user explicitly removed
+it as a merge prerequisite on 2026-08-27. Delivery is authorized with green CI;
+see the [completed RAM cohort and acceptance decision](gstile-memory-profile-qualification.md).
 
 ## Findings and implementation
 
@@ -242,7 +244,7 @@ tasks is established. The remaining prefetch traffic and persistent write
 path are follow-up hypotheses, not evidence that the network alone remains
 the readiness bottleneck.
 
-### Memory evidence and unchanged rollout gate
+### Memory evidence and revised delivery gate
 
 | Measured arm | Sampled cache peak, bytes | Engine logical GPU peak, bytes | Pending write peak |
 | --- | ---: | ---: | ---: |
@@ -269,12 +271,11 @@ the measured-pair values alone do not establish a universal queue bound.
 No OS process-memory trace was recorded for this manually launched cohort.
 The earlier failed cohort's Chrome aggregate cannot be substituted, and a
 post-run snapshot cannot recover a missing peak. Consequently
-`fullProcessPeakQualified` remains false. The performance pilot is accepted,
-but PR #277 remains draft with **no merge or production rollout** until a
-separate predeclared memory qualification is complete. It must attribute
-memory to the tested process tree (or use a dedicated browser process tree),
-retain baseline/candidate raw samples and cover transient overlapping work.
-No additional visual acceptance is needed for this unchanged code.
+`fullProcessPeakQualified` remains false. The performance pilot is accepted.
+The original process-memory delivery gate was explicitly retired by the user
+on 2026-08-27, not passed. This phase may be merged with green required CI.
+The later RAM cohort also received operator visual approval. No claim of total
+process-memory safety across devices follows from these measurements.
 
 ### Successful-cohort evidence
 

@@ -1,0 +1,12 @@
+<!doctype html><html lang="fr"><meta charset="utf-8"><title>GSTile — cache RAM, série stabilisée</title>
+<style>body{margin:12px;background:#172323;color:#eef;font:14px system-ui}button{padding:12px}canvas{width:1200px;height:675px;display:block}pre{white-space:pre-wrap;overflow-wrap:anywhere}#status{margin:12px}</style>
+<script type="importmap">{"imports":{"playcanvas":"/engine-source/index.js"}}</script>
+<h2>GSTile — cache RAM 768 / 1536 Mio</h2>
+<p>Même code, seul le plafond RAM change. Porte → façade → porte → façade.</p>
+<p>Nouvelle série complète : deux chauffes puis deux paires AB/BA. Zstd et IndexedDB actifs. Garder Chrome au premier plan pendant environ 6 minutes. Le premier clic lance les six passages ; ne pas changer d’onglet ensuite.</p>
+<p>Stabilisation fixe de 5 secondes avant chaque contrôle de cadence, avant et après chaque passage. Seuils inchangés. L’ancien essai interrompu est conservé séparément.</p>
+<p>Rien ne démarre avant votre clic. La conformité visuelle et la mémoire totale du navigateur restent à qualifier.</p>
+<button id="start">Démarrer ce passage</button><p id="status">Préparation</p>
+<canvas id="viewer" width="1200" height="675"></canvas>
+<pre id="summary"></pre><details><summary>Données brutes</summary><pre id="result"></pre></details>
+<script type="module" src="/harness.mjs"></script></html>

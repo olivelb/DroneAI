@@ -109,8 +109,9 @@ decoding or GPU work and does not increase VRAM deliberately.
 
 The RAM cap is **not changed by this phase**. Do not infer permission to raise
 all browsers' memory allocation from this desktop-specific investigation.
-The existing process-memory qualification remains open. A bounded desktop
-profile should be qualified separately before making it a default.
+Total process memory remains unmeasured, but is no longer a merge prerequisite
+under the user's explicit 2026-08-27 decision. The subsequently measured desktop
+profile remains opt-in; see the [RAM pilot](gstile-memory-profile-qualification.md).
 
 ## Verification and remaining limits
 
@@ -130,7 +131,9 @@ promotion, not later persistent hits whose RAM marker was evicted. That
 existing limitation is unchanged. On other paths, a lower floor could defer
 useful prefetch and increase later demand latency; lower speculative traffic
 alone cannot establish an end-to-end improvement. Browser/GPU latency,
-cold-start feedback and process-memory qualification remain open.
+cold-start feedback and process memory are not established by this replay.
+The later RAM cohort includes the floor change in both arms and received visual
+approval; it cannot attribute an individual speedup to this phase.
 
 Reproduce with Node 24+ and an unused output path:
 
