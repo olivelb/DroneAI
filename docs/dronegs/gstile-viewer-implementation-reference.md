@@ -87,6 +87,11 @@ thresholds; unsupported WebGPU produces an actionable fallback.
 Implementation status:
 
 - strict manifest/range/pack decoders, SHA-256 and CRC32 validation are present;
+- range GET recovery is bounded to two retries per representation for network
+  failures and transient HTTP statuses; backoff releases the scheduler slot,
+  honors cancellation and short `Retry-After`, and preserves raw Zstd fallback.
+  Protocol/length corruption is not retried. See the
+  [2026-08-27 audit disposition](AUDIT_20260827.md) for policy and test evidence;
 - the 96-byte record is expanded to the PLY property convention expected by
   PlayCanvas without changing coefficient order;
 - four RGBA32F resource streams preserve the base logit and all 15 opacity-SH

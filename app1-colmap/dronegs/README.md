@@ -7,6 +7,12 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
+Version `0.5.0-dev.66` also makes opacity-SH gradient and Adam storage conditional:
+the scalar path saves 180 device bytes per allocated Gaussian slot (257.5 MiB
+at 1.5 million slots). The Gaussian ABI and checkpoint V4/V5 wire layouts stay
+unchanged, including split/compaction and resume. This is a storage optimization,
+not a change to the training objective or a new scientific qualification.
+
 Version `0.5.0-dev.65` makes view-dependent opacity SH an explicit opt-in.
 The default scalar-opacity path skips opacity-SH forward evaluation, backward
 gradients, and Adam lanes while retaining color SH and the scalar opacity

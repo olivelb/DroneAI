@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchGsTileRange, GsTileRangeScheduler } from "./range-source";
+import { gstileAdaptivePrefetchBudget } from "./lod-prefetch";
 
 describe("GSTile range source", () => {
   afterEach(() => {
@@ -704,6 +705,17 @@ describe("GSTile range source", () => {
       undefined,
       "sha256:predicted",
     );
+
+    // A promotion is not delivered work yet: the budget requires useful <= completed.
+    expect(scheduler.statistics()).toMatchObject({
+      priorityPromotions: 1,
+      prefetchCompletedBytes: 0,
+      prefetchUsefulBytes: 0,
+    });
+    expect(() => gstileAdaptivePrefetchBudget(
+      scheduler.statistics().prefetchCompletedBytes,
+      scheduler.statistics().prefetchUsefulBytes,
+    )).not.toThrow();
 
     releaseActive();
     const [predictedContent, visibleContent] = await Promise.all([

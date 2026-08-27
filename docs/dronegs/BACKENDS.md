@@ -22,7 +22,7 @@ instead of silently choosing a fallback.
 - structural FastGS buckets/checkpoints and warp-cooperative backward;
 - bounded spatial pruning and in-place slot recycling;
 - progressive SH activation every 1,000 steps;
-- color SH plus opacity-SH-v1 residuals on the same progressive schedule;
+- color SH with scalar opacity (opacity-SH-v1 is opt-in and selects `custom`);
 - a 1,000-step fixed-topology cooldown;
 - a 1,000-step objective ramp ending at 100% active-pixel MSE;
 - 15,000 steps, 1.5 million splats, resize factor 4 and seed 42.
@@ -46,12 +46,19 @@ remain downstream of this boundary.
 
 ## Recovery contract
 
-By default, DroneGS atomically replaces `training.ckpt` every 2,000 steps.
+The platform Production V1 recipe atomically replaces `training.ckpt` every
+7,500 steps for its 15,000-step budget. Other platform budgets limit intermediate
+checkpoints to one/two/three according to run duration. The standalone native
+CLI defaults to `--checkpoint-every 0` (disabled); it is not the platform policy.
 Checkpoint format V5 retains V4 checksum/fsync/atomic publication and adds
 initial pixel-weighted PSNR/SSIM metadata. V4 remains readable and carries
 the opacity-SH Adam moments. V1-V3 checkpoints are rejected because their raw
 Gaussian layout is not resume-compatible; a retained final PLY can still be
 used as `--initial-ply`.
+With opacity-SH disabled, dev.66 does not allocate its device gradients or Adam
+moments. V4/V5 retain their wire layout: inactive moments are serialized as zeros
+on the host and consumed without device allocation on restore. This saves
+180 bytes per allocated Gaussian slot; the Gaussian AoS and PLY layout do not change.
 The checkpoint contains:
 
 - all Gaussian parameters, including opacity-SH-v1 residuals;
@@ -99,6 +106,12 @@ record training, held-out and ignored counts. This is not silently substituted
 into production V1 because doing so would invalidate the accepted dev.45
 metric baseline. ALBAGNAC and SAVERES comparison runs remain the gate for a
 future immutable V2 threshold.
+
+Seeded schedules and checkpoint parity are not a cross-GPU bitwise guarantee.
+Floating-point atomics and CUDA fast math can change accumulation order or
+rounding across architectures, potentially changing topology near a threshold.
+Promotion requires the exact source/binary identity, frozen dataset/profile,
+target GPU and rendered quality metrics; historical gates do not qualify a new HEAD.
 
 ## Source safety
 
