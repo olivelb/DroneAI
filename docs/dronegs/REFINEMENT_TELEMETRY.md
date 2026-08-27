@@ -68,7 +68,17 @@ Gaussian gather/D2D submission joins moment compaction in `device_submit_seconds
 Without the former Gaussian H2D operation, its implicit wait may move to a
 later API call or the benchmark-only completion fence. Phase times are still
 host-wall measurements, not independent GPU timings; use fenced benchmark
-wall time for comparisons. Snapshot/split payloads and the descriptor are unchanged.
+wall time for comparisons. Snapshot/split payloads and the descriptor are unchanged
+in that version.
+
+From dev.70, `host_prepare_seconds` allocates a 32-byte transient pruning record
+instead of the 296-byte Gaussian AoS, plus the same five statistic arrays.
+`snapshot_download_seconds` includes GPU projection into borrowed gradient scratch
+and the synchronous chunked D2H copies, followed by the five statistic downloads.
+Its logical payload becomes `N * (32 + 5 * 4)` bytes. The 32 bytes contain xyz,
+log-scale, opacity and an exact opacity-SH finiteness flag. No format, field name,
+timing descriptor, compaction or split payload changes. Kernel work is deliberately
+included in this host-wall phase; the descriptor never promised pure PCIe time.
 
 The strict optional object is defined in
 [trainer-run-v1.schema.json](contracts/trainer-run-v1.schema.json). The schema

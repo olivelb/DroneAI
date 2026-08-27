@@ -202,6 +202,7 @@ double reference_objective(
 }  // namespace
 
 void test_topology_device_compaction();
+void test_topology_pruning_snapshot();
 
 int main() {
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -209,6 +210,7 @@ int main() {
                       ("dronegs-training-test-" + std::to_string(suffix));
     try {
         test_topology_device_compaction();
+        test_topology_pruning_snapshot();
         std::filesystem::create_directories(root / "images");
         write_solid_jpeg(root / "images" / "frame.jpg");
         const auto full_decode = dronegs::load_training_image(
@@ -1349,7 +1351,7 @@ int main() {
                 "topology statistics did not reset after refinement");
         }
         if (empty_telemetry.measured_calls != 1U ||
-            empty_telemetry.snapshot_download_bytes != 2U * (sizeof(dronegs::Gaussian) + 5U * sizeof(float)) ||
+            empty_telemetry.snapshot_download_bytes != 2U * (32U + 5U * sizeof(float)) ||
             empty_telemetry.compaction_download_bytes != 0U ||
             empty_telemetry.compaction_upload_bytes != 0U ||
             empty_telemetry.split_upload_bytes != 0U ||
@@ -1617,7 +1619,7 @@ int main() {
             dronegs::TopologyRefinementTelemetry telemetry;
             const auto refinement = source.refine_topology(0.0F, 1.0F, 7U, true, &telemetry);
             if (telemetry.measured_calls != 1U ||
-                telemetry.snapshot_download_bytes != 2U * (sizeof(dronegs::Gaussian) + 5U * sizeof(float)) ||
+                telemetry.snapshot_download_bytes != 2U * (32U + 5U * sizeof(float)) ||
                 telemetry.compaction_download_bytes != 0U ||
                 telemetry.compaction_upload_bytes != sizeof(std::uint32_t) ||
                 telemetry.split_upload_bytes != refinement.added * 2U * sizeof(std::uint32_t) ||

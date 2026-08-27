@@ -2,6 +2,18 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.70 - Compact pruning snapshot
+
+- Download only a 32-byte transient pruning record per Gaussian instead of
+  the full 296-byte AoS. Preserve position, log-scale and opacity bits; classify
+  all opacity-SH coefficients with exact integer exponent checks on device.
+- Keep percentile, scale, opacity, spatial and survivor decisions on the CPU.
+  Borrow existing gradient scratch, processing at most 16 MiB per chunk.
+- Reduce snapshot payload from 316 to 52 bytes per input including statistics;
+  preserve Gaussian/PLY/checkpoint layouts and all training/rendering policies.
+- Add bitwise projection and finiteness CPU oracles, exceptional values in
+  every opacity-SH lane, chunk/guard/source-preservation and transfer contracts.
+
 ## 0.5.0-dev.69 - Device-side Gaussian compaction
 
 - Extend stable GPU compaction to Gaussian records, avoiding a second full

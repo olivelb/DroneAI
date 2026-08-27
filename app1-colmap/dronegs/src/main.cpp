@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.69 device-gaussian-compaction "
+            << "DroneGS 0.5.0-dev.70 compact-pruning-snapshot "
                "crop-aware-scale portable-CUDA "
                "shared-backward MRNF prototype\n";
         return 0;
@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.69 uses an independent "
+        std::cerr << "DroneGS 0.5.0-dev.70 uses an independent "
                      "bounded/FastGS raster profile plus compensated-antialias "
                      "AbsGrad-guided "
                      "extended-color crop-aware local/projected-KNN "

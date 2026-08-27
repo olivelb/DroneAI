@@ -7,6 +7,13 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
+Version `0.5.0-dev.70` downloads a compact 32-byte pruning snapshot instead of
+the full 296-byte Gaussian. Positions, log-scales and scalar opacity retain their
+bits; all opacity-SH coefficients retain the same finiteness decision through
+integer exponent inspection. Snapshot plus five statistics uses 52 bytes per
+Gaussian, down from 316, with no new device allocation. Percentiles and all
+pruning/scoring/splitting equations still run unchanged on their existing paths.
+
 Version `0.5.0-dev.69` also compacts Gaussian data directly on the GPU, using
 the same stable chunked gather and existing scratch. CPU scoring statistics
 are gathered in place; no second Gaussian host vector or Gaussian H2D upload

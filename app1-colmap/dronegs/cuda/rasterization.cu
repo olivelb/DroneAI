@@ -55,6 +55,7 @@
 #include "dronegs/rasterization.hpp"
 #include "dronegs/ordered_training.hpp"
 #include "topology_compaction.cuh"
+#include "topology_snapshot.cuh"
 
 #include <cub/cub.cuh>
 #include <cuda_runtime.h>
@@ -6043,15 +6044,19 @@ struct OrderedAlphaTrainingContext::Impl {
         const auto previous_count = gaussian_count;
         const float absgrad_score_weight =
             mrnf_absgrad_score_weight(optimizer_profile);
-        std::vector<Gaussian> host_gaussians(previous_count);
+        std::vector<detail::PruningSnapshot> host_pruning(previous_count);
         std::vector<float> host_weights(previous_count);
         std::vector<float> host_visibility(previous_count);
         std::vector<float> host_edge_weights(previous_count);
         std::vector<float> host_absgrad_sum(previous_count);
         std::vector<float> host_absgrad_count(previous_count);
         timer.finish(&TopologyRefinementTelemetry::host_prepare_seconds);
-        gaussians.copy_to_host(
-            host_gaussians.data(), previous_count);
+        // Pack only pruning inputs after prior Adam work in the same stream.
+        // Borrow disposable gradients; bounded backward clears them before use.
+        require_cuda(detail::download_pruning_snapshot(
+            gaussians.data(), previous_count, host_pruning.data(),
+            sh_rest_gradient.data(), sh_rest_gradient.capacity() * sizeof(float)),
+            "download compact Gaussian pruning snapshot");
         refine_weight_max.copy_to_host(
             host_weights.data(), previous_count);
         visibility_count.copy_to_host(
@@ -6064,7 +6069,7 @@ struct OrderedAlphaTrainingContext::Impl {
             host_absgrad_count.data(), previous_count);
         if (telemetry) {
             telemetry->snapshot_download_bytes =
-                previous_count * (sizeof(Gaussian) + 5U * sizeof(float));
+                previous_count * (sizeof(detail::PruningSnapshot) + 5U * sizeof(float));
         }
         timer.finish(&TopologyRefinementTelemetry::snapshot_download_seconds);
 
@@ -6084,7 +6089,7 @@ struct OrderedAlphaTrainingContext::Impl {
         }
         std::vector<float> maximum_scales;
         maximum_scales.reserve(previous_count);
-        for (const auto& gaussian : host_gaussians) {
+        for (const auto& gaussian : host_pruning) {
             for (std::size_t axis = 0U; axis < 3U; ++axis) {
                 if (std::isfinite(gaussian.xyz[axis])) {
                     coordinates_by_axis[axis].push_back(
@@ -6148,7 +6153,7 @@ struct OrderedAlphaTrainingContext::Impl {
         std::size_t pruned_scale_large = 0U;
         std::size_t pruned_spatial = 0U;
         for (std::size_t index = 0U; index < previous_count; ++index) {
-            const auto& gaussian = host_gaussians[index];
+            const auto& gaussian = host_pruning[index];
             bool finite = std::isfinite(gaussian.opacity_logit);
             bool spatial_outlier = false;
             for (std::size_t axis = 0U; axis < 3U; ++axis) {
@@ -6160,9 +6165,7 @@ struct OrderedAlphaTrainingContext::Impl {
                     gaussian.xyz[axis] < lower_bound[axis] ||
                     gaussian.xyz[axis] > upper_bound[axis];
             }
-            for (const float coefficient : gaussian.opacity_sh) {
-                finite = finite && std::isfinite(coefficient);
-            }
+            finite = finite && gaussian.opacity_sh_finite != 0U;
             const float maximum_scale = maximum_scales[index];
             const float minimum_log_scale = std::min({
                 gaussian.log_scale[0],
@@ -6188,12 +6191,12 @@ struct OrderedAlphaTrainingContext::Impl {
         }
         if (survivors.empty()) {
             const auto best = std::max_element(
-                host_gaussians.begin(), host_gaussians.end(),
+                host_pruning.begin(), host_pruning.end(),
                 [](const auto& left, const auto& right) {
                     return left.opacity_logit < right.opacity_logit;
                 });
             const auto best_index = static_cast<std::size_t>(
-                std::distance(host_gaussians.begin(), best));
+                std::distance(host_pruning.begin(), best));
             survivors.push_back(best_index);
             survivor_mask[best_index] = 1U;
         }

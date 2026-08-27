@@ -163,7 +163,10 @@ if(DRONEGS_BUILD_TESTS)
         NAME dronegs_rasterization_cuda_tests
         COMMAND dronegs_rasterization_cuda_tests)
 
-    add_executable(dronegs_training_tests tests/test_training.cu tests/test_topology_compaction.cu)
+    add_executable(dronegs_training_tests tests/test_training.cu tests/test_topology_compaction.cu tests/test_topology_snapshot.cu)
+    # Compile the snapshot oracle's device path with the production kernel flags.
+    set_source_files_properties(tests/test_topology_snapshot.cu PROPERTIES
+        COMPILE_OPTIONS "--expt-relaxed-constexpr;--use_fast_math")
     target_link_libraries(dronegs_training_tests PRIVATE dronegs_cuda)
     set_target_properties(
         dronegs_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
