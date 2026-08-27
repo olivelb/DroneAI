@@ -85,6 +85,20 @@ join before the unchanged bounds/pruning pass. It measures elapsed wall time,
 not the sum of worker CPU times. No additional telemetry fields, device work,
 transfer payload or timing-descriptor change is introduced.
 
+From dev.72, `host_prepare_seconds` acquires reusable per-context snapshot and
+statistic spans. Allocation/initialization occurs only on first use or growth.
+An uninitialized-allocation experiment increased download time and regressed
+fresh contexts, consistent with first-touch costs (not isolated). Allocations keep their
+initialization pass. Combining the five statistic arrays also regressed fresh
+contexts, so the same six-vector layout as the reference is retained.
+Use fenced whole-refinement comparisons, not preparation time alone. The six
+buffers are no longer freed under `other_seconds` on each call. Their retained
+payload is 52 bytes per largest encountered input count, separate from VRAM.
+Other temporary vectors retain their prior lifetime. Descriptor and bytes are
+unchanged; the cache is not checkpointed and is overwritten after restore.
+See [the dev.72 qualification](REUSABLE_REFINEMENT_HOST_DEV72.md) for fenced
+fresh/reused comparisons, full-state parity and the rejected variants.
+
 The strict optional object is defined in
 [trainer-run-v1.schema.json](contracts/trainer-run-v1.schema.json). The schema
 also now accepts existing scalar-opacity and dataset split-count metadata;

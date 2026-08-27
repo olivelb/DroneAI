@@ -72,6 +72,7 @@
 #include <fstream>
 #include <limits>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -4587,7 +4588,8 @@ static double deterministic_gumbel(
     return -std::log(-std::log(uniform));
 }
 
-static float positive_median(std::vector<float> values) {
+static float positive_median(std::span<const float> input) {
+    std::vector<float> values(input.begin(), input.end());
     values.erase(
         std::remove_if(
             values.begin(), values.end(),
@@ -6045,12 +6047,8 @@ struct OrderedAlphaTrainingContext::Impl {
         const auto previous_count = gaussian_count;
         const float absgrad_score_weight =
             mrnf_absgrad_score_weight(optimizer_profile);
-        std::vector<detail::PruningSnapshot> host_pruning(previous_count);
-        std::vector<float> host_weights(previous_count);
-        std::vector<float> host_visibility(previous_count);
-        std::vector<float> host_edge_weights(previous_count);
-        std::vector<float> host_absgrad_sum(previous_count);
-        std::vector<float> host_absgrad_count(previous_count);
+        auto [host_pruning, host_weights, host_visibility, host_edge_weights,
+              host_absgrad_sum, host_absgrad_count] = refinement_host.prepare(previous_count);
         timer.finish(&TopologyRefinementTelemetry::host_prepare_seconds);
         // Pack only pruning inputs after prior Adam work in the same stream.
         // Borrow disposable gradients; bounded backward clears them before use.
@@ -6227,11 +6225,11 @@ struct OrderedAlphaTrainingContext::Impl {
             // Only statistics are needed by CPU scoring below. Survivors are
             // strictly increasing (source[d] >= d), so gather those in place;
             // the Gaussian snapshot is no longer read after pruning.
-            const auto compact_host_statistics = [&](std::vector<float>& values) {
+            const auto compact_host_statistics = [&](std::span<float>& values) {
                 for (std::size_t destination = 0U; destination < survivors.size(); ++destination) {
                     values[destination] = values[survivors[destination]];
                 }
-                values.resize(survivors.size());
+                values = values.first(survivors.size());
             };
             compact_host_statistics(host_weights);
             compact_host_statistics(host_visibility);
@@ -6290,8 +6288,8 @@ struct OrderedAlphaTrainingContext::Impl {
         }
         const float median_edge = positive_median(
             in_place_recycle
-                ? surviving_edge_weights
-                : host_edge_weights);
+                ? std::span<const float>(surviving_edge_weights)
+                : std::span<const float>(host_edge_weights));
         std::vector<float> host_absgrad_average(gaussian_count, 0.0F);
         for (std::size_t index = 0U; index < gaussian_count; ++index) {
             if (in_place_recycle &&
@@ -6495,6 +6493,7 @@ struct OrderedAlphaTrainingContext::Impl {
     float maximum_log_scale = 16.0F;
     float beta_first_power = 1.0F;
     float beta_second_power = 1.0F;
+    detail::RefinementHostWorkspace refinement_host;
     ReusableDeviceAllocation<Gaussian> gaussians;
     ReusableDeviceAllocation<DeviceProjectedRecord> records;
     ReusableDeviceAllocation<float> projected_sh_basis;

@@ -7,6 +7,19 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
+Version `0.5.0-dev.72` reuses per-context host snapshot/statistic storage across
+refinements, including checkpoint restores. New storage is initialized only on
+first use/growth, with the same six-vector layout as the reference. Active spans
+are fully overwritten by completed downloads. The
+cache retains 52 bytes per largest encountered Gaussian count until context
+destruction (260 MB at 5M); growth can temporarily hold old and new allocations.
+Scientific decisions, transfer payloads and checkpoint formats are unchanged.
+Frozen 5M refinement is 13.31% shorter with a reused context on RTX 3090;
+fresh-context timing is unchanged within the observed ranges. This is not a
+full-training or viewer speed claim. See
+[`REUSABLE_REFINEMENT_HOST_DEV72.md`](../../docs/dronegs/REUSABLE_REFINEMENT_HOST_DEV72.md)
+for exact-state validation, rejected allocation experiments and resource limits.
+
 Version `0.5.0-dev.71` computes independent pruning percentiles on at most four
 CPU threads including the caller. Each axis uses the unchanged exact floor-rank
 algorithm; bounds and pruning are applied in the same order. Small populations

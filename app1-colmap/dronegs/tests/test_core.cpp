@@ -1166,6 +1166,7 @@ void test_area_image_resampling() {
 }  // namespace
 
 void test_topology_percentiles();
+void test_refinement_workspace();
 
 int main() {
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -1183,6 +1184,7 @@ int main() {
         test_adaptive_capacity_growth();
         test_exact_floor_percentile();
         test_topology_percentiles();
+        test_refinement_workspace();
         test_image_cache();
         test_training_tiles();
         test_area_image_resampling();
