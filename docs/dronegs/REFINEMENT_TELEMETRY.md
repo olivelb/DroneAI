@@ -24,15 +24,15 @@ selection policy, Gaussian ABI or checkpoint wire format changes.
 | Phase (seconds) | Included work |
 |---|---|
 | `host_prepare` | Initial host-vector allocations/initialization and entry checks |
-| `snapshot_download` | Gaussian AoS and five refinement-statistic arrays D2H |
+| `snapshot_download` | Pruning-input packing/D2H and five statistic arrays; full Gaussian AoS before dev.70 |
 | `cpu_prune` | Bounds/percentiles, pruning, survivor and recycling decisions |
-| `compaction_cpu` | Host allocation, survivor gathering/packing and cleanup between transfers |
-| `compaction_download` | Optimizer/refinement-state D2H during hard compaction |
-| `compaction_upload` | Compacted optimizer/refinement-state and Gaussian H2D |
+| `compaction_cpu` | Survivor indices, in-place CPU statistics and local cleanup; host state gathering in older versions |
+| `compaction_download` | Legacy optimizer/refinement-state D2H; zero from dev.68 |
+| `compaction_upload` | Survivor-index H2D from dev.69; Gaussian/moment uploads in earlier versions |
 | `cpu_score` | Robust score normalization, candidate eligibility and seeded Gumbel keys |
 | `cpu_select` | Partial selection, sorting and parent/child host indices |
 | `split_upload` | Parent and destination index H2D |
-| `device_submit` | Host submission of split/decay/stat-reset operations and local bookkeeping |
+| `device_submit` | Host submission of GPU compaction/split/decay/stat-reset and local bookkeeping; snapshot packing stays in `snapshot_download` |
 | `other` | Residual entry/return and host-vector destruction |
 
 All names have the `_seconds` suffix in JSON. `total_seconds` covers the
@@ -68,7 +68,17 @@ Gaussian gather/D2D submission joins moment compaction in `device_submit_seconds
 Without the former Gaussian H2D operation, its implicit wait may move to a
 later API call or the benchmark-only completion fence. Phase times are still
 host-wall measurements, not independent GPU timings; use fenced benchmark
-wall time for comparisons. Snapshot/split payloads and the descriptor are unchanged.
+wall time for comparisons. Snapshot/split payloads and the descriptor are unchanged
+in that version.
+
+From dev.70, `host_prepare_seconds` allocates a 32-byte transient pruning record
+instead of the 296-byte Gaussian AoS, plus the same five statistic arrays.
+`snapshot_download_seconds` includes GPU projection into borrowed gradient scratch
+and the synchronous chunked D2H copies, followed by the five statistic downloads.
+Its logical payload becomes `N * (32 + 5 * 4)` bytes. The 32 bytes contain xyz,
+log-scale, opacity and an exact opacity-SH finiteness flag. No format, field name,
+timing descriptor, compaction or split payload changes. Kernel work is deliberately
+included in this host-wall phase; the descriptor never promised pure PCIe time.
 
 The strict optional object is defined in
 [trainer-run-v1.schema.json](contracts/trainer-run-v1.schema.json). The schema
