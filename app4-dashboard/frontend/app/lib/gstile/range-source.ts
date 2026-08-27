@@ -1,4 +1,5 @@
 import type { GsTilePersistentCache } from "./persistent-range-cache";
+import { GsTileMemoryRangeCache } from "./memory-range-cache";
 
 export type ByteRange = { start: number; length: number };
 export type GsTileNetworkTransport = {
@@ -17,6 +18,7 @@ export type GsTileRangeAvailabilityRequest = {
 
 export const DEFAULT_GSTILE_MEMORY_CACHE_BYTES = 768 * 1024 * 1024;
 export const DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS = 300;
+export const DEFAULT_GSTILE_PERSISTENT_READ_CONCURRENCY = 2;
 
 export class GsTileRangeError extends Error {
   constructor(message: string) {
@@ -168,6 +170,10 @@ const decompressZstd = async (
 
 export type GsTileRangeSchedulerStatistics = {
   active: number;
+  activeNetwork: number;
+  activePersistent: number;
+  queuedNetwork: number;
+  queuedPersistent: number;
   queued: number;
   queuedCritical: number;
   queuedPrefetch: number;
@@ -184,6 +190,8 @@ export type GsTileRangeSchedulerStatistics = {
   maximumCriticalQueueWaitMilliseconds: number;
   cacheEntries: number;
   cacheBytes: number;
+  cacheProtectedBytes: number;
+  prefetchCacheAdmissionRejections: number;
   cacheHits: number;
   cacheMisses: number;
   inFlightHits: number;
@@ -222,15 +230,19 @@ type QueueEntry = {
   priority: GsTileRangePriority;
 };
 
+type RangeQueue = {
+  maximumConcurrency: number;
+  active: number;
+  entries: QueueEntry[];
+};
+
 export class GsTileRangeScheduler {
-  readonly #maximumConcurrency: number;
-  readonly #maximumCacheBytes: number;
   readonly #orphanGraceMilliseconds: number;
   readonly #persistentCache: GsTilePersistentCache | null;
-  #active = 0;
-  #queue: QueueEntry[] = [];
-  #cache = new Map<string, ArrayBuffer>();
-  #cacheBytes = 0;
+  readonly #network: RangeQueue;
+  readonly #persistent: RangeQueue;
+  readonly #cache: GsTileMemoryRangeCache;
+  #prefetchCacheAdmissionRejections = 0;
   #cacheHits = 0;
   #cacheMisses = 0;
   #inFlightHits = 0;
@@ -267,6 +279,7 @@ export class GsTileRangeScheduler {
     maximumCacheBytes = DEFAULT_GSTILE_MEMORY_CACHE_BYTES,
     orphanGraceMilliseconds = DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS,
     persistentCache: GsTilePersistentCache | null = null,
+    maximumPersistentConcurrency = DEFAULT_GSTILE_PERSISTENT_READ_CONCURRENCY,
   ) {
     if (!Number.isInteger(maximumConcurrency) || maximumConcurrency < 1) {
       throw new Error("GSTile concurrency must be a positive integer");
@@ -280,20 +293,33 @@ export class GsTileRangeScheduler {
     ) {
       throw new Error("GSTile orphan grace must be a non-negative integer");
     }
-    this.#maximumConcurrency = maximumConcurrency;
-    this.#maximumCacheBytes = maximumCacheBytes;
+    if (!Number.isInteger(maximumPersistentConcurrency) || maximumPersistentConcurrency < 1) {
+      throw new Error("GSTile persistent read concurrency must be a positive integer");
+    }
+    this.#network = { maximumConcurrency, active: 0, entries: [] };
+    this.#persistent = {
+      maximumConcurrency: maximumPersistentConcurrency, active: 0, entries: [],
+    };
+    this.#cache = new GsTileMemoryRangeCache(maximumCacheBytes, (key) => {
+      this.#prefetchedMemory.delete(key);
+    });
     this.#orphanGraceMilliseconds = orphanGraceMilliseconds;
     this.#persistentCache = persistentCache;
   }
 
   statistics(): GsTileRangeSchedulerStatistics {
+    const queues = [...this.#network.entries, ...this.#persistent.entries];
     return {
-      active: this.#active,
-      queued: this.#queue.length,
-      queuedCritical: this.#queue.filter(
+      active: this.#network.active + this.#persistent.active,
+      activeNetwork: this.#network.active,
+      activePersistent: this.#persistent.active,
+      queuedNetwork: this.#network.entries.length,
+      queuedPersistent: this.#persistent.entries.length,
+      queued: queues.length,
+      queuedCritical: queues.filter(
         (entry) => entry.priority === "critical",
       ).length,
-      queuedPrefetch: this.#queue.filter(
+      queuedPrefetch: queues.filter(
         (entry) => entry.priority === "prefetch",
       ).length,
       priorityPromotions: this.#priorityPromotions,
@@ -309,7 +335,9 @@ export class GsTileRangeScheduler {
       maximumCriticalQueueWaitMilliseconds:
         this.#maximumCriticalQueueWaitMilliseconds,
       cacheEntries: this.#cache.size,
-      cacheBytes: this.#cacheBytes,
+      cacheBytes: this.#cache.bytes,
+      cacheProtectedBytes: this.#cache.protectedBytes,
+      prefetchCacheAdmissionRejections: this.#prefetchCacheAdmissionRejections,
       cacheHits: this.#cacheHits,
       cacheMisses: this.#cacheMisses,
       inFlightHits: this.#inFlightHits,
@@ -405,10 +433,8 @@ export class GsTileRangeScheduler {
   ) {
     if (signal?.aborted) return Promise.reject(signal.reason);
     const key = this.#rangeKey(url, range, immutableIdentity);
-    const cached = this.#cache.get(key);
+    const cached = this.#cache.get(key, priority);
     if (cached) {
-      this.#cache.delete(key);
-      this.#cache.set(key, cached);
       this.#cacheHits += 1;
       if (priority === "critical" && this.#prefetchedMemory.delete(key)) {
         this.#prefetchUsefulRequests += 1;
@@ -499,7 +525,29 @@ export class GsTileRangeScheduler {
     request: InFlightRange,
     transport?: GsTileNetworkTransport,
   ) {
-    await this.#acquire(signal, request);
+    if (this.#persistentCache && key.startsWith("immutable:")) {
+      await this.#acquire(this.#persistent, signal, request);
+      try {
+        signal.throwIfAborted();
+        const persistent = await this.#persistentCache.read(key, range.length, signal);
+        signal.throwIfAborted();
+        if (persistent) {
+          this.#persistentCacheHits += 1;
+          this.#persistentBuffers.add(persistent);
+          const admitted = this.#putMemory(key, persistent, request.priority);
+          this.#recordPrefetchCompletion(key, request, persistent.byteLength, admitted, "persistent");
+          return persistent;
+        }
+        this.#persistentCacheMisses += 1;
+      } catch (error) {
+        if (signal.aborted) throw error;
+        this.#persistentErrors += 1;
+      } finally {
+        this.#release(this.#persistent);
+      }
+    }
+    // A disk miss releases its read slot before waiting for network capacity.
+    await this.#acquire(this.#network, signal, request);
     let slotHeld = true;
     const fetchWithRetry = async (...args: Parameters<typeof fetchGsTileRange>) => {
       for (let retry = 0; ; retry += 1) {
@@ -519,41 +567,14 @@ export class GsTileRangeScheduler {
           this.#networkRetries += 1;
           // Sleeping prefetches must not occupy a slot needed by visible tiles.
           slotHeld = false;
-          this.#release();
+          this.#release(this.#network);
           await waitForRetry(delay, signal);
-          await this.#acquire(signal, request);
+          await this.#acquire(this.#network, signal, request);
           slotHeld = true;
         }
       }
     };
     try {
-      if (this.#persistentCache && key.startsWith("immutable:")) {
-        try {
-          const persistent = await this.#persistentCache.read(
-            key,
-            range.length,
-            signal,
-          );
-          if (persistent) {
-            signal.throwIfAborted();
-            this.#persistentCacheHits += 1;
-            this.#persistentBuffers.add(persistent);
-            const admitted = this.#putMemory(key, persistent);
-            this.#recordPrefetchCompletion(
-              key,
-              request,
-              persistent.byteLength,
-              admitted,
-              "persistent",
-            );
-            return persistent;
-          }
-          this.#persistentCacheMisses += 1;
-        } catch (error) {
-          if (signal.aborted) throw error;
-          this.#persistentErrors += 1;
-        }
-      }
       const networkRange = transport
         ? { start: 0, length: transport.byteLength }
         : range;
@@ -605,7 +626,7 @@ export class GsTileRangeScheduler {
       if (transport?.encoding === "zstd" || transport?.encoding === "zstd-http") {
         this.#zstdResponses += 1;
       }
-      const admitted = this.#putMemory(key, content);
+      const admitted = this.#putMemory(key, content, request.priority);
       this.#recordPrefetchCompletion(
         key,
         request,
@@ -618,7 +639,7 @@ export class GsTileRangeScheduler {
       );
       return content;
     } finally {
-      if (slotHeld) this.#release();
+      if (slotHeld) this.#release(this.#network);
     }
   }
 
@@ -657,29 +678,10 @@ export class GsTileRangeScheduler {
     }
   }
 
-  #putMemory(key: string, content: ArrayBuffer) {
-    if (content.byteLength > this.#maximumCacheBytes) return false;
-    const existing = this.#cache.get(key);
-    if (existing) {
-      this.#cache.delete(key);
-      this.#prefetchedMemory.delete(key);
-      this.#cacheBytes -= existing.byteLength;
-    }
-    while (
-      this.#cacheBytes + content.byteLength > this.#maximumCacheBytes &&
-      this.#cache.size > 0
-    ) {
-      const oldest = this.#cache.entries().next().value as
-        | [string, ArrayBuffer]
-        | undefined;
-      if (!oldest) break;
-      this.#cache.delete(oldest[0]);
-      this.#prefetchedMemory.delete(oldest[0]);
-      this.#cacheBytes -= oldest[1].byteLength;
-    }
-    this.#cache.set(key, content);
-    this.#cacheBytes += content.byteLength;
-    return true;
+  #putMemory(key: string, content: ArrayBuffer, priority: GsTileRangePriority) {
+    const admitted = this.#cache.put(key, content, priority);
+    if (!admitted && priority === "prefetch") this.#prefetchCacheAdmissionRejections += 1;
+    return admitted;
   }
 
   #subscribe(request: InFlightRange, signal?: AbortSignal) {
@@ -728,22 +730,22 @@ export class GsTileRangeScheduler {
     });
   }
 
-  #enqueue(entry: QueueEntry) {
+  #enqueue(pool: RangeQueue, entry: QueueEntry) {
     if (entry.priority === "prefetch") {
-      this.#queue.push(entry);
+      pool.entries.push(entry);
       return;
     }
-    const firstPrefetch = this.#queue.findIndex(
+    const firstPrefetch = pool.entries.findIndex(
       (candidate) => candidate.priority === "prefetch",
     );
-    if (firstPrefetch < 0) this.#queue.push(entry);
-    else this.#queue.splice(firstPrefetch, 0, entry);
+    if (firstPrefetch < 0) pool.entries.push(entry);
+    else pool.entries.splice(firstPrefetch, 0, entry);
   }
 
-  #acquire(signal: AbortSignal | undefined, request: InFlightRange): Promise<void> {
+  #acquire(pool: RangeQueue, signal: AbortSignal | undefined, request: InFlightRange): Promise<void> {
     if (signal?.aborted) return Promise.reject(signal.reason);
-    if (this.#active < this.#maximumConcurrency) {
-      this.#active += 1;
+    if (pool.active < pool.maximumConcurrency) {
+      pool.active += 1;
       return Promise.resolve();
     }
     return new Promise((resolve, reject) => {
@@ -761,7 +763,7 @@ export class GsTileRangeScheduler {
               queueWaitMilliseconds,
             );
           }
-          this.#active += 1;
+          pool.active += 1;
           resolve();
         },
         reject,
@@ -769,25 +771,25 @@ export class GsTileRangeScheduler {
         priority: request.priority,
       };
       queued.abort = () => {
-        const index = this.#queue.indexOf(queued);
-        if (index >= 0) this.#queue.splice(index, 1);
+        const index = pool.entries.indexOf(queued);
+        if (index >= 0) pool.entries.splice(index, 1);
         request.promote = null;
         reject(signal?.reason);
       };
       request.promote = () => {
-        const index = this.#queue.indexOf(queued);
+        const index = pool.entries.indexOf(queued);
         if (index < 0 || queued.priority === "critical") return;
-        this.#queue.splice(index, 1);
+        pool.entries.splice(index, 1);
         queued.priority = "critical";
-        this.#enqueue(queued);
+        this.#enqueue(pool, queued);
       };
       signal?.addEventListener("abort", queued.abort, { once: true });
-      this.#enqueue(queued);
+      this.#enqueue(pool, queued);
     });
   }
 
-  #release() {
-    this.#active -= 1;
-    this.#queue.shift()?.resume();
+  #release(pool: RangeQueue) {
+    pool.active -= 1;
+    pool.entries.shift()?.resume();
   }
 }
