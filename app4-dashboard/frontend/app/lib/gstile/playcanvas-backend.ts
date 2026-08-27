@@ -951,6 +951,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodPrefetchPlannedBytes = 0;
   #lodPrefetchBudgetBytes = DEFAULT_GSTILE_PREFETCH_BYTES;
   #lodPrefetchBudgetAdaptive = false;
+  #lodPrefetchStaleMotionCap = false;
   #lodPrefetchUtilityRatio: number | null = null;
   #lodPrefetchCompletedNodes = 0;
   #lodPrefetchCompletedBytes = 0;
@@ -1449,6 +1450,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodPrefetchPlannedBytes = 0;
     this.#lodPrefetchBudgetBytes = DEFAULT_GSTILE_PREFETCH_BYTES;
     this.#lodPrefetchBudgetAdaptive = false;
+    this.#lodPrefetchStaleMotionCap = false;
     this.#lodPrefetchUtilityRatio = null;
     this.#lodPrefetchCompletedNodes = 0;
     this.#lodPrefetchCompletedBytes = 0;
@@ -3153,6 +3155,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodPrefetchPlannedBytes = 0;
     this.#lodPrefetchBudgetBytes = DEFAULT_GSTILE_PREFETCH_BYTES;
     this.#lodPrefetchBudgetAdaptive = false;
+    this.#lodPrefetchStaleMotionCap = false;
     this.#lodPrefetchUtilityRatio = null;
     this.#lodPrefetchCompletedNodes = 0;
     this.#lodPrefetchCompletedBytes = 0;
@@ -3272,12 +3275,16 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       0,
     );
     const schedulerStatistics = scheduler.statistics();
+    const motionIsStale = this.#lodPrefetchMotionAgeMs !== null &&
+      this.#lodPrefetchMotionAgeMs >= LOD_PREFETCH_PREDICTION_HORIZON_MILLISECONDS;
     const budget = gstileAdaptivePrefetchBudget(
       schedulerStatistics.prefetchCompletedBytes,
       schedulerStatistics.prefetchUsefulBytes,
+      motionIsStale,
     );
     this.#lodPrefetchBudgetBytes = budget.maximumBytes;
     this.#lodPrefetchBudgetAdaptive = budget.adaptive;
+    this.#lodPrefetchStaleMotionCap = motionIsStale && budget.adaptive;
     this.#lodPrefetchUtilityRatio = budget.utilityRatio;
     const planned = planGsTilePrefetchPacks(
       manifest,
@@ -3562,6 +3569,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         lodPrefetch: {
           budgetBytes: this.#lodPrefetchBudgetBytes,
           budgetAdaptive: this.#lodPrefetchBudgetAdaptive,
+          staleMotionCap: this.#lodPrefetchStaleMotionCap,
           utilityRatio: this.#lodPrefetchUtilityRatio,
           plannedNodes: this.#lodPrefetchPlannedNodes,
           plannedBytes: this.#lodPrefetchPlannedBytes,

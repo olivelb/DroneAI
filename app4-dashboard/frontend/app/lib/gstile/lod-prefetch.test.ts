@@ -150,6 +150,36 @@ describe("GSTile LOD halo prefetch", () => {
   });
 
   it.each([
+    [677_095_008, 137_476_704, 156],
+    [840_339_616, 137_476_704, 126],
+    [972_117_504, 137_476_704, 109],
+    [522_132_960, 60_013_248, 88],
+  ])("caps stale-motion halo after %s completed bytes without changing fresh motion",
+    (completed, useful, freshMiB) => {
+      const fresh = gstileAdaptivePrefetchBudget(completed, useful);
+      expect(fresh.maximumBytes).toBe(freshMiB * 1024 * 1024);
+      expect(gstileAdaptivePrefetchBudget(completed, useful, true)).toEqual({
+        ...fresh, maximumBytes: MINIMUM_GSTILE_PREFETCH_BYTES,
+      });
+      expect(gstileAdaptivePrefetchBudget(completed, useful, false)).toEqual(fresh);
+    },
+  );
+
+  it("keeps cold exploration but ignores historical high utility once motion is stale", () => {
+    const threshold = GSTILE_PREFETCH_UTILITY_SAMPLE_BYTES;
+    expect(gstileAdaptivePrefetchBudget(threshold - 1, threshold - 1, true))
+      .toEqual({ maximumBytes: DEFAULT_GSTILE_PREFETCH_BYTES, adaptive: false, utilityRatio: 1 });
+    expect(gstileAdaptivePrefetchBudget(threshold, threshold, true))
+      .toEqual({ maximumBytes: MINIMUM_GSTILE_PREFETCH_BYTES, adaptive: true, utilityRatio: 1 });
+    expect(gstileAdaptivePrefetchBudget(threshold, threshold, false).maximumBytes)
+      .toBe(DEFAULT_GSTILE_PREFETCH_BYTES);
+  });
+
+  it("still rejects invalid utility counters for stale motion", () => {
+    expect(() => gstileAdaptivePrefetchBudget(128, 129, true)).toThrow(/utility sample/);
+  });
+
+  it.each([
     [526_351_456, 90],
     [620_443_200, 76],
     [700_059_520, 68],
