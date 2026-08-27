@@ -54,6 +54,7 @@
  */
 #include "dronegs/rasterization.hpp"
 #include "dronegs/ordered_training.hpp"
+#include "topology_compaction.cuh"
 
 #include <cub/cub.cuh>
 #include <cuda_runtime.h>
@@ -6240,37 +6241,24 @@ struct OrderedAlphaTrainingContext::Impl {
                 compact_absgrad_count.push_back(
                     host_absgrad_count[source]);
             }
+            // Previous Adam work is complete at the snapshot download above.
+            // SH gradients are either unused (FastGS) or cleared before their
+            // next backward pass; borrow that allocation without growing VRAM.
+            std::vector<std::uint32_t> device_survivors(survivors.begin(), survivors.end());
+            timer.finish(&TopologyRefinementTelemetry::compaction_cpu_seconds);
+            refinement_indices.copy_from_host(device_survivors.data(), device_survivors.size());
+            if (telemetry) {
+                telemetry->compaction_upload_bytes += device_survivors.size() * sizeof(std::uint32_t);
+            }
+            timer.finish(&TopologyRefinementTelemetry::compaction_upload_seconds);
             const auto compact_moments = [&](
                 auto& allocation, std::size_t components) {
-                using value_type = std::remove_cv_t<
-                    std::remove_pointer_t<
-                        decltype(allocation.data())>>;
-                std::vector<value_type> source(
-                    previous_count * components);
-                timer.finish(&TopologyRefinementTelemetry::compaction_cpu_seconds);
-                allocation.copy_to_host(
-                    source.data(), source.size());
-                if (telemetry) {
-                    telemetry->compaction_download_bytes += source.size() * sizeof(value_type);
-                }
-                timer.finish(&TopologyRefinementTelemetry::compaction_download_seconds);
-                std::vector<value_type> compact(
-                    survivors.size() * components);
-                for (std::size_t destination = 0U;
-                     destination < survivors.size(); ++destination) {
-                    std::copy_n(
-                        source.data() +
-                            survivors[destination] * components,
-                        components,
-                        compact.data() + destination * components);
-                }
-                timer.finish(&TopologyRefinementTelemetry::compaction_cpu_seconds);
-                allocation.copy_from_host(
-                    compact.data(), compact.size());
-                if (telemetry) {
-                    telemetry->compaction_upload_bytes += compact.size() * sizeof(value_type);
-                }
-                timer.finish(&TopologyRefinementTelemetry::compaction_upload_seconds);
+                require_cuda(detail::compact_survivor_values(
+                    allocation.data(), previous_count, survivors.size(), components,
+                    refinement_indices.data(), sh_rest_gradient.data(),
+                    sh_rest_gradient.capacity() * sizeof(float)),
+                    "compact persistent optimizer state on device");
+                timer.finish(&TopologyRefinementTelemetry::device_submit_seconds);
             };
             compact_moments(first_dc, 3U);
             compact_moments(second_dc, 3U);

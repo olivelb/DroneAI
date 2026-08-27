@@ -7,6 +7,12 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
+Version `0.5.0-dev.68` compacts Adam/refinement state directly on the GPU.
+It borrows disposable SH-gradient storage, uses at most 16 MiB of that buffer,
+and processes stable survivor chunks in order without extra device allocations.
+Pruning/scoring and Gaussian gathering remain on the CPU; selection equations,
+survivor order, opacity modes and checkpoint layouts remain unchanged.
+
 Version `0.5.0-dev.67` records refinement phase durations and logical CPU/GPU
 transfer bytes in events and the run manifest, without extra GPU synchronization.
 This is invocation-local host-wall telemetry, not CUDA kernel timing. It does

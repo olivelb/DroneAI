@@ -45,12 +45,20 @@ costs. In particular the first download may wait for earlier GPU work.
 `device_submit_seconds` is **not** GPU kernel duration. Do not derive physical
 PCIe bandwidth or sum these measurements as isolated GPU execution times.
 
-Byte counters describe requested logical payload, not physical bus traffic:
+Byte counters describe requested logical payload, not physical bus traffic.
+The following formulas describe the dev.67 baseline:
 
 - Snapshot: `N * (296 + 5 * 4)` bytes.
 - Hard compaction download: `N * 480` bytes with scalar opacity, `N * 600`
   with opacity SH; upload: survivors times `(296 + 480)` or `(296 + 600)`.
 - Split upload: `added * 8` bytes. In-place recycling has no compaction traffic.
+
+From dev.68, hard-compaction moment/statistic downloads disappear. Compaction
+upload becomes `survivors * (296 + 4)` for Gaussian data and survivor indices,
+regardless of opacity mode. GPU gather/D2D submission is counted under
+`device_submit_seconds`; the following pageable Gaussian upload can include a
+wait for that work. Existing field semantics remain host API wall time, not
+isolated kernel time. Snapshot and split formulas are unchanged.
 
 The strict optional object is defined in
 [trainer-run-v1.schema.json](contracts/trainer-run-v1.schema.json). The schema

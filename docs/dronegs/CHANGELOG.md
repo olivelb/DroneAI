@@ -2,6 +2,18 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.68 - Device-side optimizer-state compaction
+
+- Gather stable survivors directly on device for scalar, color-SH and optional
+  opacity-SH Adam moments and refinement statistics, replacing host round trips.
+- Borrow existing SH-gradient storage with a 16 MiB working-set cap; ordered
+  chunks avoid in-place overwrite races without adding device allocations.
+- Preserve CPU pruning, score/selection policy, Gaussian layout and full-state
+  checkpoints. Keep hard compaction separate from existing in-place recycling.
+- Add bitwise CPU-oracle tests for scalar/float2 fields, overlap, tails, bounds,
+  signed zeros/NaN payloads and chunk limits; test bounded/FastGS resume with
+  opacity SH both on and off.
+
 ## 0.5.0-dev.67 - Refinement diagnostics
 
 - Separate host allocation, snapshot download, pruning, moment compaction,
