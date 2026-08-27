@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -94,9 +95,13 @@ Metadata inspect(const std::filesystem::path& path) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 7) {
+        if (argc != 7 && argc != 8) {
             throw std::invalid_argument(
-                "usage: benchmark CHECKPOINT OPACITY_SH(0|1) CAPACITY(0=count) GROW_FRACTION REPEATS NEW_OUTPUT_DIRECTORY");
+                "usage: benchmark CHECKPOINT OPACITY_SH(0|1) CAPACITY(0=count) GROW_FRACTION REPEATS NEW_OUTPUT_DIRECTORY [fresh|reuse]");
+        }
+        const std::string context_mode = argc == 8 ? argv[7] : "fresh";
+        if (context_mode != "fresh" && context_mode != "reuse") {
+            throw std::invalid_argument("context mode must be fresh or reuse");
         }
         const std::filesystem::path checkpoint = argv[1];
         const std::string opacity_arg = argv[2];
@@ -114,13 +119,18 @@ int main(int argc, char** argv) {
         if (!std::filesystem::create_directory(output)) throw std::invalid_argument("output directory exists");
         // Initial placeholder is fully replaced by the verified checkpoint.
         const std::vector<dronegs::Gaussian> initial(1U);
+        std::unique_ptr<dronegs::OrderedAlphaTrainingContext> resident;
         std::cout << std::setprecision(10);
         for (std::uint64_t repeat = 0; repeat <= repeats; ++repeat) {
-            dronegs::OrderedAlphaTrainingContext context(
-                initial, 1U, metadata.maximum_steps, static_cast<std::size_t>(capacity),
-                static_cast<dronegs::MrnfOptimizerProfile>(metadata.profile),
-                metadata.maximum_sh, metadata.sh_interval, metadata.seed,
-                metadata.fastgs, 54.59815F, opacity_arg == "1");
+            if (!resident) {
+                resident = std::make_unique<dronegs::OrderedAlphaTrainingContext>(
+                    initial, 1U, metadata.maximum_steps, static_cast<std::size_t>(capacity),
+                    static_cast<dronegs::MrnfOptimizerProfile>(metadata.profile),
+                    metadata.maximum_sh, metadata.sh_interval, metadata.seed,
+                    metadata.fastgs, 54.59815F, opacity_arg == "1");
+            }
+            auto& context = *resident;
+            // Restore identical complete state even when retaining the context.
             const auto progress = context.load_checkpoint(checkpoint, metadata.dataset, metadata.configuration);
             check(cudaDeviceSynchronize());
             std::size_t free_before = 0, free_after = 0, total = 0;
@@ -132,6 +142,7 @@ int main(int argc, char** argv) {
             const auto wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
             check(cudaMemGetInfo(&free_after, &total));
             std::cout << "{\"event\":\"checkpoint_topology_benchmark\",\"repeat\":" << repeat
+                      << ",\"context_mode\":\"" << context_mode << "\""
                       << ",\"warmup\":" << (repeat == 0U ? "true" : "false")
                       << ",\"population\":" << metadata.count << ",\"capacity\":" << capacity
                       << ",\"growth_fraction\":" << growth << ",\"wall_seconds\":" << wall
@@ -148,6 +159,11 @@ int main(int argc, char** argv) {
                 context.save_checkpoint(output / "after-refinement.ckpt", progress,
                                         metadata.dataset, metadata.configuration);
             }
+            if (context_mode == "reuse" && repeat == repeats) {
+                context.save_checkpoint(output / "after-reused-refinement.ckpt", progress,
+                                        metadata.dataset, metadata.configuration);
+            }
+            if (context_mode == "fresh") resident.reset();
         }
         return 0;
     } catch (const std::exception& error) {
