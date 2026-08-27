@@ -50,11 +50,11 @@ import {
   calculateMergedArenaBounds,
   mergedArenaActiveSpans,
   mergeMergedArenaBounds,
-  planLinearTextureCopies,
   planMergedArenaSlots,
   type MergedArenaBounds,
   type MergedArenaSlot,
 } from "./merged-arena";
+import { copyGsTileTextureRange } from "./arena-texture-copy";
 import { packGsTileNativeTransforms } from "./native-transform";
 import { packGsTileNativeSh } from "./native-sh";
 import { adoptGsTileNativeRgbaStreams } from "./native-streams";
@@ -2124,36 +2124,6 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     return entity;
   }
 
-  #copyGsplatResourceRange(
-    source: PcResource,
-    destination: PcArenaResource,
-    sourceOffset: number,
-    destinationOffset: number,
-    count: number,
-  ) {
-    for (const stream of source.format.resourceStreams) {
-      const sourceTexture = source.getTexture(stream.name);
-      const destinationTexture = destination.getTexture(stream.name);
-      if (!sourceTexture || !destinationTexture) {
-        throw new Error(`GSTile arena stream ${stream.name} is unavailable`);
-      }
-      const copies = planLinearTextureCopies(
-        sourceTexture.width,
-        sourceTexture.height,
-        sourceOffset,
-        destinationTexture.width,
-        destinationTexture.height,
-        destinationOffset,
-        count,
-      );
-      for (const options of copies) {
-        if (!destinationTexture.copy(sourceTexture, options)) {
-          throw new Error(`GSTile arena stream ${stream.name} copy failed`);
-        }
-      }
-    }
-  }
-
   #copyMergedArenaCenters(
     columns: GsTilePlayCanvasColumns,
     sourceOffset: number,
@@ -2179,7 +2149,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   ) {
     let sourceCursor = sourceOffset;
     for (const span of slot.spans) {
-      this.#copyGsplatResourceRange(
+      copyGsTileTextureRange(
         source,
         destination,
         sourceCursor,

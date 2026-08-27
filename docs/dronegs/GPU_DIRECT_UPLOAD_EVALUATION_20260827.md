@@ -126,13 +126,14 @@ decision; the independent component validation and documentation gates are the
 checks for this delivery. The existing viewer endpoint still answers HTTP 200.
 
 Before revisiting direct upload, first capture actual arena ranges and measure
-host pauses alongside the full render workload. Candidate follow-ups, **unmeasured
-and not enabled**, are reuse of row-copy plans across streams and a GPU scatter
-path with fewer CPU API calls. The former leaves GPU copy volume unchanged; the
-latter adds shader/storage-usage and lifecycle risks. Either must preserve exact
-coefficients, resident gaps, cut identity and bounded memory, and pass target-GPU
-integration and visual acceptance before promotion. Do not lower quality to
-compensate for transport or scheduling costs.
+host pauses alongside the full render workload. Reuse of row-copy plans across
+streams was subsequently implemented and qualified in
+[the shared-plan follow-up](SHARED_COPY_PLAN_QUALIFICATION_20260827.md): a small
+CPU saving, with unchanged GPU copy volume. GPU scatter with fewer CPU API calls
+remains **unmeasured and not enabled**, adding shader/storage-usage and lifecycle
+risks. It must preserve exact coefficients, resident gaps, cut identity and bounded
+memory, and pass target-GPU integration and visual acceptance before promotion.
+Do not lower quality to compensate for transport or scheduling costs.
 
 ## Reproduction and retained evidence
 
