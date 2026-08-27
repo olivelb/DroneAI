@@ -97,6 +97,7 @@ add_library(dronegs_core
     src/ply.cpp
     src/manifest.cpp
     src/topology_telemetry.cpp
+    src/topology_percentiles.cpp
     src/sh.cpp
     src/rasterization.cpp
 )
@@ -132,7 +133,7 @@ if(DRONEGS_BUILD_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
-    add_executable(dronegs_core_tests tests/test_core.cpp tests/test_topology_telemetry.cpp)
+    add_executable(dronegs_core_tests tests/test_core.cpp tests/test_topology_telemetry.cpp tests/test_topology_percentiles.cpp)
     target_link_libraries(dronegs_core_tests PRIVATE dronegs_core)
     add_test(NAME dronegs_core_tests COMMAND dronegs_core_tests)
 
@@ -185,6 +186,8 @@ if(DRONEGS_BUILD_TESTS)
 endif()
 
 if(DRONEGS_BUILD_BENCHMARKS)
+    add_executable(dronegs_topology_percentile_benchmark benchmarks/benchmark_topology_percentiles.cpp)
+    target_link_libraries(dronegs_topology_percentile_benchmark PRIVATE dronegs_core)
     add_executable(dronegs_checkpoint_topology_benchmark benchmarks/benchmark_checkpoint_topology.cu)
     target_link_libraries(dronegs_checkpoint_topology_benchmark PRIVATE dronegs_cuda)
     set_target_properties(dronegs_checkpoint_topology_benchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

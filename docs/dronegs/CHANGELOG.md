@@ -2,6 +2,21 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.71 - Bounded CPU pruning percentiles
+
+- Schedule the three independent spatial percentile pairs on at most three
+  extra CPU threads while the caller computes the scale percentile. Preserve
+  the exact existing floor-rank algorithms and subsequent pruning math.
+- Keep populations/axes below 262,144 values sequential, as well as machines
+  reporting fewer than four hardware threads; allow deferred runtime fallback.
+- Keep all CUDA work on the caller and retain source-order scales for pruning.
+- Add CPU bitwise/sorted oracles around the scheduling threshold and an optional
+  alternating-order CPU benchmark; no profile, telemetry or checkpoint change.
+- Qualify 32.13% shorter fenced refinement on the frozen 5M Saint-Etienne
+  checkpoint versus dev.70, with exact real/synthetic full-state parity.
+  CPU sanitizers, two-GPU native tests and portable compilation pass. See
+  [the protocol, resource tradeoff and limits](PARALLEL_PERCENTILES_DEV71.md).
+
 ## 0.5.0-dev.70 - Compact pruning snapshot
 
 - Download only a 32-byte transient pruning record per Gaussian instead of

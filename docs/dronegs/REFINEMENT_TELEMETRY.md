@@ -80,6 +80,11 @@ log-scale, opacity and an exact opacity-SH finiteness flag. No format, field nam
 timing descriptor, compaction or split payload changes. Kernel work is deliberately
 included in this host-wall phase; the descriptor never promised pure PCIe time.
 
+From dev.71, `cpu_prune_seconds` includes bounded CPU percentile tasks and their
+join before the unchanged bounds/pruning pass. It measures elapsed wall time,
+not the sum of worker CPU times. No additional telemetry fields, device work,
+transfer payload or timing-descriptor change is introduced.
+
 The strict optional object is defined in
 [trainer-run-v1.schema.json](contracts/trainer-run-v1.schema.json). The schema
 also now accepts existing scalar-opacity and dataset split-count metadata;
