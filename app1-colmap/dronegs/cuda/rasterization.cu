@@ -3605,6 +3605,7 @@ __global__ void split_gaussians_long_axis_kernel(
     first_opacity[child_index] = 0.0F;
     second_opacity[child_index] = 0.0F;
     for (std::size_t coefficient = 0U;
+         opacity_sh_moments != nullptr &&
          coefficient < maximum_opacity_sh_coefficients; ++coefficient) {
         opacity_sh_moments[
             parent_index * maximum_opacity_sh_coefficients + coefficient] =
@@ -4974,8 +4975,10 @@ struct OrderedAlphaTrainingContext::Impl {
         sh_rest_gradient.ensure(
             gaussian_capacity * maximum_sh_rest_values);
         opacity_gradient.ensure(gaussian_capacity);
-        opacity_sh_gradient.ensure(
-            gaussian_capacity * maximum_opacity_sh_coefficients);
+        if (opacity_sh_enabled) {
+            opacity_sh_gradient.ensure(
+                gaussian_capacity * maximum_opacity_sh_coefficients);
+        }
         projected_geometry_gradient.ensure(gaussian_capacity * 6U);
         xyz_gradient.ensure(gaussian_capacity * 3U);
         log_scale_gradient.ensure(gaussian_capacity * 3U);
@@ -4986,8 +4989,10 @@ struct OrderedAlphaTrainingContext::Impl {
             gaussian_capacity * maximum_sh_rest_values);
         first_opacity.ensure(gaussian_capacity);
         second_opacity.ensure(gaussian_capacity);
-        opacity_sh_moments.ensure(
-            gaussian_capacity * maximum_opacity_sh_coefficients);
+        if (opacity_sh_enabled) {
+            opacity_sh_moments.ensure(
+                gaussian_capacity * maximum_opacity_sh_coefficients);
+        }
         first_xyz.ensure(gaussian_capacity * 3U);
         second_xyz.ensure(gaussian_capacity * 3U);
         first_log_scale.ensure(gaussian_capacity * 3U);
@@ -5050,8 +5055,10 @@ struct OrderedAlphaTrainingContext::Impl {
             gaussian_count * maximum_sh_rest_values);
         first_opacity.zero(gaussian_count);
         second_opacity.zero(gaussian_count);
-        opacity_sh_moments.zero(
-            gaussian_count * maximum_opacity_sh_coefficients);
+        if (opacity_sh_enabled) {
+            opacity_sh_moments.zero(
+                gaussian_count * maximum_opacity_sh_coefficients);
+        }
         first_xyz.zero(gaussian_count * 3U);
         second_xyz.zero(gaussian_count * 3U);
         first_log_scale.zero(gaussian_count * 3U);
@@ -6230,9 +6237,11 @@ struct OrderedAlphaTrainingContext::Impl {
                 sh_rest_moments, maximum_sh_rest_values);
             compact_moments(first_opacity, 1U);
             compact_moments(second_opacity, 1U);
-            compact_moments(
-                opacity_sh_moments,
-                maximum_opacity_sh_coefficients);
+            if (opacity_sh_enabled) {
+                compact_moments(
+                    opacity_sh_moments,
+                    maximum_opacity_sh_coefficients);
+            }
             compact_moments(first_xyz, 3U);
             compact_moments(second_xyz, 3U);
             compact_moments(first_log_scale, 3U);
@@ -6682,6 +6691,11 @@ std::size_t OrderedAlphaTrainingContext::size() const noexcept {
     return impl_->gaussian_count;
 }
 
+std::size_t OrderedAlphaTrainingContext::opacity_sh_storage_bytes() const noexcept {
+    return impl_->opacity_sh_gradient.capacity() * sizeof(float) +
+        impl_->opacity_sh_moments.capacity() * sizeof(float2);
+}
+
 std::uint32_t
 OrderedAlphaTrainingContext::active_sh_degree() const noexcept {
     return impl_->active_sh_degree;
@@ -6767,9 +6781,16 @@ OrderedAlphaTrainingContext::capture_checkpoint(
         impl_->first_opacity, snapshot->first_opacity, count);
     capture_device(
         impl_->second_opacity, snapshot->second_opacity, count);
-    capture_device(
-        impl_->opacity_sh_moments, snapshot->opacity_sh_moments,
-        count * maximum_opacity_sh_coefficients);
+    if (impl_->opacity_sh_enabled) {
+        capture_device(
+            impl_->opacity_sh_moments, snapshot->opacity_sh_moments,
+            count * maximum_opacity_sh_coefficients);
+    } else {
+        // Preserve the V4/V5 wire layout without materializing unused GPU state.
+        snapshot->opacity_sh_moments.resize(
+            count * maximum_opacity_sh_coefficients,
+            make_float2(0.0F, 0.0F));
+    }
     capture_device(impl_->first_xyz, snapshot->first_xyz, count * 3U);
     capture_device(impl_->second_xyz, snapshot->second_xyz, count * 3U);
     capture_device(
@@ -7061,11 +7082,23 @@ OrderedAlphaTrainingContext::load_checkpoint(
             }
         };
     const auto read_moment_pairs =
-        [&stream](auto& allocation, std::size_t count) {
-            std::vector<float> first(count);
+        [&stream](auto& allocation, std::size_t count, bool restore = true) {
             if (count == 0U) {
                 return;
             }
+            if (!restore) {
+                // The checksum still covers this V4/V5 payload. Consume it
+                // without allocating host/GPU moments on the scalar path.
+                const auto bytes = static_cast<std::streamsize>(
+                    count * 2U * sizeof(float));
+                stream.ignore(bytes);
+                if (stream.gcount() != bytes) {
+                    throw std::runtime_error(
+                        "checkpoint moment payload is truncated");
+                }
+                return;
+            }
+            std::vector<float> first(count);
             stream.read(
                 reinterpret_cast<char*>(first.data()),
                 static_cast<std::streamsize>(count * sizeof(float)));
@@ -7256,7 +7289,8 @@ OrderedAlphaTrainingContext::load_checkpoint(
     read_device(impl_->second_opacity, count);
     read_moment_pairs(
         impl_->opacity_sh_moments,
-        count * maximum_opacity_sh_coefficients);
+        count * maximum_opacity_sh_coefficients,
+        impl_->opacity_sh_enabled);
     read_device(impl_->first_xyz, count * 3U);
     read_device(impl_->second_xyz, count * 3U);
     read_device(impl_->first_log_scale, count * 3U);

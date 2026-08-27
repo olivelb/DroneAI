@@ -126,6 +126,8 @@ public:
     std::optional<MrnfGpuStageTelemetry>
     latest_gpu_stage_telemetry() const noexcept;
     std::size_t size() const noexcept;
+    // Device gradient + Adam moment capacity; excludes the unchanged Gaussian ABI.
+    std::size_t opacity_sh_storage_bytes() const noexcept;
     std::uint32_t active_sh_degree() const noexcept;
     void set_active_sh_degree(std::uint32_t degree);
     void download(std::vector<Gaussian>& gaussians) const;

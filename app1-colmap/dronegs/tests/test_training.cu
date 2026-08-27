@@ -251,6 +251,25 @@ int main() {
         const auto scene = make_scene();
         const auto initialized =
             dronegs::initialize_fixed_topology(scene);
+        for (const bool opacity_sh_enabled : {false, true}) {
+            constexpr std::size_t capacity = 4096U;
+            dronegs::OrderedAlphaTrainingContext storage_context(
+                initialized, 32U * 32U, 10U, capacity,
+                dronegs::MrnfOptimizerProfile::reference_absolute,
+                3U, 1U, 42U, true, 54.59815F, opacity_sh_enabled);
+            const auto expected_bytes = opacity_sh_enabled
+                ? capacity * dronegs::maximum_opacity_sh_coefficients *
+                    (sizeof(float) + sizeof(float2))
+                : 0U;
+            if (storage_context.opacity_sh_storage_bytes() != expected_bytes) {
+                throw std::runtime_error(
+                    "opacity-SH device storage does not match its enabled state");
+            }
+            std::cout << "opacity_sh_storage enabled=" << opacity_sh_enabled
+                      << " capacity=" << capacity
+                      << " bytes=" << storage_context.opacity_sh_storage_bytes()
+                      << '\n';
+        }
         const auto split = dronegs::make_dataset_split(17U, 8U);
         if (split.training.size() != 14U ||
             split.held_out !=
@@ -1562,6 +1581,56 @@ int main() {
         if (!models_match(interrupted, resumed)) {
             throw std::runtime_error(
                 "checkpoint snapshot changed the restored model");
+        }
+        for (const bool opacity_sh_enabled : {false, true}) {
+            const std::vector<dronegs::Gaussian> initial{
+                split_parent, pruned_parent};
+            dronegs::OrderedAlphaTrainingContext source(
+                initial, 32U * 32U, 4U, 3U,
+                dronegs::MrnfOptimizerProfile::reference_absolute,
+                3U, 1U, 42U, true, 54.59815F, opacity_sh_enabled);
+            static_cast<void>(source.train_step(
+                quality_camera, split_target.data(), split_target.size()));
+            const auto refinement = source.refine_topology(0.0F, 1.0F, 7U, true);
+            if (!refinement.compacted || refinement.pruned != 1U ||
+                refinement.added == 0U) {
+                throw std::runtime_error(
+                    "optional opacity-SH fixture did not compact and split");
+            }
+            const auto optional_checkpoint = root /
+                (opacity_sh_enabled ? "opacity-on.ckpt" : "opacity-off.ckpt");
+            const std::string configuration =
+                opacity_sh_enabled ? "opacity-on" : "opacity-off";
+            source.save_checkpoint(
+                optional_checkpoint,
+                dronegs::TrainingCheckpointProgress{.completed_iteration = 1U},
+                "optional-storage-dataset", configuration);
+            dronegs::OrderedAlphaTrainingContext restored(
+                initial, 32U * 32U, 4U, 3U,
+                dronegs::MrnfOptimizerProfile::reference_absolute,
+                3U, 1U, 42U, true, 54.59815F, opacity_sh_enabled);
+            static_cast<void>(restored.load_checkpoint(
+                optional_checkpoint, "optional-storage-dataset", configuration));
+            const auto expected_bytes = opacity_sh_enabled
+                ? 3U * dronegs::maximum_opacity_sh_coefficients *
+                    (sizeof(float) + sizeof(float2))
+                : 0U;
+            if (restored.opacity_sh_storage_bytes() != expected_bytes ||
+                source.opacity_sh_storage_bytes() != expected_bytes ||
+                !models_match(source, restored)) {
+                throw std::runtime_error(
+                    "optional opacity-SH checkpoint changed storage or model");
+            }
+            for (std::size_t step = 1U; step < 4U; ++step) {
+                static_cast<void>(source.train_step(
+                    quality_camera, split_target.data(), split_target.size()));
+                static_cast<void>(restored.train_step(
+                    quality_camera, split_target.data(), split_target.size()));
+            }
+            if (!models_match(source, restored)) {
+                throw std::runtime_error(
+                    "optional opacity-SH resume diverged after compaction/split");
+            }
         }
         dronegs::OrderedAlphaTrainingContext synchronous_steps(
             rate_fixture, 32U * 32U, 10U, 8U,
