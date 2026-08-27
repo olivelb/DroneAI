@@ -17,6 +17,12 @@ export type GsTileRangeAvailabilityRequest = {
 };
 
 export const DEFAULT_GSTILE_MEMORY_CACHE_BYTES = 768 * 1024 * 1024;
+/** Explicit desktop experiment; never infer a larger allocation from the browser. */
+export const gstileMemoryCacheBytes = (profile?: string | null): number =>
+  profile === "desktop"
+    ? 1536 * 1024 * 1024
+    : DEFAULT_GSTILE_MEMORY_CACHE_BYTES;
+
 export const DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS = 300;
 export const DEFAULT_GSTILE_PERSISTENT_READ_CONCURRENCY = 2;
 

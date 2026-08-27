@@ -19,7 +19,7 @@ import {
 import { decodeGsTileViewerDescriptor } from "../lib/gstile/descriptor";
 import { createGsTilePersistentCache } from "../lib/gstile/persistent-range-cache";
 import {
-  DEFAULT_GSTILE_MEMORY_CACHE_BYTES,
+  gstileMemoryCacheBytes,
   DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS,
   GsTileRangeScheduler,
 } from "../lib/gstile/range-source";
@@ -119,6 +119,7 @@ export default function GaussianTileViewer({
 }: GaussianTileViewerProps) {
   const searchParams = useSearchParams();
   const backendQueryKey = searchParams.toString();
+  const memoryCacheBytes = gstileMemoryCacheBytes(searchParams.get("gstileMemoryCache"));
   const assemblyOption = gstileGpuAssembly(
     searchParams.get("gstileGpuAssembly"),
   );
@@ -171,7 +172,7 @@ export default function GaussianTileViewer({
     // without the burst memory of decoding an unbounded LOD cut concurrently.
     const scheduler = new GsTileRangeScheduler(
       6,
-      DEFAULT_GSTILE_MEMORY_CACHE_BYTES,
+      memoryCacheBytes,
       DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS,
       createGsTilePersistentCache(),
     );
@@ -254,7 +255,7 @@ export default function GaussianTileViewer({
       observer.disconnect();
       backend.dispose();
     };
-  }, [backendQueryKey, createBackend, descriptorUrl, manifestUrl]);
+  }, [backendQueryKey, createBackend, descriptorUrl, manifestUrl, memoryCacheBytes]);
 
   const displayStatus =
     status === "Prêt" && statistics.lodState === "refining"
@@ -274,6 +275,7 @@ export default function GaussianTileViewer({
       }
       data-testid="gstile-viewer"
       data-status={status}
+      data-memory-cache-bytes={memoryCacheBytes}
       data-lod-state={statistics.lodState}
       data-resident-gaussians={statistics.residentGaussians}
       data-selected-nodes={statistics.selectedNodes}
