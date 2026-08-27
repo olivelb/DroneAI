@@ -2,6 +2,11 @@
 
 ## Scope and decision gate
 
+Follow-up: an [integrated candidate](ALIGNED_STAGING_INTEGRATION_20260827.md)
+now carries the layout through Worker/column/engine contracts and passes real
+PlayCanvas texture checks. It is served for visual qualification; that does not
+retroactively turn this component experiment into a product performance result.
+
 **Proceed to a bounded renderer integration, but do not enable this prototype
 as a production optimization yet.** Including staging allocation/uploads, the
 paired median host time falls by 19.57% at 1.29M and 16.30% at 7.27M; GPU queue
