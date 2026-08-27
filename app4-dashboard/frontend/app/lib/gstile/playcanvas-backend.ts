@@ -57,7 +57,7 @@ import {
 import { copyGsTileTextureRange } from "./arena-texture-copy";
 import { packGsTileNativeTransforms } from "./native-transform";
 import { packGsTileNativeSh } from "./native-sh";
-import { adoptGsTileNativeRgbaStreams } from "./native-streams";
+import { adoptGsTileNativeRgbaStreams, resizeGsTileStagingStreams } from "./native-streams";
 import {
   copyGsTileNativeResult,
   decodeGsTileNativePayload,
@@ -938,6 +938,11 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodResourceTransformMs: number | null = null;
   #lodResourceShMs: number | null = null;
   #lodStreamUploadMs: number | null = null;
+  #lodArenaCopies: {
+    sourceWidth: number; sourceHeight: number; destinationWidth: number; destinationHeight: number;
+    streamCount: number; textureCopies: number; copyAndCentersMs: number;
+    ranges: { source: number; dest: number; count: number }[];
+  } | null = null;
   #lodSceneAttachMs: number | null = null;
   #lodAddedGaussians = 0;
   #lodRemovedGaussians = 0;
@@ -1434,6 +1439,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodResourceTransformMs = null;
     this.#lodResourceShMs = null;
     this.#lodStreamUploadMs = null;
+    this.#lodArenaCopies = null;
     this.#lodSceneAttachMs = null;
     this.#lodAddedGaussians = 0;
     this.#lodRemovedGaussians = 0;
@@ -1794,6 +1800,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
               gsplatData: import("playcanvas").GSplatData,
             ) {
               const started = performance.now();
+              // GSplatResource calls color first, immediately after empty stream init.
+              // Resize before adopting any packed arrays; no main-thread repadding.
+              resizeGsTileStagingStreams(this.streams, tile.count, tile.textureWidth);
               if (tile.colorStream) {
                 adoptGsTileNativeRgbaStreams(
                   this.streams,
@@ -2149,13 +2158,17 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   ) {
     let sourceCursor = sourceOffset;
     for (const span of slot.spans) {
-      copyGsTileTextureRange(
+      const copies = copyGsTileTextureRange(
         source,
         destination,
         sourceCursor,
         span.offset,
         span.count,
       );
+      if (this.#lodArenaCopies) {
+        this.#lodArenaCopies.textureCopies += copies;
+        this.#lodArenaCopies.ranges.push({ source: sourceCursor, dest: span.offset, count: span.count });
+      }
       this.#copyMergedArenaCenters(
         columns,
         sourceCursor,
@@ -2646,6 +2659,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       }
     }
     const mergedCapacity = rebuildMergedArena ? this.#maximumResidentGaussians : mergedGaussianCount;
+    const mergedTextureWidth = rebuildMergedArena
+      ? undefined
+      : this.#mergedArena?.container.streams.textureDimensions.x;
     const mergedCounts = mergedLoadNodeIds.map(nodeId => {
       const node = nodes.get(nodeId)!;
       return (node.tile ?? node.lodTile)!.recordCount;
@@ -2682,12 +2698,13 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       const loadStarted = performance.now();
       if (mergedAssembly && mergedGaussianCount > 0) {
         if (decodeWorkerPool && !this.#assemblyWorkerUnavailable && this.#workerAssemblyEnabled &&
-            canAssembleGsTileInWorker(mergedCapacity, mergedCounts)) {
-          assembly = new GsTileMergedAssemblyClient(mergedCapacity, mergedCounts, controller.signal);
+            canAssembleGsTileInWorker(mergedCapacity, mergedCounts, mergedTextureWidth)) {
+          assembly = new GsTileMergedAssemblyClient(mergedCapacity, mergedCounts, controller.signal, undefined, mergedTextureWidth);
           await assembly.ready;
         } else {
           mergedColumns = allocateGsTilePlayCanvasColumns(mergedCapacity, {
             color: true, centerBounds: true, sh: true, transform: decodeWorkerPool !== null,
+            textureWidth: mergedTextureWidth,
           });
         }
       }
@@ -2802,6 +2819,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         0,
       );
       const commitStarted = performance.now();
+      this.#lodArenaCopies = null;
       let resourceCreateMs = 0;
       let resourceColorMs = 0;
       let resourceTransformMs = 0;
@@ -2949,6 +2967,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           const arena = this.#mergedArena;
           if (!arena) throw new Error("GSTile merged arena is unavailable");
           if (mergedStaging && columnarCut) {
+            if (this.#debugTraceEnabled) {
+              const src = mergedStaging.resource.streams.textureDimensions;
+              const dst = arena.container.streams.textureDimensions;
+              this.#lodArenaCopies = { sourceWidth: src.x, sourceHeight: src.y, destinationWidth: dst.x,
+                destinationHeight: dst.y, streamCount: mergedStaging.resource.format.resourceStreams.length,
+                textureCopies: 0, copyAndCentersMs: 0, ranges: [] };
+            }
+            const copyStarted = performance.now();
             for (const nodeId of mergedPlan.addedNodeIds) {
               const sourceOffset = mergedOffsets.get(nodeId);
               const slot = mergedPlan.slots.get(nodeId);
@@ -2965,6 +2991,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
                 slot,
               );
             }
+            if (this.#lodArenaCopies) this.#lodArenaCopies.copyAndCentersMs = performance.now() - copyStarted;
           }
           const previousGaussians = arena.loaded.gaussianCount;
           const previousBytes = arena.loaded.byteLength;
@@ -3067,6 +3094,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       if (mergedAssembly) this.render(performance.now());
       this.#lodCommitMs = performance.now() - commitStarted;
       this.#lodTotalMs = performance.now() - lodStarted;
+      // The synchronous render above can publish before these final timings.
+      // Replace that transitional snapshot even inside the one-second throttle.
+      this.#updateDebugSnapshot(performance.now(), true);
       this.#scheduleLodPrefetch(selection.selectedNodeIds);
     } catch (error) {
       mergedColumns = null;
@@ -3517,6 +3547,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         lodResourceTransformMs: this.#lodResourceTransformMs,
         lodResourceShMs: this.#lodResourceShMs,
         lodStreamUploadMs: this.#lodStreamUploadMs,
+        lodArenaCopies: this.#lodArenaCopies,
         lodSceneAttachMs: this.#lodSceneAttachMs,
         lodAddedGaussians: this.#lodAddedGaussians,
         lodRemovedGaussians: this.#lodRemovedGaussians,
@@ -3639,10 +3670,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#renderFramesRemaining = Math.max(this.#renderFramesRemaining, frames);
   }
 
-  #updateDebugSnapshot(timestampMs: number) {
+  #updateDebugSnapshot(timestampMs: number, force = false) {
     if (
       !this.#debugSnapshotElement ||
-      timestampMs - this.#lastDebugSnapshotTimestampMs < 1_000
+      (!force && timestampMs - this.#lastDebugSnapshotTimestampMs < 1_000)
     ) {
       return;
     }

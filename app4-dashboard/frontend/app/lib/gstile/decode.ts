@@ -11,7 +11,7 @@ import {
   type GsTileNativeShStreams,
 } from "./native-sh";
 import { packGsTileNativeColorRecord } from "./native-color";
-import { gsTileTextureElementCapacity } from "./native-streams";
+import { gsTileTextureDimensions, gsTileTextureElementCapacity } from "./native-streams";
 
 export type DecodedGsTile = {
   header: GsTilePackHeader;
@@ -55,6 +55,7 @@ type GsTilePlyColumns = {
  */
 export type GsTilePlayCanvasColumns = GsTilePlyColumns & {
   count: number;
+  textureWidth: number;
   properties: GsTilePlyProperty[];
   opacityStreams: GsTileOpacityStreams;
   colorStream: Uint16Array | null;
@@ -69,6 +70,7 @@ export type GsTilePlayCanvasColumns = GsTilePlyColumns & {
 };
 
 export type GsTilePlayCanvasPacking = {
+  textureWidth?: number;
   color?: boolean;
   sh?: boolean;
   centerBounds?: boolean;
@@ -152,7 +154,7 @@ const validatePlayCanvasColumnRange = (
   ) {
     throw new Error("GSTile PlayCanvas position width is inconsistent");
   }
-  const textureStreamLength = gsTileTextureElementCapacity(destination.count) * 4;
+  const textureStreamLength = gsTileTextureElementCapacity(destination.count, destination.textureWidth) * 4;
   if (
     destination.transformStreams !== null &&
     (destination.centerStream === null ||
@@ -170,7 +172,7 @@ const validatePlayCanvasColumnRange = (
     destination.opacityLogit.length !== colorColumnLength ||
     (destination.colorStream !== null &&
       destination.colorStream.length !==
-        gsTileTextureElementCapacity(destination.count) * 4)
+        textureStreamLength)
   ) {
     throw new Error("GSTile PlayCanvas color width is inconsistent");
   }
@@ -182,7 +184,7 @@ const validatePlayCanvasColumnRange = (
       destination.shStreams.some(
         (stream) =>
           stream.length !==
-          gsTileTextureElementCapacity(destination.count) * 4,
+          textureStreamLength,
       ))
   ) {
     throw new Error("GSTile PlayCanvas SH width is inconsistent");
@@ -192,7 +194,7 @@ const validatePlayCanvasColumnRange = (
     destination.opacityStreams.some(
       (stream) =>
         stream.length !==
-        gsTileTextureElementCapacity(destination.count) * 4,
+        textureStreamLength,
     )
   ) {
     throw new Error("GSTile PlayCanvas opacity stream width is inconsistent");
@@ -264,6 +266,8 @@ export const allocateGsTilePlayCanvasColumns = (
   if (!Number.isSafeInteger(count) || count < 1) {
     throw new Error("GSTile PlayCanvas column count must be positive");
   }
+  const { width: textureWidth, height: textureHeight } = gsTileTextureDimensions(count, packing.textureWidth);
+  const textureStreamLength = textureWidth * textureHeight * 4;
   const columns = (width: number) =>
     Array.from({ length: width }, () => new Float32Array(count));
   const position = packing.centerBounds
@@ -282,7 +286,6 @@ export const allocateGsTilePlayCanvasColumns = (
   const colorSh = packing.sh
     ? Array.from({ length: 45 }, () => new Float32Array(0))
     : columns(45);
-  const textureStreamLength = gsTileTextureElementCapacity(count) * 4;
   const opacityStreams: GsTileOpacityStreams = [
     new Float32Array(textureStreamLength),
     new Float32Array(textureStreamLength),
@@ -319,6 +322,7 @@ export const allocateGsTilePlayCanvasColumns = (
   };
   return {
     count,
+    textureWidth,
     ...plyColumns,
     properties: gsTilePlyPropertiesFromColumns(plyColumns),
     opacityStreams,

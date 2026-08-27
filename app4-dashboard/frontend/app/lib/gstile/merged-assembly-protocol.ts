@@ -2,7 +2,7 @@ import type { GsTilePlayCanvasColumns } from "./decode";
 import type { GsTileNativeDecodeResult } from "./native-decode";
 
 export type GsTileAssemblyRequest =
-  | { type: "init"; id: number; capacity: number; counts: number[] }
+  | { type: "init"; id: number; capacity: number; counts: number[]; textureWidth: number }
   | { type: "copy"; id: number; offset: number; result: GsTileNativeDecodeResult }
   | { type: "finish"; id: number };
 
