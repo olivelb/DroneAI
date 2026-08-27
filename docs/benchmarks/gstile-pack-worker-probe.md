@@ -1,6 +1,6 @@
 # GSTile bounded pack-worker probe
 
-2026-08-27. Experimental microbenchmark, not a production tiler change.
+2026-08-27. Completed experimental microbenchmark, not a production tiler change.
 
 ## Predeclared question
 
@@ -49,6 +49,38 @@ count are bounded; no unbounded future queue is permitted.
 Eight focused tests pass: exact outputs at all worker counts, bounded lazy
 submission, propagation of failure without scheduling the remaining input,
 and rejection of invalid worker counts. Scoped Ruff and diff checks pass.
-Results are pending. A positive microbenchmark is only permission to attempt
-integration with byte backpressure and an ordered atomic writer; it is not a
-full-tiler speedup or a reason to parallelize V4 automatically.
+The full affected tiler suite plus these tests passes: **41 tests**.
+
+## Result and decision
+
+Measured on local Ubuntu WSL2, Intel Core i9-13900H, 20 logical CPUs exposed,
+not BIGZEN. Source commit `6d855986d0c33c8c2f06620088c940b937739292`, clean tree;
+Python/NumPy/Zstd versions and fixture hashes are retained in `protocol.json`.
+
+| Stage, 48 jobs | 1 worker median | 2 workers median | 4 workers median | 4-worker factor |
+| --- | ---: | ---: | ---: | ---: |
+| Real packs: Zstd + hashes | 0.5719 s | 0.3426 s | 0.1949 s | 2.93× |
+| Synthetic: encode + Zstd + hashes | 4.8249 s | 2.8673 s | 1.7698 s | 2.73× |
+
+All 24 trials, including six warmups, have matching ordered output signatures
+and quantization/error metadata within each stage. The shared input is unchanged.
+The input is hot and repeated; the encode population is synthetic. The 1-worker
+control also uses the executor, not the production inline writer. These are
+local codec throughput factors, **not a complete tiler acceleration**. More CPU
+service is consumed by four workers despite the shorter wall time. The largest
+cumulative RSS counter is 268,232 KiB; it cannot be compared as per-arm RSS.
+
+Evidence directory:
+`/home/olivier/droneai-qualifications/gstile-pack-workers-20260827`.
+It retains the frozen protocol, all raw timing rows, ordered output signatures
+and summary. Original real packs remain in the source fixture directory.
+
+Decision: proceed to a separate production integration experiment. First split
+pure pack preparation (CRC/hash/Zstd) from the ordered atomic writer, then use
+bounded futures with an explicit byte ceiling. `pack_tile` and `_flush_aggregate`
+currently need synchronous metadata: simply putting their existing calls in
+an executor and immediately waiting would not expose useful parallel work.
+Deferred completion must preserve tile references, pack order, aggregate IDs,
+progress ordering, exception handling and final publication after all writes.
+Keep serial mode as the control; compare complete canonical bundles and sidecars
+before enabling it. No fsync relaxation or parallel V4 is justified by this probe.
