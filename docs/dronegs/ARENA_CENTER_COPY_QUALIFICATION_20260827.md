@@ -142,7 +142,9 @@ Rollback: verify image IDs, stop the candidate and start retained container
 `sha256:2ce63ad22007146523143aa356279887bb5aeb249cc0b716e358f4d0d854da5a`).
 No source or bundle deletion is required.
 
-The higher-potential next experiment remains Worker-output assembly off the
-main thread or bounded native-stream adoption. It needs explicit backpressure,
-cancellation/ownership tests and peak memory measurements before promotion.
-Shared cache inputs must not be detached merely to eliminate `slice()`.
+Follow-up: [bounded off-thread merged assembly](WORKER_ASSEMBLY_QUALIFICATION_20260827.md)
+moves the large output copies away from the main thread with admission control,
+exact output checks and cancellation/failure drills. It does not eliminate those
+copies or claim a global loading speedup. Direct native-stream adoption and peak
+process-memory measurements remain separate work. Shared cache inputs must not
+be detached merely to eliminate `slice()`.

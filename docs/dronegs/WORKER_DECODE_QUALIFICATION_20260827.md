@@ -147,8 +147,11 @@ buffer speculatively. Neither change is promoted by this lot.
 
 Follow-up: [exact scale-exponential reuse](NATIVE_DECODE_EXP_REUSE_20260827.md)
 reduces isolated Chrome Worker decode time by 6.49% in the recorded paired
-benchmark. Two SH-loop variants were rejected. Main-thread copies and full
-camera-path latency remain separate, unqualified optimization targets.
+benchmark. Two SH-loop variants were rejected. A subsequent
+[bounded assembly Worker](WORKER_ASSEMBLY_QUALIFICATION_20260827.md) moves the
+large output copies away from the main thread with byte-identical outputs.
+Input copies and full camera-path latency remain separate optimization targets;
+the off-thread component result is not a universal full-load/FPS speedup.
 
 Local WSL and BIGZEN evidence directory:
 `/home/olivier/droneai-qualifications/gstile-worker-latency-20260827`.
