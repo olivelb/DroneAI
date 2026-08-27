@@ -14,6 +14,11 @@ are fully overwritten by completed downloads. The
 cache retains 52 bytes per largest encountered Gaussian count until context
 destruction (260 MB at 5M); growth can temporarily hold old and new allocations.
 Scientific decisions, transfer payloads and checkpoint formats are unchanged.
+Frozen 5M refinement is 13.31% shorter with a reused context on RTX 3090;
+fresh-context timing is unchanged within the observed ranges. This is not a
+full-training or viewer speed claim. See
+[`REUSABLE_REFINEMENT_HOST_DEV72.md`](../../docs/dronegs/REUSABLE_REFINEMENT_HOST_DEV72.md)
+for exact-state validation, rejected allocation experiments and resource limits.
 
 Version `0.5.0-dev.71` computes independent pruning percentiles on at most four
 CPU threads including the caller. Each axis uses the unchanged exact floor-rank

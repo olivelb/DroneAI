@@ -16,6 +16,10 @@ This changelog covers the standalone Gaussian trainer project.
   CUDA tests over changing populations, bounded/FastGS and opacity SH off/on.
 - Extend the optional checkpoint benchmark with `fresh|reuse` context modes;
   always reload the frozen input and save first/last outputs in reuse mode.
+- Qualify 13.31% shorter reused-context refinement on the frozen 5M checkpoint;
+  fresh-context timing remains within the reference range. Reject two combined
+  allocation variants that regressed fresh contexts. See
+  [the qualification and RAM tradeoff](REUSABLE_REFINEMENT_HOST_DEV72.md).
 
 ## 0.5.0-dev.71 - Bounded CPU pruning percentiles
 

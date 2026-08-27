@@ -22,6 +22,11 @@ Each completed phase has one focused commit and an annotated
 
 - Completed tagged phase: Phase 3.
 - Current development version: 0.5.0-dev.72.
+- Dev.72 retains the six host refinement vectors across calls without changing
+  scientific state or transfers. Frozen 5M reused-context refinement is 13.31%
+  shorter on RTX 3090; fresh-context timing is stable, at a retained logical
+  payload of 260 MB per 5M context. See
+  [the exact-state qualification and rejected experiments](REUSABLE_REFINEMENT_HOST_DEV72.md).
 - Dev.68 moves Adam/refinement-state compaction to stable GPU chunks using
   existing disposable gradient storage. CPU pruning, selection and Gaussian
   compaction remain unchanged; this is not a full GPU topology migration.
