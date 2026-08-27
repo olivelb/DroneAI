@@ -959,6 +959,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodPrefetchPredictedBytes = 0;
   #lodPrefetchPredictionActive = false;
   #lodPrefetchPredictionCandidateNodes = 0;
+  #lodPrefetchMotionAgeMs: number | null = null;
   #lodPrefetchMotionSamples = 0;
   #lodPrefetchPositionSpeed = 0;
   #lodPrefetchDirectionSpeed = 0;
@@ -3160,6 +3161,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodPrefetchPredictedBytes = 0;
     this.#lodPrefetchPredictionActive = false;
     this.#lodPrefetchPredictionCandidateNodes = 0;
+    this.#lodPrefetchMotionAgeMs = null;
     this.#lodPrefetchMotionSamples = 0;
     this.#lodPrefetchPositionSpeed = 0;
     this.#lodPrefetchDirectionSpeed = 0;
@@ -3202,6 +3204,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     );
     if (!expanded) return;
     const motion = this.#lodCameraMotion;
+    const predictionTimestampMs = performance.now();
+    this.#lodPrefetchMotionAgeMs = motion
+      ? predictionTimestampMs - motion.timestampMs
+      : null;
     this.#lodPrefetchMotionSamples = motion?.samples ?? 0;
     this.#lodPrefetchPositionSpeed = motion
       ? Math.hypot(...motion.positionVelocity)
@@ -3217,6 +3223,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         0.01,
       ),
       LOD_PREFETCH_MAXIMUM_ANGLE_RADIANS,
+      predictionTimestampMs,
     );
     const predicted = predictedPose
       ? this.#lodSelection(
@@ -3564,6 +3571,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           predictionCandidateNodes:
             this.#lodPrefetchPredictionCandidateNodes,
           motionSamples: this.#lodPrefetchMotionSamples,
+          motionAgeMs: this.#lodPrefetchMotionAgeMs,
           positionSpeed: this.#lodPrefetchPositionSpeed,
           directionSpeed: this.#lodPrefetchDirectionSpeed,
           locallyAvailablePacks: this.#lodPrefetchLocallyAvailablePacks,
