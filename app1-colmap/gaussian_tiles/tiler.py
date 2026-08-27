@@ -617,6 +617,22 @@ def _positions_and_scales(records: np.ndarray) -> tuple[np.ndarray, np.ndarray, 
     return positions, log_scales, scales
 
 
+def _squared_edge_distances(
+    values: np.ndarray, left: np.ndarray, right: np.ndarray, *, mean: bool = False
+) -> np.ndarray:
+    """Reduce float64 edge deltas with bounded scratch, retaining row arithmetic."""
+
+    result = np.empty(left.size, dtype=np.float64)
+    for start in range(0, left.size, 4096):
+        stop = start + 4096
+        # Advanced indexing owns the gather: never modify source attributes.
+        delta = values[left[start:stop]]
+        np.subtract(delta, values[right[start:stop]], out=delta)
+        np.square(delta, out=delta)
+        result[start:stop] = np.mean(delta, axis=1) if mean else np.sum(delta, axis=1)
+    return result
+
+
 def _adaptive_candidate_edges(records: np.ndarray, neighbors: int = 8) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build deterministic local candidates and a scene-normalized merge cost."""
 
@@ -629,15 +645,15 @@ def _adaptive_candidate_edges(records: np.ndarray, neighbors: int = 8) -> tuple[
         [morton_order[offset:] for offset in range(1, min(neighbors, count - 1) + 1)]
     )
     positions, log_scales, scales = _positions_and_scales(records)
-    spatial = np.sum(np.square(positions[left] - positions[right]), axis=1) / np.maximum(
-        np.sum(np.square(scales[left]), axis=1) + np.sum(np.square(scales[right]), axis=1),
-        1e-12,
+    scale_norms = np.sum(np.square(scales), axis=1)
+    spatial = _squared_edge_distances(positions, left, right) / np.maximum(
+        scale_norms[left] + scale_norms[right], 1e-12
     )
-    shape = np.mean(np.square(log_scales[left] - log_scales[right]), axis=1)
+    shape = _squared_edge_distances(log_scales, left, right, mean=True)
     color_dc = np.column_stack(
         (records["f_dc_0"], records["f_dc_1"], records["f_dc_2"])
     ).astype(np.float64, copy=False)
-    appearance = np.sum(np.square(color_dc[left] - color_dc[right]), axis=1)
+    appearance = _squared_edge_distances(color_dc, left, right)
     alpha = _sigmoid(records["opacity"].astype(np.float64, copy=False))
     opacity = np.square(alpha[left] - alpha[right])
     opacity_names = _opacity_property_names(records)
@@ -645,7 +661,7 @@ def _adaptive_candidate_edges(records: np.ndarray, neighbors: int = 8) -> tuple[
         opacity_sh = np.column_stack([records[name] for name in opacity_names]).astype(
             np.float64, copy=False
         )
-        directional = np.mean(np.square(opacity_sh[left] - opacity_sh[right]), axis=1)
+        directional = _squared_edge_distances(opacity_sh, left, right, mean=True)
     else:
         directional = np.zeros(left.shape[0], dtype=np.float64)
     cost = (
