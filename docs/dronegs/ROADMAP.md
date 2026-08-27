@@ -21,7 +21,12 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.66.
+- Current development version: 0.5.0-dev.67.
+- Dev.67 adds invocation-local refinement phase/transfer telemetry without
+  extra GPU synchronization or algorithm changes. Frozen-checkpoint comparisons
+  preserve all Gaussian parameters; shared-GPU timing does not establish a
+  production speedup or a precise overhead bound. See
+  [the telemetry qualification](REFINEMENT_TELEMETRY.md).
 - Dev.65 makes opacity-SH opt-in (`custom`); Production V1 uses scalar opacity.
 - Dev.66 removes inactive opacity-SH device gradients/moments, saving 180 bytes
   per allocated slot without changing the Gaussian/PLY or checkpoint V4/V5 layout.

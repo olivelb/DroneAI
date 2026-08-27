@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "dronegs/types.hpp"
+#include "dronegs/topology_telemetry.hpp"
 
 namespace dronegs {
 
@@ -176,6 +177,7 @@ struct TrainingMetrics {
     double setup_seconds = 0.0;
     double training_seconds = 0.0;
     double topology_refinement_seconds = 0.0;
+    TopologyRefinementTelemetry topology_telemetry;
     double periodic_checkpoint_seconds = 0.0;
     double checkpoint_snapshot_seconds = 0.0;
     double checkpoint_wait_seconds = 0.0;

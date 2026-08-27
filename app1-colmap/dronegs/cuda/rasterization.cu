@@ -61,6 +61,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -81,6 +82,27 @@
 
 namespace dronegs {
 namespace {
+
+// Reads the host clock only when a caller requests diagnostics. No CUDA events
+// or extra synchronization: transfers include existing waits, kernels are submit time.
+class TopologyPhaseTimer {
+public:
+    explicit TopologyPhaseTimer(TopologyRefinementTelemetry* telemetry)
+        : telemetry_(telemetry),
+          mark_(telemetry ? Clock::now() : Clock::time_point{}) {}
+
+    void finish(double TopologyRefinementTelemetry::*phase) {
+        if (telemetry_ == nullptr) return;
+        const auto now = Clock::now();
+        telemetry_->*phase += std::chrono::duration<double>(now - mark_).count();
+        mark_ = now;
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+    TopologyRefinementTelemetry* telemetry_;
+    Clock::time_point mark_;
+};
 
 constexpr float sh_c0 = 0.28209479177387814F;
 constexpr float sh_c1 = 0.4886025119029199F;
@@ -6007,7 +6029,9 @@ struct OrderedAlphaTrainingContext::Impl {
     TopologyRefinementResult refine_topology(
         float gradient_threshold, float grow_fraction,
         std::uint64_t selection_seed,
-        bool spatial_pruning_bounds) {
+        bool spatial_pruning_bounds,
+        TopologyRefinementTelemetry* telemetry) {
+        TopologyPhaseTimer timer(telemetry);
         if (!std::isfinite(gradient_threshold) ||
             gradient_threshold < 0.0F ||
             !std::isfinite(grow_fraction) ||
@@ -6024,6 +6048,7 @@ struct OrderedAlphaTrainingContext::Impl {
         std::vector<float> host_edge_weights(previous_count);
         std::vector<float> host_absgrad_sum(previous_count);
         std::vector<float> host_absgrad_count(previous_count);
+        timer.finish(&TopologyRefinementTelemetry::host_prepare_seconds);
         gaussians.copy_to_host(
             host_gaussians.data(), previous_count);
         refine_weight_max.copy_to_host(
@@ -6036,6 +6061,11 @@ struct OrderedAlphaTrainingContext::Impl {
             host_absgrad_sum.data(), previous_count);
         absgrad_observation_count.copy_to_host(
             host_absgrad_count.data(), previous_count);
+        if (telemetry) {
+            telemetry->snapshot_download_bytes =
+                previous_count * (sizeof(Gaussian) + 5U * sizeof(float));
+        }
+        timer.finish(&TopologyRefinementTelemetry::snapshot_download_seconds);
 
         std::array<float, 3> lower_bound{
             -std::numeric_limits<float>::infinity(),
@@ -6186,6 +6216,7 @@ struct OrderedAlphaTrainingContext::Impl {
             pruned != 0U &&
             requested_recycle >= pruned;
         const bool compacted = pruned != 0U && !in_place_recycle;
+        timer.finish(&TopologyRefinementTelemetry::cpu_prune_seconds);
         if (compacted) {
             std::vector<Gaussian> compact_gaussians;
             compact_gaussians.reserve(survivors.size());
@@ -6216,8 +6247,13 @@ struct OrderedAlphaTrainingContext::Impl {
                         decltype(allocation.data())>>;
                 std::vector<value_type> source(
                     previous_count * components);
+                timer.finish(&TopologyRefinementTelemetry::compaction_cpu_seconds);
                 allocation.copy_to_host(
                     source.data(), source.size());
+                if (telemetry) {
+                    telemetry->compaction_download_bytes += source.size() * sizeof(value_type);
+                }
+                timer.finish(&TopologyRefinementTelemetry::compaction_download_seconds);
                 std::vector<value_type> compact(
                     survivors.size() * components);
                 for (std::size_t destination = 0U;
@@ -6228,8 +6264,13 @@ struct OrderedAlphaTrainingContext::Impl {
                         components,
                         compact.data() + destination * components);
                 }
+                timer.finish(&TopologyRefinementTelemetry::compaction_cpu_seconds);
                 allocation.copy_from_host(
                     compact.data(), compact.size());
+                if (telemetry) {
+                    telemetry->compaction_upload_bytes += compact.size() * sizeof(value_type);
+                }
+                timer.finish(&TopologyRefinementTelemetry::compaction_upload_seconds);
             };
             compact_moments(first_dc, 3U);
             compact_moments(second_dc, 3U);
@@ -6251,14 +6292,20 @@ struct OrderedAlphaTrainingContext::Impl {
             compact_moments(absgrad_sum, 1U);
             compact_moments(absgrad_observation_count, 1U);
             gaussian_count = compact_gaussians.size();
+            timer.finish(&TopologyRefinementTelemetry::compaction_cpu_seconds);
             gaussians.copy_from_host(
                 compact_gaussians.data(), gaussian_count);
+            if (telemetry) {
+                telemetry->compaction_upload_bytes += gaussian_count * sizeof(Gaussian);
+            }
+            timer.finish(&TopologyRefinementTelemetry::compaction_upload_seconds);
             host_gaussians = std::move(compact_gaussians);
             host_weights = std::move(compact_weights);
             host_visibility = std::move(compact_visibility);
             host_edge_weights = std::move(compact_edge_weights);
             host_absgrad_sum = std::move(compact_absgrad_sum);
             host_absgrad_count = std::move(compact_absgrad_count);
+            timer.finish(&TopologyRefinementTelemetry::compaction_cpu_seconds);
         }
         std::vector<float> surviving_edge_weights;
         if (in_place_recycle) {
@@ -6356,6 +6403,7 @@ struct OrderedAlphaTrainingContext::Impl {
         const auto physical_appended = added - physical_reused;
         const auto reported_reused = std::min(added, pruned);
         const auto reported_appended = added - reported_reused;
+        timer.finish(&TopologyRefinementTelemetry::cpu_score_seconds);
         if (added != 0U) {
             if (added < candidates.size()) {
                 std::nth_element(
@@ -6388,10 +6436,15 @@ struct OrderedAlphaTrainingContext::Impl {
                               gaussian_count + split -
                               physical_reused);
             }
+            timer.finish(&TopologyRefinementTelemetry::cpu_select_seconds);
             refinement_indices.copy_from_host(
                 parent_indices.data(), added);
             refinement_destinations.copy_from_host(
                 child_indices.data(), added);
+            if (telemetry) {
+                telemetry->split_upload_bytes = added * 2U * sizeof(std::uint32_t);
+            }
+            timer.finish(&TopologyRefinementTelemetry::split_upload_seconds);
             constexpr std::uint32_t block_size = 256U;
             const auto blocks = static_cast<std::uint32_t>(
                 (added + block_size - 1U) / block_size);
@@ -6428,6 +6481,7 @@ struct OrderedAlphaTrainingContext::Impl {
         edge_weight_sum.zero(gaussian_count);
         absgrad_sum.zero(gaussian_count);
         absgrad_observation_count.zero(gaussian_count);
+        timer.finish(&TopologyRefinementTelemetry::device_submit_seconds);
         return {
             .candidates = candidates.size(),
             .pruned = pruned,
@@ -6664,10 +6718,23 @@ TopologyRefinementResult
 OrderedAlphaTrainingContext::refine_topology(
     float gradient_threshold, float grow_fraction,
     std::uint64_t selection_seed,
-    bool spatial_pruning_bounds) {
-    return impl_->refine_topology(
+    bool spatial_pruning_bounds,
+    TopologyRefinementTelemetry* telemetry) {
+    const auto started = telemetry ? std::chrono::steady_clock::now()
+                                   : std::chrono::steady_clock::time_point{};
+    if (telemetry) *telemetry = {};
+    const auto result = impl_->refine_topology(
         gradient_threshold, grow_fraction, selection_seed,
-        spatial_pruning_bounds);
+        spatial_pruning_bounds, telemetry);
+    if (telemetry) {
+        telemetry->measured_calls = 1U;
+        telemetry->total_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - started).count();
+        // Includes destruction of host vectors and entry/return bookkeeping.
+        telemetry->other_seconds = std::max(
+            0.0, telemetry->total_seconds - topology_accounted_seconds(*telemetry));
+    }
+    return result;
 }
 
 MrnfLearningRates

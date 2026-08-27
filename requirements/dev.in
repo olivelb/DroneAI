@@ -5,6 +5,7 @@ actionlint-py
 coverage[toml]
 fiona
 httpx2
+jsonschema
 mypy
 numpy
 pip==26.2.1

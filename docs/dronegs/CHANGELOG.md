@@ -2,6 +2,29 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.67 - Refinement diagnostics
+
+- Separate host allocation, snapshot download, pruning, moment compaction,
+  scoring, top-K preparation, index upload and device submission durations.
+- Record logical transfer bytes in refinement events and invocation-local
+  manifest aggregates; leave checkpoint state and training policy unchanged.
+- Add an optional CUDA benchmark using one frozen checkpoint per case and
+  alternating instrumented/uninstrumented runs, plus CPU/CUDA/JSON contracts.
+- Preserve exact Gaussian parity in the qualified synthetic cases. Timing on
+  a shared GPU is noisy; no precise overhead bound or training speedup is claimed.
+- See [measurement semantics and retained evidence](REFINEMENT_TELEMETRY.md).
+
+## 0.5.0-dev.66 - Conditional opacity-SH storage
+
+- Avoid inactive opacity-SH device gradients and Adam moments: 180 bytes per
+  allocated Gaussian slot. Preserve Gaussian ABI, checkpoint layouts and resume.
+- Pass the native CPU/CUDA allocation, topology and checkpoint regression gates.
+
+## 0.5.0-dev.65 - Explicit directional opacity
+
+- Make opacity-SH opt-in for custom runs; Production V1 uses scalar opacity
+  while preserving color SH. Keep directional opacity available explicitly.
+
 ## 0.5.0-dev.64 - Multiwarp FastGS backward blocks
 
 - Keep one 32-thread NVIDIA warp responsible for one FastGS backward bucket
