@@ -63,7 +63,10 @@ class FakeWorker implements GsTileDecodeWorker {
   respond(index = 0) {
     const request = this.requests[index];
     this.onmessage?.({
-      data: { type: "decoded", id: request.id, result: result(request.recordCount), computeMs: 5 },
+      data: {
+        type: "decoded", id: request.id, result: result(request.recordCount), computeMs: 5,
+        recycledPayload: request.recycleInput ? new ArrayBuffer(request.payload.byteLength || request.recordCount * 96) : undefined,
+      },
     } as MessageEvent<GsTileDecodeWorkerResponse>);
   }
 
@@ -73,6 +76,115 @@ class FakeWorker implements GsTileDecodeWorker {
 }
 
 describe("GSTile decode Worker pool", () => {
+  it("reuses a returned larger buffer while copying only the requested range", async () => {
+    const worker = new FakeWorker();
+    const pool = new GsTileDecodeWorkerPool(1, () => worker);
+    const signal = new AbortController().signal;
+    const cached = Uint8Array.from({ length: 320 }, (_, i) => i).buffer;
+    try {
+      const first = pool.decode(cached, 1, 288, 3, quantization, signal);
+      worker.respond();
+      const firstResult = await first;
+      expect(firstResult.timing.inputAllocatedBytes).toBe(288);
+      expect(firstResult.timing.inputReusedBytes).toBe(0);
+      expect(pool.retainedInputBytes).toBe(288);
+      const second = pool.decode(cached, 127, 96, 1, quantization, signal);
+      expect(pool.retainedInputBytes).toBe(0);
+      expect(worker.requests[1].payload.byteLength).toBe(288);
+      expect(new Uint8Array(worker.requests[1].payload, 0, 96)).toEqual(new Uint8Array(cached, 127, 96));
+      structuredClone(worker.requests[1], { transfer: worker.transfers[1] });
+      expect(cached.byteLength).toBe(320);
+      worker.onmessage?.({ data: {
+        type: "decoded", id: worker.requests[1].id, result: result(1), computeMs: 5,
+        recycledPayload: new ArrayBuffer(288),
+      } } as MessageEvent<GsTileDecodeWorkerResponse>);
+      const secondResult = await second;
+      expect(secondResult.timing.inputAllocatedBytes).toBe(0);
+      expect(secondResult.timing.inputReusedBytes).toBe(96);
+      expect(pool.retainedInputBytes).toBe(288);
+    } finally { pool.dispose(); }
+    expect(pool.retainedInputBytes).toBe(0);
+  });
+
+  it("grows one slot buffer and does not retain inputs above 8 MiB", async () => {
+    const worker = new FakeWorker();
+    const pool = new GsTileDecodeWorkerPool(1, () => worker);
+    try {
+      for (const [index, count] of [1, 2, 90_000, 1].entries()) {
+        const pending = pool.decode(new ArrayBuffer(count * 96), 0, count * 96, count, quantization, new AbortController().signal);
+        expect(worker.requests[index].recycleInput).toBe(count * 96 <= 8 * 1024 * 1024);
+        worker.respond(index);
+        const decoded = await pending;
+        expect(decoded.timing.inputAllocatedBytes).toBe(count * 96);
+        expect(pool.retainedInputBytes).toBe(count === 90_000 ? 0 : count * 96);
+      }
+    } finally { pool.dispose(); }
+  });
+
+  it.each(["missing", "short", "oversized", "aliased", "malformed streams"])("rejects a %s recycled input and replaces the slot", async (failure) => {
+    const first = new FakeWorker(), replacement = new FakeWorker();
+    const pool = new GsTileDecodeWorkerPool(1, vi.fn().mockReturnValueOnce(first).mockReturnValue(replacement));
+    try {
+      const pending = pool.decode(new ArrayBuffer(96), 0, 96, 1, quantization, new AbortController().signal);
+      const rejected = expect(pending).rejects.toThrow("recycled input");
+      const decoded = result(1), buffer = new ArrayBuffer(96);
+      if (failure === "aliased") decoded.centerStream = new Float32Array(buffer);
+      if (failure === "malformed streams") decoded.shStreams = {} as GsTileNativeDecodeResult["shStreams"];
+      first.onmessage?.({ data: {
+        type: "decoded", id: first.requests[0].id, result: decoded, computeMs: 5,
+        recycledPayload: failure === "missing" ? undefined : failure === "short" ? new ArrayBuffer(95) : failure === "oversized" ? new ArrayBuffer(97) : buffer,
+      } } as MessageEvent<GsTileDecodeWorkerResponse>);
+      await rejected;
+      expect(first.terminated).toBe(true);
+      expect(pool.retainedInputBytes).toBe(0);
+    } finally { pool.dispose(); }
+  });
+
+  it("allows explicit no-recycling and retains no input", async () => {
+    const worker = new FakeWorker();
+    const pool = new GsTileDecodeWorkerPool(1, () => worker, false);
+    try {
+      const pending = pool.decode(new ArrayBuffer(96), 0, 96, 1, quantization, new AbortController().signal);
+      expect(worker.requests[0].recycleInput).toBe(false);
+      worker.respond();
+      expect((await pending).timing.inputAllocatedBytes).toBe(96);
+      expect(pool.retainedInputBytes).toBe(0);
+    } finally { pool.dispose(); }
+  });
+
+  it("waits for an aborted active decode before recycling its input into queued work", async () => {
+    const worker = new FakeWorker();
+    const pool = new GsTileDecodeWorkerPool(1, () => worker);
+    const controller = new AbortController();
+    try {
+      const active = pool.decode(new ArrayBuffer(192), 0, 192, 2, quantization, controller.signal);
+      const rejected = expect(active).rejects.toMatchObject({ name: "AbortError" });
+      const next = pool.decode(new ArrayBuffer(96), 0, 96, 1, quantization, new AbortController().signal);
+      controller.abort();
+      await rejected;
+      expect(worker.requests).toHaveLength(1);
+      expect(pool.retainedInputBytes).toBe(0);
+      worker.respond();
+      expect(worker.requests).toHaveLength(2);
+      expect(worker.requests[1].payload.byteLength).toBe(192);
+      worker.respond(1);
+      expect((await next).timing.inputReusedBytes).toBe(96);
+    } finally { pool.dispose(); }
+  });
+
+  it("releases all slot spares on disposal", async () => {
+    const workers = Array.from({ length: 4 }, () => new FakeWorker());
+    let index = 0;
+    const pool = new GsTileDecodeWorkerPool(4, () => workers[index++]);
+    const pending = workers.map((_, i) => pool.decode(new ArrayBuffer((i + 1) * 96), 0, (i + 1) * 96, i + 1, quantization, new AbortController().signal));
+    workers.forEach(worker => worker.respond());
+    await Promise.all(pending);
+    expect(pool.retainedInputBytes).toBe(960);
+    pool.dispose();
+    expect(pool.retainedInputBytes).toBe(0);
+    expect(workers.every(worker => worker.terminated)).toBe(true);
+  });
+
   it("recovers its slot after a synchronous dispatch failure", async () => {
     const firstWorker = new FakeWorker();
     const replacement = new FakeWorker();
@@ -200,7 +312,7 @@ describe("GSTile decode Worker pool", () => {
     let now = 0;
     const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
     const worker = new FakeWorker();
-    const pool = new GsTileDecodeWorkerPool(1, () => worker);
+    const pool = new GsTileDecodeWorkerPool(1, () => worker, false);
     try {
       const active = pool.decode(new ArrayBuffer(96), 0, 96, 1, quantization, new AbortController().signal);
       now = 10;
@@ -218,7 +330,7 @@ describe("GSTile decode Worker pool", () => {
       const decoded = await next;
       expect(decoded.result.count).toBe(1);
       expect(decoded.timing).toEqual({
-        queueMs: 10, inputCopyMs: 3, inputCopyBytes: 96, roundTripMs: 17, computeMs: 5,
+        queueMs: 10, inputCopyMs: 3, inputCopyBytes: 96, inputAllocatedBytes: 96, inputReusedBytes: 0, roundTripMs: 17, computeMs: 5,
       });
       expect(content.byteLength).toBe(128);
     } finally {

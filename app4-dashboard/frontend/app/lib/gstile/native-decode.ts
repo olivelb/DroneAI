@@ -32,7 +32,7 @@ const dequantizeU16 = (value: number, minimum: number, maximum: number) =>
 
 /** Decode the transform subset of an already SHA-256-authenticated Q96 payload. */
 export const decodeGsTileNativePayload = (
-  payload: ArrayBuffer,
+  payload: ArrayBuffer | Uint8Array<ArrayBuffer>,
   recordCount: number,
   quantization: GsTileQuantization,
   float2Half?: (value: number) => number,
@@ -76,7 +76,9 @@ export const decodeGsTileNativePayload = (
   const transformBHalf = hasNativeFloat16
     ? new Float16Array(transformB.buffer)
     : null;
-  const view = new DataView(payload);
+  const view = payload instanceof Uint8Array
+    ? new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+    : new DataView(payload);
   const shScratch = createGsTileNativeShScratch();
   const minimum: [number, number, number] = [Infinity, Infinity, Infinity];
   const maximum: [number, number, number] = [-Infinity, -Infinity, -Infinity];

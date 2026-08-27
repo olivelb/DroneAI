@@ -27,6 +27,28 @@ const quantization: GsTileQuantization = {
 };
 
 describe("GSTile native transform payload decoding", () => {
+  it.each([0, 1, 127])("decodes only a bounded byte view at offset %s", (offset) => {
+    const payload = new Uint8Array(3 * 96);
+    for (let i = 0; i < 3; i += 1) {
+      payload[i * 96 + 12] = 1;
+      payload[i * 96] = i * 29;
+      payload[i * 96 + 28] = i * 17;
+    }
+    const storage = new Uint8Array(offset + payload.length + 96).fill(0xa5);
+    storage.set(payload, offset);
+    const before = storage.slice();
+    const actual = decodeGsTileNativePayload(
+      storage.subarray(offset, offset + payload.length), 3, quantization, FloatPacking.float2Half,
+    );
+    expect(actual).toEqual(decodeGsTileNativePayload(payload.buffer, 3, quantization, FloatPacking.float2Half));
+    expect(storage).toEqual(before);
+  });
+
+  it.each([95, 97, 192])("rejects a byte view with inconsistent length %s", (length) => {
+    expect(() => decodeGsTileNativePayload(new Uint8Array(length), 1, quantization, FloatPacking.float2Half))
+      .toThrow("shape is inconsistent");
+  });
+
   it("reuses scale exponentials when computing bounds", () => {
     const payload = new ArrayBuffer(96);
     new DataView(payload).setInt16(12, 32767, true);

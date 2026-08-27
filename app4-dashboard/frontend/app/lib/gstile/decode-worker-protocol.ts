@@ -7,6 +7,7 @@ export type GsTileDecodeWorkerRequest = {
   payload: ArrayBuffer;
   recordCount: number;
   quantization: GsTileQuantization;
+  recycleInput: boolean;
 };
 
 export type GsTileDecodeWorkerResponse =
@@ -15,5 +16,6 @@ export type GsTileDecodeWorkerResponse =
       id: number;
       result: GsTileNativeDecodeResult;
       computeMs: number;
+      recycledPayload?: ArrayBuffer;
     }
   | { type: "error"; id: number; message: string };

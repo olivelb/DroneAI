@@ -444,6 +444,7 @@ export type PlayCanvasResidentBackendOptions = {
   gpuAssembly?: GsTileGpuAssembly;
   /** Disable off-thread assembly only; never changes the cut. */
   workerAssembly?: boolean;
+  recycleDecodeInput?: boolean;
   lodUpdateDelayMilliseconds?: number;
 };
 
@@ -908,6 +909,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #assemblyWorkerUnavailable = false;
   #assemblyWorkerFailures = 0;
   readonly #workerAssemblyEnabled: boolean;
+  readonly #recycleDecodeInput: boolean;
   #lodGeneration = 0;
   #lodSelectionKey = "";
   #lodPendingKey = "";
@@ -1002,6 +1004,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     // replacements, which presents as tile-aligned oversized/blurry splats.
     this.#gpuAssembly = gstileGpuAssembly(options.gpuAssembly);
     this.#workerAssemblyEnabled = options.workerAssembly ?? true;
+    this.#recycleDecodeInput = options.recycleDecodeInput ?? true;
     this.#lodUpdateDelayMilliseconds = gstileLodUpdateDelayMilliseconds(
       options.lodUpdateDelayMilliseconds,
     );
@@ -2440,7 +2443,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
     if (!this.#decodeWorkerPool) {
       try {
-        this.#decodeWorkerPool = new GsTileDecodeWorkerPool();
+        this.#decodeWorkerPool = new GsTileDecodeWorkerPool(undefined, undefined, this.#recycleDecodeInput);
       } catch {
         this.#decodeWorkerPoolUnavailable = true;
         return null;
@@ -2548,6 +2551,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         );
         timings.decodeBreakdown.inputCopyMs += performance.now() - fallbackStarted;
         timings.decodeBreakdown.inputCopyBytes += fallbackPayload.byteLength;
+        timings.decodeBreakdown.inputAllocatedBytes += fallbackPayload.byteLength;
         nativeResult = decodeGsTileNativePayload(
           fallbackPayload,
           tile.recordCount,
@@ -3528,6 +3532,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       performance: {
         assemblyWorkerDisabled: this.#assemblyWorkerUnavailable,
         assemblyWorkerFailures: this.#assemblyWorkerFailures,
+        decodeInputRetainedBytes: this.#decodeWorkerPool?.retainedInputBytes ?? 0,
         lodTotalMs: this.#lodTotalMs,
         lodLoadMs: this.#lodLoadMs,
         lodCommitMs: this.#lodCommitMs,

@@ -41,7 +41,7 @@ per cut; the completed load publishes the breakdown with existing LOD metrics.
 |---|---|
 | `workerTasks` | Number of successful Worker responses accumulated for this cut. |
 | `queueMs` | Sum from enqueue to slot admission, before input copying. |
-| `inputCopyMs`, `inputCopyBytes` | Sum of explicitly sliced input payload time/bytes: 96 bytes per record. Successful Worker work plus any synchronous fallback slice; failed dispatch copies are not counted. |
+| `inputCopyMs`, `inputCopyBytes` | Sum of explicit defensive input-copy time/bytes: 96 bytes per record. Originally slices; subsequent bounded recycling also uses `.set`. Successful Worker work plus any synchronous fallback slice; failed dispatch copies are not counted. |
 | `roundTripMs` | Sum from immediately before `postMessage` to main-thread response handling, including scheduling, transfer/serialization and Worker computation. |
 | `computeMs` | Sum of decode/stream preparation durations measured inside each Worker, including decoder allocations. It is nested within round-trip, not an additional wall-time phase. |
 | `outputCopyMs`, `outputCopyBytes` | Explicit active-stream copies into merged staging columns, including fallback results: 172 bytes per record. Padding and browser/driver-internal copies are excluded. |
@@ -150,8 +150,10 @@ reduces isolated Chrome Worker decode time by 6.49% in the recorded paired
 benchmark. Two SH-loop variants were rejected. A subsequent
 [bounded assembly Worker](WORKER_ASSEMBLY_QUALIFICATION_20260827.md) moves the
 large output copies away from the main thread with byte-identical outputs.
-Input copies and full camera-path latency remain separate optimization targets;
-the off-thread component result is not a universal full-load/FPS speedup.
+Subsequent [bounded input recycling](INPUT_RECYCLE_QUALIFICATION_20260827.md)
+reduces fresh input allocations while preserving those defensive copies and adds
+allocation/reuse counters. Full camera-path latency remains a separate target;
+neither component result is a universal full-load/FPS speedup.
 
 Local WSL and BIGZEN evidence directory:
 `/home/olivier/droneai-qualifications/gstile-worker-latency-20260827`.
