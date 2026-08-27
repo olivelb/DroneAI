@@ -6,6 +6,12 @@ Final telemetry correction: `0627d65516cc585518af21784ee612606c48f6ba`.
 This implements the bounded follow-up to the
 [isolated experiment](ALIGNED_STAGING_EVALUATION_20260827.md).
 
+Follow-up: the [door-to-facade exploratory comparison](CAMERA_PATH_EXPLORATORY_20260827.md)
+retains two warmups and six pairs. Paired commit time falls about 25%, while
+readiness stays around ten seconds with substantial network loading. The
+interrupted/amended collection is complete but not formally qualified; it
+does not establish FPS or production-wide loading acceleration.
+
 ## Implementation
 
 Incremental merged staging now uses the existing arena width. Column allocation,
