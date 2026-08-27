@@ -34,10 +34,20 @@ with the remaining process-memory gate](../benchmarks/gstile-cache-isolation-qua
 Camera prediction expires when its last motion sample is one prediction
 horizon old (1,500 ms currently), even if no new input arrives. The backend
 checks a fresh monotonic timestamp and reports `lodPrefetch.motionAgeMs`;
-stationary halo prefetch remains active. This fixes stale extrapolation and
-skips its speculative traversal, but the recorded one-step replay shows no
-bandwidth saving because other halo packs still fill the 96 MiB floor. See
+stationary halo prefetch remains active. The freshness-only phase fixed stale
+extrapolation and skipped its speculative traversal, but its one-step replay
+showed no bandwidth saving because other halo packs still filled the then
+96 MiB floor. See
 the [freshness correction and negative traffic result](../benchmarks/gstile-prefetch-freshness-qualification.md).
+
+The adaptive speculative floor is now 64 MiB, retaining the 384 MiB initial
+ceiling, 128 MiB sampling threshold and 50% utility target. The floor reduction
+only affects low-utility prefetch; it does not change demand loading or cache
+capacity. A sequential warmed-path replay estimates 18.73% less speculative
+traffic, not a measured browser speedup. The same evidence motivates a separate
+1.5 GiB desktop RAM-cache experiment (the two-view pack set is 1,262 MiB), but
+the RAM cap remains 768 MiB pending qualification. See the
+[budget replay and memory-cache analysis](../benchmarks/gstile-prefetch-budget-qualification.md).
 
 ## Decisions
 

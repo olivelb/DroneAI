@@ -149,6 +149,39 @@ describe("GSTile LOD halo prefetch", () => {
     ).toBe(DEFAULT_GSTILE_PREFETCH_BYTES);
   });
 
+  it.each([
+    [526_351_456, 90],
+    [620_443_200, 76],
+    [700_059_520, 68],
+  ])("responds to low utility after %s completed bytes", (completedBytes, expectedMiB) => {
+    // Sequential Saint-Etienne replay: prior plans change the next denominator.
+    expect(gstileAdaptivePrefetchBudget(completedBytes, 61_632_960).maximumBytes)
+      .toBe(expectedMiB * 1024 * 1024);
+  });
+
+  it("retains a 64 MiB exploration floor only after the sample threshold", () => {
+    expect(gstileAdaptivePrefetchBudget(GSTILE_PREFETCH_UTILITY_SAMPLE_BYTES - 1, 0))
+      .toEqual({ maximumBytes: 384 * 1024 * 1024, adaptive: false, utilityRatio: 0 });
+    expect(gstileAdaptivePrefetchBudget(GSTILE_PREFETCH_UTILITY_SAMPLE_BYTES, 0))
+      .toEqual({ maximumBytes: 64 * 1024 * 1024, adaptive: true, utilityRatio: 0 });
+  });
+
+  it.each([
+    [64, 96],
+    [128, 192],
+    [256, 384],
+    [512, 384],
+  ])("preserves the higher-utility budget with %s MiB useful", (usefulMiB, expectedMiB) => {
+    expect(gstileAdaptivePrefetchBudget(512 * 1024 * 1024, usefulMiB * 1024 * 1024).maximumBytes)
+      .toBe(expectedMiB * 1024 * 1024);
+  });
+
+  it("can recover the full budget when earlier prefetch becomes useful", () => {
+    const completed = 512 * 1024 * 1024;
+    expect(gstileAdaptivePrefetchBudget(completed, 0).maximumBytes).toBe(64 * 1024 * 1024);
+    expect(gstileAdaptivePrefetchBudget(completed, completed / 2).maximumBytes).toBe(DEFAULT_GSTILE_PREFETCH_BYTES);
+  });
+
   it("rejects inconsistent utility counters", () => {
     expect(() => gstileAdaptivePrefetchBudget(100, 101)).toThrow(/utility/);
   });
