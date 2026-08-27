@@ -4,6 +4,33 @@ This document is the delivery reference for the DroneAI Gaussian streaming
 work. It refines the architecture proposal into ordered, testable increments.
 Scientific representation and platform orchestration are tracked separately.
 
+## Current loading policy — 2026-08-27
+
+The range scheduler keeps the existing 768 MiB RAM ceiling, but uses a
+byte-bounded segmented LRU: demanded ranges can occupy a protected segment of
+up to 75% of the budget; speculative ranges and demoted demand share the
+remaining probation segment. Unused protected capacity is available to
+probation. A critical hit promotes a range; speculative hits never refresh
+protected recency. Oversized predictions are not admitted if doing so would
+evict protected demand. These are explicit initial policy settings, not a
+claim that this split is optimal for every scene.
+
+Persistent reads have a separate bounded pool (default two); network
+concurrency remains caller-configured (six in the viewer, eight in the
+standalone scheduler default). Each pool prioritizes critical work, supports
+promotion and cancellation, and releases its slot before waiting in the
+other pool. Retry backoff occupies neither pool. `active`/`queued` statistics
+sum both pools; `activeNetwork`, `activePersistent`, `queuedNetwork`, and
+`queuedPersistent` distinguish them. Aggregate active work can therefore
+exceed the network limit by the persistent-read limit. Queue-wait counters
+cover both pools, not just network contention.
+
+`cacheProtectedBytes` and `prefetchCacheAdmissionRejections` make the policy
+observable. SHA verification, immutable range keys, the IndexedDB schema and
+2 GiB production cache ceiling, Zstd transport, final cut selection, and GPU
+data are unchanged. See the [component and camera-path qualification,
+with the remaining process-memory gate](../benchmarks/gstile-cache-isolation-qualification.md).
+
 ## Decisions
 
 1. **Rendering base:** integrate PlayCanvas behind a DroneAI
@@ -156,7 +183,8 @@ Implementation status:
   cut and resolves equal priorities deterministically;
 - missing ranges are fetched, hashed and decoded into CPU-side prepared tiles.
   Superseded consumers are aborted, but identical range transfers are shared
-  and completed into a 768 MiB LRU cache instead of being downloaded again.
+  and completed into a 768 MiB segmented LRU cache instead of being downloaded
+  again (see the current loading policy above).
   Replacement groups are committed progressively: refinement removes an
   ancestor only when every selected child in that group is ready, and
   coarsening removes descendants only when their ancestor is ready. Unrelated
