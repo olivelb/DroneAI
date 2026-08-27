@@ -128,6 +128,8 @@ def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         command.extend(["--pack-workers", str(arguments.pack_workers)])
     if arguments.pack_pending_bytes is not None:
         command.extend(["--pack-pending-bytes", str(arguments.pack_pending_bytes)])
+    if arguments.progress_jsonl:
+        command.append("--progress-jsonl")
     if arguments.lod_proxy_size is not None:
         command.extend(
             [
@@ -190,6 +192,8 @@ def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             "filesystemOutputBlocks": after.ru_oublock - before.ru_oublock,
         },
         "result": build_result,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
     }
 
 
@@ -210,6 +214,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--pack-target-bytes", type=int)
     run.add_argument("--pack-workers", type=int, choices=(1, 2, 4))
     run.add_argument("--pack-pending-bytes", type=int)
+    run.add_argument("--progress-jsonl", action="store_true")
     run.add_argument("--lod-proxy-size", type=int)
     run.add_argument(
         "--lod-proxy-strategy",
