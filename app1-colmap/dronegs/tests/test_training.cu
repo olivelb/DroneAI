@@ -1334,13 +1334,24 @@ int main() {
                     first_split.opacity_logit -
                     second_split.opacity_logit)));
         }
+        dronegs::TopologyRefinementTelemetry empty_telemetry;
+        empty_telemetry.measured_calls = 99U;  // Per-call output must reset.
         const auto empty_refinement =
-            split_context.refine_topology(0.0F, 1.0F);
+            split_context.refine_topology(0.0F, 1.0F, 0U, false, &empty_telemetry);
         if (empty_refinement.candidates != 0U ||
             empty_refinement.added != 0U ||
             empty_refinement.gaussian_count != 2U) {
             throw std::runtime_error(
                 "topology statistics did not reset after refinement");
+        }
+        if (empty_telemetry.measured_calls != 1U ||
+            empty_telemetry.snapshot_download_bytes != 2U * (sizeof(dronegs::Gaussian) + 5U * sizeof(float)) ||
+            empty_telemetry.compaction_download_bytes != 0U ||
+            empty_telemetry.compaction_upload_bytes != 0U ||
+            empty_telemetry.split_upload_bytes != 0U ||
+            empty_telemetry.cpu_select_seconds != 0.0 ||
+            empty_telemetry.compaction_cpu_seconds != 0.0) {
+            throw std::runtime_error("no-growth topology diagnostics mismatch");
         }
         auto pruned_parent = split_parent;
         pruned_parent.opacity_logit = -20.0F;
@@ -1349,9 +1360,15 @@ int main() {
             32U * 32U, 2U, 2U);
         static_cast<void>(reuse_context.train_step(
             quality_camera, split_target.data(), split_target.size()));
+        dronegs::TopologyRefinementTelemetry reuse_telemetry;
         const auto reuse_refinement =
             reuse_context.refine_topology(
-                0.0F, 1.0F, 7U, true);
+                0.0F, 1.0F, 7U, true, &reuse_telemetry);
+        if (reuse_telemetry.compaction_download_bytes != 0U ||
+            reuse_telemetry.compaction_upload_bytes != 0U ||
+            reuse_telemetry.split_upload_bytes != 2U * sizeof(std::uint32_t)) {
+            throw std::runtime_error("in-place reuse transfer diagnostics mismatch");
+        }
         if (reuse_refinement.pruned != 1U ||
             reuse_refinement.added != 1U ||
             reuse_refinement.reused != 1U ||
@@ -1591,7 +1608,19 @@ int main() {
                 3U, 1U, 42U, true, 54.59815F, opacity_sh_enabled);
             static_cast<void>(source.train_step(
                 quality_camera, split_target.data(), split_target.size()));
-            const auto refinement = source.refine_topology(0.0F, 1.0F, 7U, true);
+            dronegs::TopologyRefinementTelemetry telemetry;
+            const auto refinement = source.refine_topology(0.0F, 1.0F, 7U, true, &telemetry);
+            const std::size_t moment_bytes = sizeof(float) *
+                (120U + (opacity_sh_enabled ? 2U * dronegs::maximum_opacity_sh_coefficients : 0U));
+            if (telemetry.measured_calls != 1U ||
+                telemetry.snapshot_download_bytes != 2U * (sizeof(dronegs::Gaussian) + 5U * sizeof(float)) ||
+                telemetry.compaction_download_bytes != 2U * moment_bytes ||
+                telemetry.compaction_upload_bytes != moment_bytes + sizeof(dronegs::Gaussian) ||
+                telemetry.split_upload_bytes != refinement.added * 2U * sizeof(std::uint32_t) ||
+                !std::isfinite(telemetry.total_seconds) || telemetry.total_seconds <= 0.0 ||
+                std::abs(dronegs::topology_accounted_seconds(telemetry) - telemetry.total_seconds) > 1.0e-9) {
+                throw std::runtime_error("compaction topology diagnostics mismatch");
+            }
             if (!refinement.compacted || refinement.pruned != 1U ||
                 refinement.added == 0U) {
                 throw std::runtime_error(
@@ -1847,6 +1876,20 @@ int main() {
             maximum_rotation_delta <= 1.0e-7F) {
             throw std::runtime_error(
                 "ordered geometry parameters did not all update");
+        }
+        auto profiled_options = options;
+        profiled_options.iterations = 400U;
+        profiled_options.tile_mode = 1U;
+        profiled_options.topology_cooldown = 0U;
+        auto profiled_model = ordered_initial;
+        const auto profiled_metrics = dronegs::train_ordered_mrnf(
+            profiled_options, scene, profiled_model);
+        if (profiled_metrics.topology_telemetry.measured_calls == 0U ||
+            profiled_metrics.topology_telemetry.measured_calls != profiled_metrics.topology_refinements ||
+            profiled_metrics.topology_telemetry.snapshot_download_bytes == 0U ||
+            profiled_metrics.topology_telemetry.total_seconds > profiled_metrics.topology_refinement_seconds ||
+            ordered_metrics.topology_telemetry.measured_calls != 0U) {
+            throw std::runtime_error("trainer did not aggregate invocation-local topology diagnostics");
         }
         std::filesystem::remove_all(root);
         std::cout

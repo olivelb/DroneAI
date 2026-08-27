@@ -25,6 +25,8 @@
 #include "dronegs/profile_registry.hpp"
 #include "dronegs/training.hpp"
 
+void test_topology_telemetry();
+
 namespace {
 
 void check(bool condition, const std::string& message) {
@@ -294,6 +296,11 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         manifest_text.find("\"topology_refinement_seconds\": 0") !=
             std::string::npos,
         "manifest topology timing missing");
+    check(
+        manifest_text.find("\"topology_telemetry\": {\"version\":1") !=
+            std::string::npos &&
+            manifest_text.find("\"measured_calls\":0") != std::string::npos,
+        "manifest topology phase telemetry missing");
     check(
         manifest_text.find("\"periodic_checkpoint_seconds\": 0") !=
             std::string::npos,
@@ -1165,6 +1172,7 @@ int main() {
     const auto data = base / "dataset";
     const auto output = base / "output";
     try {
+        test_topology_telemetry();
         test_scene_and_ply(data);
         test_optimizer_profile_registry();
         test_local_scale_initialization();

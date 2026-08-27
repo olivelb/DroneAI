@@ -204,7 +204,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "{\n"
            << "  \"contract_version\": 1,\n"
            << "  \"backend\": \"dronegs-native-mrnf-fastgs\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.66\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.67\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -527,6 +527,9 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << measurements.export_seconds << ",\n"
            << "    \"wall_seconds\": " << measurements.wall_seconds << "\n"
            << "  },\n"
+           << "  \"topology_telemetry\": ";
+    write_topology_telemetry(stream, measurements.topology_telemetry);
+    stream << ",\n"
            << "  \"metrics\": {\n"
            << "    \"initial_loss\": " << measurements.initial_loss << ",\n"
            << "    \"final_loss\": " << measurements.final_loss

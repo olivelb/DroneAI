@@ -25,6 +25,9 @@
         "path": {"type": "string"},
         "fingerprint": {"type": "string", "minLength": 1},
         "image_count": {"type": ["integer", "null"], "minimum": 0},
+        "training_image_count": {"type": "integer", "minimum": 0},
+        "held_out_image_count": {"type": "integer", "minimum": 0},
+        "ignored_image_count": {"type": "integer", "minimum": 0},
         "source_pixels": {"type": ["integer", "null"], "minimum": 0}
       }
     },
@@ -51,8 +54,9 @@
         "sh_degree": {"type": "integer", "minimum": 0, "maximum": 3},
         "sh_degree_interval": {"type": "integer", "minimum": 1},
         "sh_schedule": {"type": "string"},
-        "appearance_model": {"const": "color-sh-plus-opacity-sh-v1"},
-        "opacity_sh_learning_rate_ratio": {"const": 0.05},
+        "appearance_model": {"enum": ["color-sh-plus-scalar-opacity-v1", "color-sh-plus-opacity-sh-v1"]},
+        "opacity_sh_enabled": {"type": "boolean"},
+        "opacity_sh_learning_rate_ratio": {"enum": [0.0, 0.05]},
         "max_cap": {"type": "integer", "minimum": 1},
         "resize_factor": {"enum": [1, 2, 4, 8]},
         "max_width": {"type": "integer", "minimum": 1, "maximum": 4096},
@@ -77,6 +81,40 @@
         "training_seconds": {"type": ["number", "null"], "minimum": 0},
         "checkpoint_seconds": {"type": ["number", "null"], "minimum": 0},
         "wall_seconds": {"type": "number", "minimum": 0}
+      }
+    },
+    "topology_telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version", "timing_basis", "scope", "measured_calls", "total_seconds",
+        "host_prepare_seconds", "snapshot_download_seconds", "cpu_prune_seconds",
+        "compaction_cpu_seconds", "compaction_download_seconds", "compaction_upload_seconds",
+        "cpu_score_seconds", "cpu_select_seconds", "split_upload_seconds",
+        "device_submit_seconds", "other_seconds", "snapshot_download_bytes",
+        "compaction_download_bytes", "compaction_upload_bytes", "split_upload_bytes"
+      ],
+      "properties": {
+        "version": {"const": 1},
+        "timing_basis": {"const": "host_wall_no_extra_gpu_sync"},
+        "scope": {"const": "process_invocation"},
+        "measured_calls": {"type": "integer", "minimum": 0},
+        "total_seconds": {"type": "number", "minimum": 0},
+        "host_prepare_seconds": {"type": "number", "minimum": 0},
+        "snapshot_download_seconds": {"type": "number", "minimum": 0},
+        "cpu_prune_seconds": {"type": "number", "minimum": 0},
+        "compaction_cpu_seconds": {"type": "number", "minimum": 0},
+        "compaction_download_seconds": {"type": "number", "minimum": 0},
+        "compaction_upload_seconds": {"type": "number", "minimum": 0},
+        "cpu_score_seconds": {"type": "number", "minimum": 0},
+        "cpu_select_seconds": {"type": "number", "minimum": 0},
+        "split_upload_seconds": {"type": "number", "minimum": 0},
+        "device_submit_seconds": {"type": "number", "minimum": 0},
+        "other_seconds": {"type": "number", "minimum": 0},
+        "snapshot_download_bytes": {"type": "integer", "minimum": 0},
+        "compaction_download_bytes": {"type": "integer", "minimum": 0},
+        "compaction_upload_bytes": {"type": "integer", "minimum": 0},
+        "split_upload_bytes": {"type": "integer", "minimum": 0}
       }
     },
     "metrics": {

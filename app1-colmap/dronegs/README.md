@@ -7,6 +7,13 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
+Version `0.5.0-dev.67` records refinement phase durations and logical CPU/GPU
+transfer bytes in events and the run manifest, without extra GPU synchronization.
+This is invocation-local host-wall telemetry, not CUDA kernel timing. It does
+not change selection, training parameters, checkpoint state or rendering math.
+See [the refinement telemetry qualification](../../docs/dronegs/REFINEMENT_TELEMETRY.md)
+for phase semantics, the frozen-checkpoint benchmark and measurement limitations.
+
 Version `0.5.0-dev.66` also makes opacity-SH gradient and Adam storage conditional:
 the scalar path saves 180 device bytes per allocated Gaussian slot (257.5 MiB
 at 1.5 million slots). The Gaussian ABI and checkpoint V4/V5 wire layouts stay

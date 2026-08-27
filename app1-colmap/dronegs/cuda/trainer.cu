@@ -1885,17 +1885,20 @@ TrainingMetrics train_ordered_mrnf(
                 (iteration * 0x9E3779B97F4A7C15ULL);
             const auto topology_start =
                 std::chrono::steady_clock::now();
+            TopologyRefinementTelemetry topology_telemetry;
             const auto refinement =
                 workspace.refine_topology(
                     0.003F,
                     growth_fraction,
                     refinement_seed,
-                    options.pruning_policy == "spatial-bounds");
+                    options.pruning_policy == "spatial-bounds",
+                    &topology_telemetry);
             const double topology_seconds =
                 std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - topology_start)
                     .count();
             metrics.topology_refinement_seconds += topology_seconds;
+            accumulate_topology_telemetry(metrics.topology_telemetry, topology_telemetry);
             ++metrics.topology_refinements;
             metrics.gaussians_added += refinement.added;
             metrics.gaussians_pruned += refinement.pruned;
@@ -1933,7 +1936,9 @@ TrainingMetrics train_ordered_mrnf(
                 << ",\"gaussians\":" << refinement.gaussian_count
                 << ",\"selection_seed\":" << refinement_seed
                 << ",\"seconds\":" << topology_seconds
-                << "}\n"
+                << ",\"telemetry\":";
+            write_topology_telemetry(std::cout, topology_telemetry);
+            std::cout << "}\n"
                 << std::flush;
         }
         metrics.completed_iterations = iteration;
