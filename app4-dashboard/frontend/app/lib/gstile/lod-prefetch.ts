@@ -1,7 +1,9 @@
 import type { GsTileManifest, GsTilePack, Vec3 } from "./contracts";
 
 export const DEFAULT_GSTILE_PREFETCH_BYTES = 384 * 1024 * 1024;
-export const MINIMUM_GSTILE_PREFETCH_BYTES = 96 * 1024 * 1024;
+// Keep a nonzero exploration budget while allowing feedback below 12.5%
+// utility to reduce traffic instead of sticking at the former 96 MiB floor.
+export const MINIMUM_GSTILE_PREFETCH_BYTES = 64 * 1024 * 1024;
 export const GSTILE_PREFETCH_UTILITY_SAMPLE_BYTES = 128 * 1024 * 1024;
 export const GSTILE_PREFETCH_TARGET_UTILITY = 0.5;
 
