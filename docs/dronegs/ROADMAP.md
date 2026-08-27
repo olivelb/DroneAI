@@ -21,7 +21,14 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.64.
+- Current development version: 0.5.0-dev.66.
+- Dev.65 makes opacity-SH opt-in (`custom`); Production V1 uses scalar opacity.
+- Dev.66 removes inactive opacity-SH device gradients/moments, saving 180 bytes
+  per allocated slot without changing the Gaussian/PLY or checkpoint V4/V5 layout.
+  CUDA allocation, topology and checkpoint/resume regression gates pass on Ada;
+  this is not a new multi-scene or cross-architecture scientific qualification.
+  See [the August 27 audit disposition](AUDIT_20260827.md) for evidence and
+  deliberately deferred architecture/scientific work.
 - Production Gaussian backend: DroneGS. No LichtFeld executable, adapter,
   image, checkout or vcpkg build remains in the pipeline.
 - The Albagnac 15,000-step gate passed on the frozen 172-view evaluator:
