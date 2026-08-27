@@ -62,6 +62,11 @@ import {
   decodeGsTileNativePayload,
 } from "./native-decode";
 import { GsTileDecodeWorkerPool } from "./decode-worker-pool";
+import {
+  accumulateGsTileWorkerTiming,
+  emptyGsTileDecodeBreakdown,
+  type GsTileDecodeBreakdown,
+} from "./decode-telemetry";
 
 type Pc = typeof import("playcanvas");
 type PcApplication = import("playcanvas").Application;
@@ -91,6 +96,7 @@ type LodLoadTimings = {
   decodeCpuMs: number;
   decodeWorkerServiceMs: number;
   decodeWorkerFallbacks: number;
+  decodeBreakdown: GsTileDecodeBreakdown;
 };
 
 const gsTilePackTransport = (
@@ -916,6 +922,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodDecodeCpuMs: number | null = null;
   #lodDecodeWorkerServiceMs: number | null = null;
   #lodDecodeWorkerFallbacks: number | null = null;
+  #lodDecodeBreakdown: GsTileDecodeBreakdown | null = null;
   #lodResourceCreateMs: number | null = null;
   #lodResourceColorMs: number | null = null;
   #lodResourceTransformMs: number | null = null;
@@ -1409,6 +1416,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodDecodeCpuMs = null;
     this.#lodDecodeWorkerServiceMs = null;
     this.#lodDecodeWorkerFallbacks = null;
+    this.#lodDecodeBreakdown = null;
     this.#lodResourceCreateMs = null;
     this.#lodResourceColorMs = null;
     this.#lodResourceTransformMs = null;
@@ -2507,7 +2515,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
     let nativeResult;
     try {
-      nativeResult = await nativeDecodePromise;
+      const decoded = await nativeDecodePromise;
+      nativeResult = decoded.result;
+      accumulateGsTileWorkerTiming(timings.decodeBreakdown, decoded.timing);
     } catch (error) {
       if (signal.aborted) throw error;
       timings.decodeWorkerFallbacks += 1;
@@ -2515,8 +2525,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       this.#decodeWorkerPool = null;
       this.#decodeWorkerPoolUnavailable = true;
       const fallbackStarted = performance.now();
+      const fallbackPayload = content.slice(
+        tile.byteOffset,
+        tile.byteOffset + tile.byteLength,
+      );
+      timings.decodeBreakdown.inputCopyMs += performance.now() - fallbackStarted;
+      timings.decodeBreakdown.inputCopyBytes += fallbackPayload.byteLength;
       nativeResult = decodeGsTileNativePayload(
-        content.slice(tile.byteOffset, tile.byteOffset + tile.byteLength),
+        fallbackPayload,
         tile.recordCount,
         tile.quantization,
       );
@@ -2526,8 +2542,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       timings.decodeWorkerServiceMs += performance.now() - workerStarted;
     }
     const copyStarted = performance.now();
-    copyGsTileNativeResult(destination, recordOffset, nativeResult);
-    timings.decodeCpuMs += performance.now() - copyStarted;
+    timings.decodeBreakdown.outputCopyBytes += copyGsTileNativeResult(
+      destination,
+      recordOffset,
+      nativeResult,
+    );
+    const outputCopyMs = performance.now() - copyStarted;
+    timings.decodeBreakdown.outputCopyMs += outputCopyMs;
+    timings.decodeCpuMs += outputCopyMs;
     const nativeBounds: MergedArenaBounds = {
       min: [...nativeResult.bounds.minimum],
       max: [...nativeResult.bounds.maximum],
@@ -2649,6 +2671,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       decodeCpuMs: 0,
       decodeWorkerServiceMs: 0,
       decodeWorkerFallbacks: 0,
+      decodeBreakdown: emptyGsTileDecodeBreakdown(),
     };
     const transitions = planLodTransitions(
       manifest,
@@ -2720,6 +2743,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       this.#lodDecodeWorkerFallbacks = decodeWorkerPool
         ? loadTimings.decodeWorkerFallbacks
         : null;
+      this.#lodDecodeBreakdown = decodeWorkerPool ? loadTimings.decodeBreakdown : null;
       controller.signal.throwIfAborted();
       if (generation !== this.#lodGeneration) {
         throw new DOMException("Stale GSTile LOD selection", "AbortError");
@@ -3452,6 +3476,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         lodDecodeCpuMs: this.#lodDecodeCpuMs,
         lodDecodeWorkerServiceMs: this.#lodDecodeWorkerServiceMs,
         lodDecodeWorkerFallbacks: this.#lodDecodeWorkerFallbacks,
+        lodDecodeBreakdown: this.#lodDecodeBreakdown,
         lodResourceCreateMs: this.#lodResourceCreateMs,
         lodResourceColorMs: this.#lodResourceColorMs,
         lodResourceTransformMs: this.#lodResourceTransformMs,
@@ -3562,6 +3587,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       lodDecodeCpuMs: this.#lodDecodeCpuMs,
       lodDecodeWorkerServiceMs: this.#lodDecodeWorkerServiceMs,
       lodDecodeWorkerFallbacks: this.#lodDecodeWorkerFallbacks,
+      lodDecodeBreakdown: this.#lodDecodeBreakdown,
       lodResourceCreateMs: this.#lodResourceCreateMs,
       lodResourceColorMs: this.#lodResourceColorMs,
       lodResourceTransformMs: this.#lodResourceTransformMs,

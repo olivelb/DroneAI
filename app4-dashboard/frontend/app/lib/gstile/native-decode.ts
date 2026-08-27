@@ -298,4 +298,8 @@ export const copyGsTileNativeResult = (
       recordOffset * 4,
     );
   }
+  // Logical active payload: centers, transform, color, four SH streams and
+  // four opacity streams, totaling 172 bytes per active Gaussian.
+  // Texture padding is never copied. No browser/driver internal copies counted.
+  return source.count * (3 * 4 + 4 * 4 + 8 * 2 + 8 * 4 * 4);
 };

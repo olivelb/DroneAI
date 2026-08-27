@@ -11,6 +11,7 @@ const scope = self as DedicatedWorkerGlobalScope;
 scope.onmessage = (event: MessageEvent<GsTileDecodeWorkerRequest>) => {
   const request = event.data;
   try {
+    const started = performance.now();
     const result = decodeGsTileNativePayload(
       request.payload,
       request.recordCount,
@@ -20,6 +21,7 @@ scope.onmessage = (event: MessageEvent<GsTileDecodeWorkerRequest>) => {
       type: "decoded",
       id: request.id,
       result,
+      computeMs: performance.now() - started,
     };
     scope.postMessage(response, [
       result.centerStream.buffer,
