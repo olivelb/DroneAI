@@ -13,6 +13,9 @@ bits; all opacity-SH coefficients retain the same finiteness decision through
 integer exponent inspection. Snapshot plus five statistics uses 52 bytes per
 Gaussian, down from 316, with no new device allocation. Percentiles and all
 pruning/scoring/splitting equations still run unchanged on their existing paths.
+On the frozen 5M Saint-Etienne checkpoint, fenced refinement drops from 1.243
+to 0.461 s versus dev.69 (62.90%), with byte-identical full state. See the
+[dev.70 qualification and limits](../../docs/dronegs/PRUNING_SNAPSHOT_DEV70.md).
 
 Version `0.5.0-dev.69` also compacts Gaussian data directly on the GPU, using
 the same stable chunked gather and existing scratch. CPU scoring statistics

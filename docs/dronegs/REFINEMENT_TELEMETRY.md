@@ -24,15 +24,15 @@ selection policy, Gaussian ABI or checkpoint wire format changes.
 | Phase (seconds) | Included work |
 |---|---|
 | `host_prepare` | Initial host-vector allocations/initialization and entry checks |
-| `snapshot_download` | Gaussian AoS and five refinement-statistic arrays D2H |
+| `snapshot_download` | Pruning-input packing/D2H and five statistic arrays; full Gaussian AoS before dev.70 |
 | `cpu_prune` | Bounds/percentiles, pruning, survivor and recycling decisions |
-| `compaction_cpu` | Host allocation, survivor gathering/packing and cleanup between transfers |
-| `compaction_download` | Optimizer/refinement-state D2H during hard compaction |
-| `compaction_upload` | Compacted optimizer/refinement-state and Gaussian H2D |
+| `compaction_cpu` | Survivor indices, in-place CPU statistics and local cleanup; host state gathering in older versions |
+| `compaction_download` | Legacy optimizer/refinement-state D2H; zero from dev.68 |
+| `compaction_upload` | Survivor-index H2D from dev.69; Gaussian/moment uploads in earlier versions |
 | `cpu_score` | Robust score normalization, candidate eligibility and seeded Gumbel keys |
 | `cpu_select` | Partial selection, sorting and parent/child host indices |
 | `split_upload` | Parent and destination index H2D |
-| `device_submit` | Host submission of split/decay/stat-reset operations and local bookkeeping |
+| `device_submit` | Host submission of GPU compaction/split/decay/stat-reset and local bookkeeping; snapshot packing stays in `snapshot_download` |
 | `other` | Residual entry/return and host-vector destruction |
 
 All names have the `_seconds` suffix in JSON. `total_seconds` covers the
