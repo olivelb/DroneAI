@@ -6,7 +6,7 @@ Scientific representation and platform orchestration are tracked separately.
 
 ## Current loading policy — 2026-08-27
 
-The range scheduler keeps the existing 768 MiB RAM ceiling, but uses a
+The range scheduler keeps 768 MiB as the default RAM ceiling, but uses a
 byte-bounded segmented LRU: demanded ranges can occupy a protected segment of
 up to 75% of the budget; speculative ranges and demoted demand share the
 remaining probation segment. Unused protected capacity is available to
@@ -45,8 +45,11 @@ ceiling, 128 MiB sampling threshold and 50% utility target. The floor reduction
 only affects low-utility prefetch; it does not change demand loading or cache
 capacity. A sequential warmed-path replay estimates 18.73% less speculative
 traffic, not a measured browser speedup. The same evidence motivates a separate
-1.5 GiB desktop RAM-cache experiment (the two-view pack set is 1,262 MiB), but
-the RAM cap remains 768 MiB pending qualification. See the
+1.5 GiB desktop RAM-cache experiment (the two-view pack set is 1,262 MiB).
+The default remains 768 MiB; the explicit `gstileMemoryCache=desktop` query
+selects a bounded 1,536 MiB profile, without eager allocation. Unknown values
+fall back to the standard profile. See the
+[manual RAM pilot and remaining gates](../benchmarks/gstile-memory-profile-qualification.md) and
 [budget replay and memory-cache analysis](../benchmarks/gstile-prefetch-budget-qualification.md).
 
 ## Decisions

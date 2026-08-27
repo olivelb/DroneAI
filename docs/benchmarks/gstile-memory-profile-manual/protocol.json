@@ -1,0 +1,35 @@
+{
+  "schema": "gstile-memory-profile-pilot-v1",
+  "status": "frozen",
+  "reference": "fe7c069fc3821693e92bf27d42531771538439ac",
+  "candidate": "fe7c069fc3821693e92bf27d42531771538439ac",
+  "width": 1200, "height": 675, "devicePixelRatio": 1, "fov": 42,
+  "durationMs": 1200, "steps": 40, "settleQuietMs": 1000, "timeoutMs": 120000,
+  "memoryProfiles": {
+    "reference": {"profile":"standard","bytes":805306368},
+    "candidate": {"profile":"desktop","bytes":1610612736}
+  },
+  "databasePrefix": "gstile-memory-profile-20260827-",
+  "persistentCacheBytes": 2147483648,
+  "persistentCache": "fresh isolated database per arm, retained; drain writes at settle",
+  "httpCache": "no-store", "transport": "negotiated zstd-http; zero fallback required",
+  "door": {"target": [0, 3.05, 1.6], "distance": 3.7},
+  "facade": {"target": [0, -1.8, 1.6], "distance": 10.5},
+  "runs": [
+    {"arm":"reference","label":"warmup-reference"},
+    {"arm":"candidate","label":"warmup-candidate"},
+    {"arm":"reference","label":"pair-1-reference"},
+    {"arm":"candidate","label":"pair-1-candidate"},
+    {"arm":"candidate","label":"pair-2-candidate"},
+    {"arm":"reference","label":"pair-2-reference"}
+  ],
+  "cadence": {"durationMs":6000,"minimumFrames":180,"maximumMedianGapMs":40,"maximumGapMs":250},
+  "policy": "Stop whole cohort on failed idle control, loss of foreground, runtime/integrity error or memory-cap violation; retain all arms; no selective retries.",
+  "decision": {
+    "scope":"Same-code 768/1536 MiB two-pair pilot; primary outcome revisit afterInputMs, secondary return and first transition. Not proof of a universal speedup or peak per-tab RSS.",
+    "readinessRelativeTolerance":0.10,"readinessAbsoluteToleranceMs":50,
+    "networkRelativeTolerance":0.05,
+    "engineLogicalGpuRelativeTolerance":0.05,
+    "memoryScope":"Sample scheduler bytes and engine logical GPU bytes; external Chrome process aggregate is contextual, not per-tab ownership. Complete process peak qualification may remain pending."
+  }
+}
