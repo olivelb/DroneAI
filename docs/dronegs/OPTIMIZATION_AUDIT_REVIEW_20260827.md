@@ -8,6 +8,10 @@ ses recommandations ne constituent pas des résultats expérimentaux.
 Mise à jour du 28 août : préparation des packs en parallèle et qualification
 complète 1/2/4 workers, puis spécialisation du suivi des paires V4 sans changer
 les fusions ; voir le point 7 et le lot 3 ci-dessous.
+L'essai suivant de réutilisation des temporaires des coûts V4 est **rejeté** :
+1,83 % de gain médian, sous son seuil fixé à 3 %, sans baisse du RSS observé.
+Le runtime a été restauré ; [preuves et contrats](../benchmarks/gstile-v4-costs-qualification.md)
+sont conservés. Ce résultat ne remet pas en cause le gain du matcher précédent.
 
 ## Conclusion
 
@@ -95,6 +99,10 @@ et le PlayCanvas 2.21.4 patché dans `node_modules/playcanvas/build/playcanvas/s
    [Qualification dédiée](../benchmarks/gstile-v4-pairs-qualification.md) contre
    l'ancien union-find, indépendamment de l'option workers. Reprofiler avant
    d'envisager de nouveaux calculs ou des sous-arbres parallèles.
+   **Temporaires des coûts V4 : essai non retenu.** Les coûts et fichiers sont
+   identiques, mais les quatre paires AB/BA n'atteignent pas le seuil médian
+   déclaré. Pas de modification de production livrée pour cet essai ; garder
+   ses tests numériques pour une prochaine expérience distincte.
 4. **Prototype tri externe Morton** (priorité producteur 100 M) : runs bornés,
    fusion multi-voies, tie-break source ID, feuilles contiguës et métadonnées
    bottom-up. Tester centres confondus, distributions très déséquilibrées,

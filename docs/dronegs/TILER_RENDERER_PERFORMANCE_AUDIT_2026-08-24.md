@@ -290,6 +290,11 @@ paralléliser les sous-arbres ni modifier les fusions. Voir la
 [qualification du matcher exact](../benchmarks/gstile-v4-pairs-qualification.md),
 séparée du gain de préparation des packs ; ne pas additionner ces résultats.
 
+L'essai ultérieur de réutilisation des temporaires des coûts V4 est rejeté :
+gain médian 1,83 %, inférieur au seuil préannoncé de 3 %, malgré une parité
+complète. Le code de production est restauré ; seuls les contrats numériques
+et le [résultat négatif](../benchmarks/gstile-v4-costs-qualification.md) sont conservés.
+
 ### 10. Opacité directionnelle évaluée par frame sans réupload global — impact moyen à élevé
 
 Déplacer la dépendance caméra du work-buffer vers le vertex/compute shader de
