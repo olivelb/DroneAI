@@ -659,6 +659,51 @@ def _adaptive_candidate_edges(records: np.ndarray, neighbors: int = 8) -> tuple[
     return left[order], right[order], cost[order]
 
 
+def _adaptive_pair_roots(
+    records: np.ndarray,
+    left: np.ndarray,
+    right: np.ndarray,
+    target: int,
+) -> np.ndarray:
+    """Match disjoint pairs in candidate order, preserving V4's exact roots."""
+
+    count = records.shape[0]
+    roots = np.arange(count, dtype=np.intp)
+    matched = bytearray(count)
+    removals_needed = count - target
+    removed = 0
+    # A generation only merges two singletons. Matched endpoints cannot be
+    # accepted again, so roots stay flat and no union-find lookup is needed.
+    # Memoryviews iterate native integers without copying the candidate arrays.
+    for left_value, right_value in zip(memoryview(left), memoryview(right), strict=True):
+        if matched[left_value] or matched[right_value] or left_value == right_value:
+            continue
+        matched[left_value] = matched[right_value] = 1
+        if left_value > right_value:
+            left_value, right_value = right_value, left_value
+        roots[right_value] = left_value
+        removed += 1
+        if removed == removals_needed:
+            break
+    if removed != removals_needed:
+        # A greedy matching can leave unmatched vertices even on a connected
+        # candidate graph. Complete it in Morton order so every generation has
+        # an exact, deterministic population and never stalls a large build.
+        morton_order = np.lexsort((records["source_id"], _morton_codes(records)))
+        unmatched = morton_order[~np.frombuffer(matched, dtype=np.bool_)[morton_order]]
+        pair_count = min(removals_needed - removed, unmatched.size // 2)
+        # The original completion pass chooses the first Morton endpoint as
+        # root, not necessarily the lower index used by the greedy pass.
+        roots[unmatched[1:2 * pair_count:2]] = unmatched[:2 * pair_count:2]
+        removed += pair_count
+    if removed != removals_needed:
+        raise RuntimeError(
+            f"GSTile adaptive LOD stalled after {removed}/{removals_needed} merges"
+        )
+
+    return roots
+
+
 def _adaptive_generation(
     records: np.ndarray,
     input_errors: np.ndarray,
@@ -670,53 +715,7 @@ def _adaptive_generation(
     if count <= target:
         return _LodProxy(records.copy(), input_errors.astype(np.float64, copy=True))
     left, right, _cost = _adaptive_candidate_edges(records)
-    parent = np.arange(count, dtype=np.intp)
-    size = np.ones(count, dtype=np.intp)
-
-    def find(value: int) -> int:
-        while parent[value] != value:
-            parent[value] = parent[parent[value]]
-            value = int(parent[value])
-        return value
-
-    removals_needed = count - target
-    removed = 0
-    for left_value, right_value in zip(left, right, strict=True):
-        left_root = find(int(left_value))
-        right_root = find(int(right_value))
-        if left_root == right_root or size[left_root] + size[right_root] > 2:
-            continue
-        if size[left_root] < size[right_root] or (
-            size[left_root] == size[right_root] and left_root > right_root
-        ):
-            left_root, right_root = right_root, left_root
-        parent[right_root] = left_root
-        size[left_root] += size[right_root]
-        removed += 1
-        if removed == removals_needed:
-            break
-    if removed != removals_needed:
-        # A greedy matching can leave unmatched vertices even on a connected
-        # candidate graph. Complete it in Morton order so every generation has
-        # an exact, deterministic population and never stalls a large build.
-        morton_order = np.lexsort((records["source_id"], _morton_codes(records)))
-        unmatched = [index for index in morton_order if size[find(int(index))] == 1]
-        for offset in range(0, len(unmatched) - 1, 2):
-            left_root = find(int(unmatched[offset]))
-            right_root = find(int(unmatched[offset + 1]))
-            if left_root == right_root:
-                continue
-            parent[right_root] = left_root
-            size[left_root] = 2
-            removed += 1
-            if removed == removals_needed:
-                break
-    if removed != removals_needed:
-        raise RuntimeError(
-            f"GSTile adaptive LOD stalled after {removed}/{removals_needed} merges"
-        )
-
-    roots = np.fromiter((find(index) for index in range(count)), dtype=np.intp, count=count)
+    roots = _adaptive_pair_roots(records, left, right, target)
     unique_roots, inverse = np.unique(roots, return_inverse=True)
     minimum_source_ids = np.full(unique_roots.shape[0], np.iinfo(np.uint64).max, dtype=np.uint64)
     np.minimum.at(minimum_source_ids, inverse, records["source_id"])
