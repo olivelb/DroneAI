@@ -27,11 +27,13 @@ type DecodeTask = {
   queuedAt: number;
   dispatchedAt: number;
   timing: GsTileWorkerDecodeTiming;
+  recycleCapacity: number;
 };
 
 type WorkerSlot = {
   worker: GsTileDecodeWorker;
   task: DecodeTask | null;
+  spare: ArrayBuffer | null;
 };
 
 export type GsTileDecodeWorker = {
@@ -47,6 +49,10 @@ export type GsTileDecodeWorkerFactory = () => GsTileDecodeWorker;
 const defaultWorkerCount = () =>
   Math.min(4, Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 4) - 2));
 
+// One spare per slot: <=32 MiB for the default four Workers, <=64 MiB for eight.
+// Separate from the assembly's logical in-flight payload budget; never cache inputs.
+export const GSTILE_DECODE_INPUT_BUFFER_CAP = 8 * 1024 * 1024;
+
 const createDecodeWorker: GsTileDecodeWorkerFactory = () =>
   new Worker(new URL("./decode-worker.ts", import.meta.url), {
     type: "module",
@@ -58,17 +64,20 @@ export class GsTileDecodeWorkerPool {
   readonly #slots: WorkerSlot[];
   readonly #queue: DecodeTask[] = [];
   readonly #workerFactory: GsTileDecodeWorkerFactory;
+  readonly #recycleInput: boolean;
   #nextId = 1;
   #disposed = false;
 
   constructor(
     workerCount = defaultWorkerCount(),
     workerFactory = createDecodeWorker,
+    recycleInput = true,
   ) {
     if (!Number.isSafeInteger(workerCount) || workerCount < 1 || workerCount > 8) {
       throw new Error("GSTile transform Worker count must be between 1 and 8");
     }
     this.#workerFactory = workerFactory;
+    this.#recycleInput = recycleInput;
     this.#slots = [];
     try {
       for (let index = 0; index < workerCount; index += 1) {
@@ -81,9 +90,10 @@ export class GsTileDecodeWorkerPool {
   }
 
   #createSlot(): WorkerSlot {
-    const slot = {
+    const slot: WorkerSlot = {
       worker: this.#workerFactory(),
       task: null,
+      spare: null,
     };
     slot.worker.onmessage = (
       event: MessageEvent<GsTileDecodeWorkerResponse>,
@@ -98,6 +108,10 @@ export class GsTileDecodeWorkerPool {
       this.#drain();
     };
     return slot;
+  }
+
+  get retainedInputBytes() {
+    return this.#slots.reduce((bytes, slot) => bytes + (slot.spare?.byteLength ?? 0), 0);
   }
 
   decode(
@@ -143,9 +157,12 @@ export class GsTileDecodeWorkerPool {
           queueMs: 0,
           inputCopyMs: 0,
           inputCopyBytes: 0,
+          inputAllocatedBytes: 0,
+          inputReusedBytes: 0,
           roundTripMs: 0,
           computeMs: 0,
         },
+        recycleCapacity: 0,
       };
       const abort = () => {
         if (task.settled) return;
@@ -178,18 +195,28 @@ export class GsTileDecodeWorkerPool {
       task.timing.queueMs = copyStarted - task.queuedAt;
       try {
         // The original belongs to the range cache and must not be detached.
-        const payload = task.content.slice(
-          task.byteOffset,
-          task.byteOffset + task.byteLength,
-        );
+        let payload = slot.spare;
+        slot.spare = null;
+        if (payload && payload.byteLength >= task.byteLength) {
+          new Uint8Array(payload, 0, task.byteLength).set(
+            new Uint8Array(task.content, task.byteOffset, task.byteLength),
+          );
+          task.timing.inputReusedBytes = task.byteLength;
+        } else {
+          payload = task.content.slice(task.byteOffset, task.byteOffset + task.byteLength);
+          task.timing.inputAllocatedBytes = payload.byteLength;
+        }
         task.timing.inputCopyMs = performance.now() - copyStarted;
-        task.timing.inputCopyBytes = payload.byteLength;
+        task.timing.inputCopyBytes = task.byteLength;
+        task.recycleCapacity = this.#recycleInput && payload.byteLength <= GSTILE_DECODE_INPUT_BUFFER_CAP
+          ? payload.byteLength : 0;
         const request: GsTileDecodeWorkerRequest = {
           type: "decode",
           id: task.id,
           payload,
           recordCount: task.recordCount,
           quantization: task.quantization,
+          recycleInput: task.recycleCapacity > 0,
         };
         task.dispatchedAt = performance.now();
         slot.worker.postMessage(request, [payload]);
@@ -220,6 +247,21 @@ export class GsTileDecodeWorkerPool {
       this.#failSlot(slot, new Error("GSTile transform Worker timing is invalid"));
       this.#drain();
       return;
+    }
+    if (response.type === "decoded" && task.recycleCapacity) {
+      const recycled = response.recycledPayload;
+      const result = response.result;
+      // A returned scratch buffer must not alias any published output or the cache.
+      const validStreams = result && Array.isArray(result.shStreams) && Array.isArray(result.opacityStreams);
+      const outputs = validStreams ? [result.centerStream, result.transformA, result.transformB,
+        result.colorStream, ...result.shStreams, ...result.opacityStreams] : [];
+      if (!(recycled instanceof ArrayBuffer) || recycled.byteLength !== task.recycleCapacity ||
+          !validStreams || recycled === task.content || outputs.some(stream => stream?.buffer === recycled)) {
+        this.#failSlot(slot, new Error("GSTile transform Worker recycled input is invalid"));
+        this.#drain();
+        return;
+      }
+      slot.spare = recycled;
     }
     slot.task = null;
     if (!task.settled) {
@@ -258,6 +300,7 @@ export class GsTileDecodeWorkerPool {
   }
 
   #terminate(slot: WorkerSlot) {
+    slot.spare = null;
     slot.worker.onmessage = null;
     slot.worker.onerror = null;
     slot.worker.onmessageerror = null;

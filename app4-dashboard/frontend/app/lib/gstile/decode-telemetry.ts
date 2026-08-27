@@ -3,6 +3,8 @@ export type GsTileWorkerDecodeTiming = {
   queueMs: number;
   inputCopyMs: number;
   inputCopyBytes: number;
+  inputAllocatedBytes: number;
+  inputReusedBytes: number;
   roundTripMs: number;
   computeMs: number;
 };
@@ -25,6 +27,8 @@ export const emptyGsTileDecodeBreakdown = (): GsTileDecodeBreakdown => ({
   queueMs: 0,
   inputCopyMs: 0,
   inputCopyBytes: 0,
+  inputAllocatedBytes: 0,
+  inputReusedBytes: 0,
   roundTripMs: 0,
   computeMs: 0,
   outputCopyMs: 0,
@@ -45,6 +49,8 @@ export const accumulateGsTileWorkerTiming = (
   total.queueMs += timing.queueMs;
   total.inputCopyMs += timing.inputCopyMs;
   total.inputCopyBytes += timing.inputCopyBytes;
+  total.inputAllocatedBytes += timing.inputAllocatedBytes;
+  total.inputReusedBytes += timing.inputReusedBytes;
   total.roundTripMs += timing.roundTripMs;
   total.computeMs += timing.computeMs;
 };

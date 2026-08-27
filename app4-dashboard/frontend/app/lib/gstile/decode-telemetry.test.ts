@@ -12,11 +12,12 @@ describe("GSTile decode breakdown", () => {
 
   it("sums task durations without double-counting compute inside round-trip", () => {
     const total = emptyGsTileDecodeBreakdown();
-    const timing = { queueMs: 2, inputCopyMs: 3, inputCopyBytes: 96, roundTripMs: 11, computeMs: 5 };
+    const timing = { queueMs: 2, inputCopyMs: 3, inputCopyBytes: 96, inputAllocatedBytes: 64, inputReusedBytes: 32, roundTripMs: 11, computeMs: 5 };
     accumulateGsTileWorkerTiming(total, timing);
     accumulateGsTileWorkerTiming(total, timing);
     expect(total).toEqual({
       workerTasks: 2, queueMs: 4, inputCopyMs: 6, inputCopyBytes: 192,
+      inputAllocatedBytes: 128, inputReusedBytes: 64,
       roundTripMs: 22, computeMs: 10, outputCopyMs: 0, outputCopyBytes: 0,
       assemblyWorkerMs: 0, assemblyAdmissionMs: 0, assemblyTransferMs: 0, assemblyBytes: 0, assemblyPeakBytes: 0, assemblyPeakTasks: 0,
     });

@@ -5,6 +5,7 @@ import type {
   GsTileDecodeWorkerRequest,
   GsTileDecodeWorkerResponse,
 } from "./decode-worker-protocol";
+import { GSTILE_RECORD_BYTES } from "./pack";
 
 const scope = self as DedicatedWorkerGlobalScope;
 
@@ -13,7 +14,7 @@ scope.onmessage = (event: MessageEvent<GsTileDecodeWorkerRequest>) => {
   try {
     const started = performance.now();
     const result = decodeGsTileNativePayload(
-      request.payload,
+      new Uint8Array(request.payload, 0, request.recordCount * GSTILE_RECORD_BYTES),
       request.recordCount,
       request.quantization,
     );
@@ -22,6 +23,7 @@ scope.onmessage = (event: MessageEvent<GsTileDecodeWorkerRequest>) => {
       id: request.id,
       result,
       computeMs: performance.now() - started,
+      recycledPayload: request.recycleInput ? request.payload : undefined,
     };
     scope.postMessage(response, [
       result.centerStream.buffer,
@@ -30,6 +32,7 @@ scope.onmessage = (event: MessageEvent<GsTileDecodeWorkerRequest>) => {
       result.colorStream.buffer,
       ...result.shStreams.map((stream) => stream.buffer),
       ...result.opacityStreams.map((stream) => stream.buffer),
+      ...(request.recycleInput ? [request.payload] : []),
     ]);
   } catch (error) {
     const response: GsTileDecodeWorkerResponse = {
