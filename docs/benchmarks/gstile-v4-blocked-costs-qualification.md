@@ -1,6 +1,6 @@
 # GSTile V4 blocked candidate distances
 
-2026-08-28. Implementation and protocol; full-build qualification pending.
+2026-08-28. **Full-build pilot accepted: 5.32% median time reduction, exact files.**
 
 ## Hypothesis and unchanged contract
 
@@ -67,3 +67,62 @@ Evidence root (all outputs, raw reports, inventories, worktree retained):
 `/home/olivier/droneai-qualifications/gstile-v4-blocked-costs-20260828`.
 Source retained at
 `/home/olivier/droneai-qualifications/gstile-parallel-builds-20260827/source.ply`.
+
+## Results and decision
+
+All **10 builds completed** without failed or excluded samples. All 630 files
+(manifest, raw packs and Zstd sidecars) match the reference inventory. A second
+check using explicit-argv recursive `diff -rq` confirms that all nine other
+bundle directories are binary-identical to the first reference. All raw reports
+are clean and pinned; the source checksum remains unchanged. Common bundle ID:
+`sha256:190c82ac43ce470269737fd70c35f8a6d0f669e9999b55e8a1edc8443b22d7eb`.
+
+| Trial | Order | Reference seconds | Blocked seconds | Time reduction |
+| --- | --- | ---: | ---: | ---: |
+| Warmup | AB | 29.352 | 28.011 | — |
+| Pair 1 | AB | 30.097 | 27.459 | 8.77% |
+| Pair 2 | BA | 29.361 | 27.901 | 4.97% |
+| Pair 3 | AB | 29.627 | 28.416 | 4.09% |
+| Pair 4 | BA | 29.855 | 28.488 | 4.58% |
+| Measured median | — | **29.741** | **28.158** | **5.32%** |
+
+The fixed 3% median threshold and every-pair-faster gate pass. The warmups are
+retained but excluded from the median exactly as declared. Peak child RSS is
+464,080 KiB reference versus 465,308 KiB blocked; **no total RSS reduction is
+demonstrated**. Filesystem output blocks are 3,381,408 for every build. The
+full-build gain is smaller than the exploratory cost-only microbenchmark and
+does not establish a speedup for other datasets, machines or configurations.
+
+**Decision:** retain the blocked implementation and the numerical contracts.
+No runtime flag, public parameter, bundle migration or renderer change is
+needed. Rollback is restoration of the old scorer from `aa095ac`; existing
+bundles remain usable either way. The previous unblocked experiment stays
+rejected on its own evidence. Next investigation should reprofile remaining
+proxy moment/refit work instead of assuming the original bottleneck persists.
+
+## Provenance and reproduction
+
+- Runtime: `922269da1b037c5ff28d439b2c5a354386d036a9`.
+- Measured clean candidate with frozen driver:
+  `51dce6f01281d392c0f16008a5e206de1f7df8bf`.
+- Reference: `aa095acfd477e8d9875ae286424c542b766ac3ea`.
+- Versioned [driver](gstile-v4-blocked-costs-builds.mjs) and
+  [results](gstile-v4-blocked-costs-results.json): protocol, all ten trials,
+  paired reductions, complete control inventory and raw report hashes.
+- Evidence root above retains approximately 1.4 GiB: all bundles, reports,
+  stdout/stderr, inventories, protocol/trials, independent binary-check script
+  and result, and the detached reference worktree. No cleanup requested/done.
+
+From the measured candidate (or a clean tree with identical producer code),
+create a **new** evidence directory and a detached reference worktree named
+`baseline` at the exact reference commit. With the original source in its
+recorded path, run:
+
+```sh
+node docs/benchmarks/gstile-v4-blocked-costs-builds.mjs /absolute/new-evidence-directory
+```
+
+Existing results directories are refused. Runtime and source checksums are
+checked before running; each report's commit/clean state and all files are
+checked, and source hash is rechecked afterwards. Any altered fixture, block
+size, worker count or runtime needs a separately declared protocol.
