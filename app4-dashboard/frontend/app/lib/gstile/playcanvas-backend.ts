@@ -63,6 +63,8 @@ import {
   decodeGsTileNativePayload,
 } from "./native-decode";
 import { GsTileDecodeWorkerPool } from "./decode-worker-pool";
+import { canAssembleGsTileInWorker } from "./merged-assembly";
+import { GsTileMergedAssemblyClient, shouldRetryGsTileAssembly } from "./merged-assembly-client";
 import {
   accumulateGsTileWorkerTiming,
   emptyGsTileDecodeBreakdown,
@@ -440,6 +442,8 @@ export type PlayCanvasResidentBackendOptions = {
   referencePlyConstructionMode?: "loader" | "manual";
   debugTiles?: "off" | "lod" | "id";
   gpuAssembly?: GsTileGpuAssembly;
+  /** Disable off-thread assembly only; never changes the cut. */
+  workerAssembly?: boolean;
   lodUpdateDelayMilliseconds?: number;
 };
 
@@ -901,6 +905,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodPrefetchController: AbortController | null = null;
   #decodeWorkerPool: GsTileDecodeWorkerPool | null = null;
   #decodeWorkerPoolUnavailable = false;
+  #assemblyWorkerUnavailable = false;
+  #assemblyWorkerFailures = 0;
+  readonly #workerAssemblyEnabled: boolean;
   #lodGeneration = 0;
   #lodSelectionKey = "";
   #lodPendingKey = "";
@@ -994,6 +1001,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     // unified multi-resource path can retain stale allocation data across LOD
     // replacements, which presents as tile-aligned oversized/blurry splats.
     this.#gpuAssembly = gstileGpuAssembly(options.gpuAssembly);
+    this.#workerAssemblyEnabled = options.workerAssembly ?? true;
     this.#lodUpdateDelayMilliseconds = gstileLodUpdateDelayMilliseconds(
       options.lodUpdateDelayMilliseconds,
     );
@@ -2446,7 +2454,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     signal: AbortSignal,
     timings: LodLoadTimings,
   ): Promise<PreparedTile> {
-    const { pc, app, manifest, tile, pack, content } =
+    const { pc, app, manifest, tile, content } =
       await this.#fetchVerifiedLodTile(node, signal, timings);
     await this.#yieldBeforeLodDecode(signal);
     const decodeStarted = performance.now();
@@ -2472,90 +2480,106 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   async #loadLodTileIntoPlayCanvasColumns(
     node: GsTileNode,
     signal: AbortSignal,
-    destination: GsTilePlayCanvasColumns,
+    destination: GsTilePlayCanvasColumns | null,
     recordOffset: number,
     timings: LodLoadTimings,
     decodeWorkerPool: GsTileDecodeWorkerPool | null,
+    assembly: GsTileMergedAssemblyClient | null,
   ) {
-    const { tile, pack, content } = await this.#fetchVerifiedLodTile(
+    const { tile, content } = await this.#fetchVerifiedLodTile(
       node,
       signal,
       timings,
     );
     await this.#yieldBeforeLodDecode(signal);
-    const workerStarted =
-      destination.transformStreams && decodeWorkerPool
-        ? performance.now()
-        : null;
-    const nativeDecodePromise =
-      destination.transformStreams && decodeWorkerPool
-        ? decodeWorkerPool.decode(
-            content,
-            tile.byteOffset,
-            tile.byteLength,
-            tile.recordCount,
-            tile.quantization,
-            signal,
-          )
-        : null;
-    if (!nativeDecodePromise) {
-      const decodeStarted = performance.now();
-      decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
-        content,
-        tile.byteOffset,
-        tile.byteLength,
-        tile.recordCount,
-        tile.quantization,
-        destination,
-        recordOffset,
-      );
-      timings.decodeCpuMs += performance.now() - decodeStarted;
-      signal.throwIfAborted();
-      return { byteLength: tile.byteLength, bounds: null };
-    }
-    let nativeResult;
+    // Hold admission until the assembly Worker acknowledges the output copy.
+    // Network fetch/SHA remain concurrent and outside this memory budget.
+    const admissionStarted = performance.now();
+    const release = assembly ? await assembly.acquire(tile.recordCount) : null;
+    if (assembly) timings.decodeBreakdown.assemblyAdmissionMs += performance.now() - admissionStarted;
     try {
-      const decoded = await nativeDecodePromise;
-      nativeResult = decoded.result;
-      accumulateGsTileWorkerTiming(timings.decodeBreakdown, decoded.timing);
-    } catch (error) {
-      if (signal.aborted) throw error;
-      timings.decodeWorkerFallbacks += 1;
-      this.#decodeWorkerPool?.dispose(error);
-      this.#decodeWorkerPool = null;
-      this.#decodeWorkerPoolUnavailable = true;
-      const fallbackStarted = performance.now();
-      const fallbackPayload = content.slice(
-        tile.byteOffset,
-        tile.byteOffset + tile.byteLength,
-      );
-      timings.decodeBreakdown.inputCopyMs += performance.now() - fallbackStarted;
-      timings.decodeBreakdown.inputCopyBytes += fallbackPayload.byteLength;
-      nativeResult = decodeGsTileNativePayload(
-        fallbackPayload,
-        tile.recordCount,
-        tile.quantization,
-      );
-      timings.decodeCpuMs += performance.now() - fallbackStarted;
+      signal.throwIfAborted();
+      const workerStarted =
+        (assembly || destination?.transformStreams) && decodeWorkerPool
+          ? performance.now()
+          : null;
+      const nativeDecodePromise =
+        (assembly || destination?.transformStreams) && decodeWorkerPool
+          ? decodeWorkerPool.decode(
+              content,
+              tile.byteOffset,
+              tile.byteLength,
+              tile.recordCount,
+              tile.quantization,
+              signal,
+            )
+          : null;
+      if (!nativeDecodePromise) {
+        if (!destination) throw new Error("GSTile decode destination is unavailable");
+        const decodeStarted = performance.now();
+        decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
+          content,
+          tile.byteOffset,
+          tile.byteLength,
+          tile.recordCount,
+          tile.quantization,
+          destination,
+          recordOffset,
+        );
+        timings.decodeCpuMs += performance.now() - decodeStarted;
+        signal.throwIfAborted();
+        return { byteLength: tile.byteLength, bounds: null };
+      }
+      let nativeResult;
+      try {
+        const decoded = await nativeDecodePromise;
+        nativeResult = decoded.result;
+        accumulateGsTileWorkerTiming(timings.decodeBreakdown, decoded.timing);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        timings.decodeWorkerFallbacks += 1;
+        this.#decodeWorkerPool?.dispose(error);
+        this.#decodeWorkerPool = null;
+        this.#decodeWorkerPoolUnavailable = true;
+        const fallbackStarted = performance.now();
+        const fallbackPayload = content.slice(
+          tile.byteOffset,
+          tile.byteOffset + tile.byteLength,
+        );
+        timings.decodeBreakdown.inputCopyMs += performance.now() - fallbackStarted;
+        timings.decodeBreakdown.inputCopyBytes += fallbackPayload.byteLength;
+        nativeResult = decodeGsTileNativePayload(
+          fallbackPayload,
+          tile.recordCount,
+          tile.quantization,
+        );
+        timings.decodeCpuMs += performance.now() - fallbackStarted;
+      }
+      if (workerStarted !== null) {
+        timings.decodeWorkerServiceMs += performance.now() - workerStarted;
+      }
+      const nativeBounds: MergedArenaBounds = {
+        min: [...nativeResult.bounds.minimum],
+        max: [...nativeResult.bounds.maximum],
+      };
+      signal.throwIfAborted();
+      if (assembly) {
+        const copied = await assembly.copy(recordOffset, nativeResult);
+        timings.decodeBreakdown.assemblyWorkerMs += copied.copyMs;
+        timings.decodeBreakdown.assemblyBytes += copied.bytes;
+      } else {
+        if (!destination) throw new Error("GSTile decode destination is unavailable");
+        const copyStarted = performance.now();
+        timings.decodeBreakdown.outputCopyBytes += copyGsTileNativeResult(destination, recordOffset, nativeResult);
+        const outputCopyMs = performance.now() - copyStarted;
+        timings.decodeBreakdown.outputCopyMs += outputCopyMs;
+        timings.decodeCpuMs += outputCopyMs;
+      }
+      signal.throwIfAborted();
+      return { byteLength: tile.byteLength, bounds: nativeBounds };
+    } finally {
+      release?.();
     }
-    if (workerStarted !== null) {
-      timings.decodeWorkerServiceMs += performance.now() - workerStarted;
-    }
-    const copyStarted = performance.now();
-    timings.decodeBreakdown.outputCopyBytes += copyGsTileNativeResult(
-      destination,
-      recordOffset,
-      nativeResult,
-    );
-    const outputCopyMs = performance.now() - copyStarted;
-    timings.decodeBreakdown.outputCopyMs += outputCopyMs;
-    timings.decodeCpuMs += outputCopyMs;
-    const nativeBounds: MergedArenaBounds = {
-      min: [...nativeResult.bounds.minimum],
-      max: [...nativeResult.bounds.maximum],
-    };
-    signal.throwIfAborted();
-    return { byteLength: tile.byteLength, bounds: nativeBounds };
   }
 
   async #synchronizeLod(
@@ -2647,20 +2671,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         mergedGaussianCount += tile.recordCount;
       }
     }
-    let mergedColumns =
-      mergedAssembly && mergedGaussianCount > 0
-        ? allocateGsTilePlayCanvasColumns(
-            rebuildMergedArena
-              ? this.#maximumResidentGaussians
-              : mergedGaussianCount,
-            {
-              color: true,
-              centerBounds: true,
-              sh: true,
-              transform: decodeWorkerPool !== null,
-            },
-          )
-        : null;
+    const mergedCapacity = rebuildMergedArena ? this.#maximumResidentGaussians : mergedGaussianCount;
+    const mergedCounts = mergedLoadNodeIds.map(nodeId => {
+      const node = nodes.get(nodeId)!;
+      return (node.tile ?? node.lodTile)!.recordCount;
+    });
+    let mergedColumns: GsTilePlayCanvasColumns | null = null;
+    let assembly: GsTileMergedAssemblyClient | null = null;
+    let retryWithoutAssembly = false;
     let mergedStaging: LoadedTile | null = null;
     let mergedByteLength = 0;
     const mergedNodeByteLengths = new Map<string, number>();
@@ -2688,6 +2706,17 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     try {
       signal.throwIfAborted();
       const loadStarted = performance.now();
+      if (mergedAssembly && mergedGaussianCount > 0) {
+        if (decodeWorkerPool && !this.#assemblyWorkerUnavailable && this.#workerAssemblyEnabled &&
+            canAssembleGsTileInWorker(mergedCapacity, mergedCounts)) {
+          assembly = new GsTileMergedAssemblyClient(mergedCapacity, mergedCounts, controller.signal);
+          await assembly.ready;
+        } else {
+          mergedColumns = allocateGsTilePlayCanvasColumns(mergedCapacity, {
+            color: true, centerBounds: true, sh: true, transform: decodeWorkerPool !== null,
+          });
+        }
+      }
       const loadResults = await Promise.allSettled(
         loadNodeIds.map(async (nodeId) => {
           if (!mergedAssembly && this.#loadedTiles.has(nodeId)) return;
@@ -2695,10 +2724,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           if (!node) throw new Error(`GSTile LOD node ${nodeId} is missing`);
           try {
             const recordOffset = mergedOffsets.get(nodeId);
-            if (mergedColumns && recordOffset === undefined) {
+            if ((mergedColumns || assembly) && recordOffset === undefined) {
               throw new Error(`GSTile merged offset ${nodeId} is missing`);
             }
-            if (mergedColumns) {
+            if (mergedColumns || assembly) {
               const loaded = await this.#loadLodTileIntoPlayCanvasColumns(
                 node,
                 controller.signal,
@@ -2706,6 +2735,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
                 recordOffset ?? 0,
                 loadTimings,
                 decodeWorkerPool,
+                assembly,
               );
               mergedNodeByteLengths.set(nodeId, loaded.byteLength);
               if (loaded.bounds) mergedNodeBounds.set(nodeId, loaded.bounds);
@@ -2718,6 +2748,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
               );
               staged.set(nodeId, loaded);
             }
+          } catch (error) {
+            if (shouldRetryGsTileAssembly(error, signal, generation === this.#lodGeneration)) {
+              // Fail fast: queued network/decode work must not delay fallback.
+              controller.abort(error);
+            }
+            throw error;
           } finally {
             if (generation === this.#lodGeneration) {
               this.#pendingNodes = Math.max(0, this.#pendingNodes - 1);
@@ -2732,6 +2768,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       if (failedLoad) {
         controller.abort(failedLoad.reason);
         throw failedLoad.reason;
+      }
+      if (assembly) {
+        mergedColumns = await assembly.finish();
+        const stats = assembly.statistics;
+        loadTimings.decodeBreakdown.assemblyTransferMs = stats.transferMs;
+        loadTimings.decodeBreakdown.assemblyPeakBytes = stats.peakBytes;
+        loadTimings.decodeBreakdown.assemblyPeakTasks = stats.peakTasks;
+        loadTimings.decodeCpuMs += stats.transferMs;
       }
       this.#lodLoadMs = performance.now() - loadStarted;
       this.#lodFetchServiceMs = loadTimings.fetchServiceMs;
@@ -3057,16 +3101,30 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         mergedStaging = null;
       }
       staged.clear();
-      if (!(error instanceof DOMException && error.name === "AbortError"))
-        this.#lodState = "error";
-      throw error;
+      if (shouldRetryGsTileAssembly(error, signal, generation === this.#lodGeneration) ||
+          shouldRetryGsTileAssembly(controller.signal.reason, signal, generation === this.#lodGeneration)) {
+        // The GPU cut has not been touched: assembly fails before staging and
+        // commit. Disable it for this backend and retry the same cut once.
+        this.#assemblyWorkerUnavailable = true;
+        this.#assemblyWorkerFailures++;
+        retryWithoutAssembly = true;
+        controller.abort(error);
+        console.warn("GSTile assembly Worker failed; retrying with main-thread assembly", error);
+      } else {
+        if (generation === this.#lodGeneration && !(error instanceof DOMException && error.name === "AbortError")) {
+          this.#lodState = "error";
+        }
+        throw error;
+      }
     } finally {
+      assembly?.dispose();
       signal.removeEventListener("abort", abort);
       if (generation === this.#lodGeneration) {
         this.#lodPendingKey = "";
         this.#lodSyncController = null;
       }
     }
+    if (retryWithoutAssembly) await this.#synchronizeLod(signal, maximumResidentGaussians);
   }
 
   #cancelLodPrefetch(reason: DOMException) {
@@ -3468,6 +3526,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         layerPlacementCount: layer?.gsplatPlacements.length ?? null,
       },
       performance: {
+        assemblyWorkerDisabled: this.#assemblyWorkerUnavailable,
+        assemblyWorkerFailures: this.#assemblyWorkerFailures,
         lodTotalMs: this.#lodTotalMs,
         lodLoadMs: this.#lodLoadMs,
         lodCommitMs: this.#lodCommitMs,
