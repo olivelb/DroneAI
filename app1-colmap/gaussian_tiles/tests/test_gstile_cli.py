@@ -23,6 +23,8 @@ def test_build_gstiles_cli_loads_repository_imports() -> None:
     assert "--progress-jsonl" in completed.stdout
     assert "--lod-proxy-size" in completed.stdout
     assert "--lod-proxy-strategy" in completed.stdout
+    assert "--pack-workers" in completed.stdout
+    assert "--pack-pending-bytes" in completed.stdout
 
 
 def test_repack_gstiles_cli_loads_repository_imports() -> None:

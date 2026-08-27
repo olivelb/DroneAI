@@ -7,6 +7,7 @@ import math
 import os
 import struct
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -231,37 +232,59 @@ def encode_pack(
     return header + payload, quantization, errors
 
 
-def _write_encoded_pack_atomic(path: Path, content: bytes) -> dict[str, Any]:
+@dataclass(frozen=True)
+class PreparedPack:
+    content: bytes
+    compressed: bytes | None
+    record_count: int
+    payload_crc32: int
+    sha256: str
+    compressed_sha256: str | None
+
+
+def prepare_encoded_pack(content: bytes) -> PreparedPack:
+    """Pure preparation: no filesystem effects and one Zstd context per call."""
     record_count, payload_crc32 = validate_pack_content(content)
-
-
     content_sha256 = hashlib.sha256(content).hexdigest()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _write_bytes_atomic(path, content)
-    encodings: dict[str, dict[str, Any]] = {}
     compressed = zstandard.ZstdCompressor(
         level=1,
         write_checksum=True,
         write_content_size=True,
     ).compress(content)
-    if len(compressed) < len(content):
+    if len(compressed) >= len(content):
+        compressed = None
+    return PreparedPack(content, compressed, record_count, payload_crc32, content_sha256,
+                        hashlib.sha256(compressed).hexdigest() if compressed is not None else None)
+
+
+def write_prepared_pack_atomic(path: Path, prepared: PreparedPack) -> dict[str, Any]:
+    """Persist on the calling writer thread, retaining the existing fsync policy."""
+    content, compressed = prepared.content, prepared.compressed
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_bytes_atomic(path, content)
+    encodings: dict[str, dict[str, Any]] = {}
+    if compressed is not None:
         compressed_path = path.with_suffix(path.suffix + ".zst")
         _write_bytes_atomic(compressed_path, compressed)
         encodings["zstd"] = {
             "path": compressed_path.as_posix(),
             "byteLength": len(compressed),
-            "sha256": hashlib.sha256(compressed).hexdigest(),
+            "sha256": prepared.compressed_sha256,
         }
     return {
         "path": path.as_posix(),
         "byteLength": len(content),
-        "recordCount": record_count,
+        "recordCount": prepared.record_count,
         # The immutable bytes are already resident here. Hashing them before
         # the write avoids reading every completed pack back from disk.
-        "sha256": content_sha256,
-        "payloadCrc32": f"{payload_crc32:08x}",
+        "sha256": prepared.sha256,
+        "payloadCrc32": f"{prepared.payload_crc32:08x}",
         **({"encodings": encodings} if encodings else {}),
     }
+
+
+def _write_encoded_pack_atomic(path: Path, content: bytes) -> dict[str, Any]:
+    return write_prepared_pack_atomic(path, prepare_encoded_pack(content))
 
 
 def validate_pack_content(content: bytes | bytearray | memoryview) -> tuple[int, int]:

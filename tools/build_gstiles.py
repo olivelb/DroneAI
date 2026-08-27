@@ -31,6 +31,10 @@ def _parser() -> argparse.ArgumentParser:
         help="LOD proxy strategy; adaptive-moment enables V4, replacement modes preserve legacy bundles",
     )
     parser.add_argument("--chunk-records", type=int, default=131_072)
+    parser.add_argument("--pack-workers", type=int, choices=(1, 2, 4), default=1,
+                        help="bounded parallel pack preparation; 1 keeps synchronous execution")
+    parser.add_argument("--pack-pending-bytes", type=int, default=128 * 1024**2,
+                        help="queued input/output reservation cap, excluding encoder scratch (default 128 MiB)")
     parser.add_argument(
         "--pack-target-bytes",
         type=int,
@@ -73,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
             lod_proxy_strategy=arguments.lod_proxy_strategy,
             chunk_records=arguments.chunk_records,
             pack_target_bytes=arguments.pack_target_bytes,
+            pack_workers=arguments.pack_workers,
+            pack_pending_bytes=arguments.pack_pending_bytes,
             temporary_root=arguments.temporary_root,
             coordinate_origin=tuple(arguments.origin),
             crs=arguments.crs,

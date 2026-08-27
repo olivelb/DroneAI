@@ -95,6 +95,99 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize("workers", [2, 4])
+@pytest.mark.parametrize("aggregate", [None, 256 * 1024])
+@pytest.mark.parametrize("strategy", [None, "adaptive-moment"])
+def test_parallel_preparation_keeps_complete_bundle_identical(tmp_path, workers, aggregate, strategy):
+    from dataclasses import replace
+    source = tmp_path / "input.ply"
+    _write_ply(source, _records(8192))
+    options = GsTileBuildOptions(leaf_size=2048, chunk_records=2048,
+                               pack_target_bytes=aggregate, lod_proxy_size=1024 if strategy else None,
+                               lod_proxy_strategy=strategy or "moment-matched")
+    serial = tmp_path / "serial"
+    parallel = tmp_path / "parallel"
+    a = build_gstile_bundle(source, serial, options=options)
+    b = build_gstile_bundle(source, parallel, options=replace(options, pack_workers=workers))
+    assert a.bundle_id == b.bundle_id
+    a_files = {p.relative_to(serial): p.read_bytes() for p in serial.rglob("*") if p.is_file()}
+    b_files = {p.relative_to(parallel): p.read_bytes() for p in parallel.rglob("*") if p.is_file()}
+    assert a_files == b_files
+
+
+@pytest.mark.parametrize("workers", [True, 0, 3, 8, 2.0])
+def test_parallel_preparation_rejects_invalid_workers(workers):
+    with pytest.raises(ValueError, match="pack_workers"):
+        GsTileBuildOptions(pack_workers=workers).validate()
+
+
+@pytest.mark.parametrize("limit", [True, 0, 1024, 2**31, 1.5])
+def test_parallel_preparation_rejects_invalid_queue_limit(limit):
+    with pytest.raises(ValueError, match="pack_pending_bytes"):
+        GsTileBuildOptions(pack_pending_bytes=limit).validate()
+
+
+@pytest.mark.parametrize("failure", ["worker", "write", "cancel"])
+def test_parallel_failure_never_publishes_and_joins_workers(tmp_path, monkeypatch, failure):
+    import threading
+    import gaussian_tiles.format as pack_format
+    source = tmp_path / "input.ply"
+    _write_ply(source, _records(8192))
+    source_hash = _sha256(source)
+    target = tmp_path / "bundle"
+    owner = threading.get_ident()
+    prepare = tiler._prepare_tile
+    write = pack_format._write_bytes_atomic
+    written = 0
+    cancelled = False
+    def failing_prepare(*args):
+        if failure == "worker":
+            raise ValueError("worker failed")
+        return prepare(*args)
+    def failing_write(path, content):
+        nonlocal written
+        assert threading.get_ident() == owner
+        written += 1
+        if failure == "write" and written == 2:
+            raise OSError("disk full")
+        return write(path, content)
+    def progress(event):
+        nonlocal cancelled
+        if event["event"] == "leaf_written":
+            cancelled = True
+    def cancel():
+        if failure == "cancel" and cancelled:
+            raise RuntimeError("cancelled")
+    monkeypatch.setattr(tiler, "_prepare_tile", failing_prepare)
+    monkeypatch.setattr(pack_format, "_write_bytes_atomic", failing_write)
+    with pytest.raises((ValueError, OSError, RuntimeError), match="failed|disk full|cancelled"):
+        build_gstile_bundle(source, target, options=GsTileBuildOptions(
+            leaf_size=2048, chunk_records=2048, pack_workers=4,
+            progress_callback=progress, cancellation_check=cancel))
+    assert not target.exists()
+    assert not (tmp_path / ".bundle.partial").exists()
+    assert not list(tmp_path.glob("gstile-build-*"))
+    assert _sha256(source) == source_hash
+    assert not any(thread.name.startswith("gstile-pack") for thread in threading.enumerate())
+
+
+def test_parallel_queue_telemetry_and_oversize_keep_bundle_identical(tmp_path):
+    source = tmp_path / "input.ply"
+    _write_ply(source, _records(16384))
+    results = []
+    for cap in [1024**2, 128 * 1024**2]:
+        events = []
+        results.append(build_gstile_bundle(source, tmp_path / str(cap), options=GsTileBuildOptions(
+            leaf_size=4096, chunk_records=4096, pack_workers=4,
+            pack_pending_bytes=cap, progress_callback=events.append)))
+        telemetry = next(event for event in events if event["event"] == "pack_preparation")
+        assert telemetry["peakPendingBytes"] <= cap
+        assert telemetry["peakPendingTasks"] <= 4
+        assert (telemetry["oversizedInlineTasks"] > 0) == (cap == 1024**2)
+        assert events[-1]["event"] == "published"
+    assert results[0].bundle_id == results[1].bundle_id
+
+
 @pytest.mark.parametrize("count,chunk_records", [(8, 3), (9, 2), (9, 20)])
 def test_coincident_partition_reads_once_and_preserves_exact_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, count: int, chunk_records: int,
