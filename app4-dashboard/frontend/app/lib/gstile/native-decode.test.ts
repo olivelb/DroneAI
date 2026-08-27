@@ -1,5 +1,5 @@
 import { FloatPacking } from "playcanvas";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { GsTileQuantization } from "./contracts";
 import {
   allocateGsTilePlayCanvasColumns,
@@ -27,6 +27,41 @@ const quantization: GsTileQuantization = {
 };
 
 describe("GSTile native transform payload decoding", () => {
+  it("reuses scale exponentials when computing bounds", () => {
+    const payload = new ArrayBuffer(96);
+    new DataView(payload).setInt16(12, 32767, true);
+    const exp = vi.spyOn(Math, "exp");
+    try {
+      decodeGsTileNativePayload(payload, 1, quantization, FloatPacking.float2Half);
+      // Three scale values and the base-opacity sigmoid; no fourth scale exp.
+      expect(exp).toHaveBeenCalledTimes(4);
+    } finally {
+      exp.mockRestore();
+    }
+  });
+
+  it.each([
+    [0, 32768, 65535], [65535, 0, 32768], [32768, 65535, 0],
+    [0, 0, 0], [32768, 32768, 32768], [65535, 65535, 65535],
+  ])("preserves exact bounds for scale codes %s/%s/%s", (x, y, z) => {
+    const payload = new ArrayBuffer(96);
+    const view = new DataView(payload);
+    view.setInt16(12, 32767, true);
+    [x, y, z].forEach((value, axis) => view.setUint16(6 + axis * 2, value, true));
+    const q: GsTileQuantization = {
+      ...quantization,
+      logScale: { min: [-80, -80, -80], max: [10, 10, 10] },
+    };
+    const scales = [x, y, z].map(value => Math.fround(-80 + value * (90 / 65535)));
+    const radius = 2 * Math.exp(Math.max(...scales));
+    for (const encoder of [FloatPacking.float2Half, undefined]) {
+      if (!encoder && typeof Float16Array !== "function") continue;
+      const actual = decodeGsTileNativePayload(payload, 1, q, encoder);
+      expect(actual.bounds.minimum).toEqual(q.position.min.map(value => Math.fround(value) - radius));
+      expect(actual.bounds.maximum).toEqual(q.position.min.map(value => Math.fround(value) + radius));
+    }
+  });
+
   it("matches the existing Q96 decode and native packer exactly", () => {
     const count = 16_384;
     const payload = new ArrayBuffer(count * 96);
@@ -44,6 +79,13 @@ describe("GSTile native transform payload decoding", () => {
       for (let component = 0; component < 4; component += 1) {
         const value = (randomU16() % 65_535) - 32_767;
         view.setInt16(base + 12 + component * 2, value, true);
+      }
+      view.setUint16(base + 20, randomU16(), true);
+      for (let component = 0; component < 3; component += 1) {
+        view.setInt16(base + 22 + component * 2, (randomU16() % 65535) - 32767, true);
+      }
+      for (let byte = 28; byte < 88; byte += 1) {
+        view.setInt8(base + byte, (randomU16() % 255) - 127);
       }
       if (
         view.getInt16(base + 12, true) === 0 &&

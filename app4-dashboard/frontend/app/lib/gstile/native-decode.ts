@@ -151,20 +151,23 @@ export const decodeGsTileNativePayload = (
     transformAFloat32[streamOffset] = px;
     transformAFloat32[streamOffset + 1] = py;
     transformAFloat32[streamOffset + 2] = pz;
+    const scaleX = Math.exp(sx);
+    const scaleY = Math.exp(sy);
+    const scaleZ = Math.exp(sz);
     if (transformAHalf && transformBHalf) {
       const halfOffset = streamOffset * 2;
       transformAHalf[halfOffset + 6] = x;
       transformAHalf[halfOffset + 7] = y;
-      transformBHalf[streamOffset] = Math.exp(sx);
-      transformBHalf[streamOffset + 1] = Math.exp(sy);
-      transformBHalf[streamOffset + 2] = Math.exp(sz);
+      transformBHalf[streamOffset] = scaleX;
+      transformBHalf[streamOffset + 1] = scaleY;
+      transformBHalf[streamOffset + 2] = scaleZ;
       transformBHalf[streamOffset + 3] = z;
     } else if (float2Half) {
       transformA[streamOffset + 3] =
         float2Half(x) | (float2Half(y) << 16);
-      transformB[streamOffset] = float2Half(Math.exp(sx));
-      transformB[streamOffset + 1] = float2Half(Math.exp(sy));
-      transformB[streamOffset + 2] = float2Half(Math.exp(sz));
+      transformB[streamOffset] = float2Half(scaleX);
+      transformB[streamOffset + 1] = float2Half(scaleY);
+      transformB[streamOffset + 2] = float2Half(scaleZ);
       transformB[streamOffset + 3] = float2Half(z);
     }
 
@@ -237,7 +240,14 @@ export const decodeGsTileNativePayload = (
     }
     packGsTileNativeShRecord(shScratch, shStreams, record);
 
-    const radius = 2 * Math.exp(Math.max(sx, sy, sz));
+    const maximumLogScale = Math.max(sx, sy, sz);
+    // Reuse the exponential of the exact same selected argument, not a
+    // rounded half-float scale. Retain NaN propagation for malformed inputs.
+    const radius = 2 * (
+      maximumLogScale === sx ? scaleX :
+      maximumLogScale === sy ? scaleY :
+      maximumLogScale === sz ? scaleZ : NaN
+    );
     minimum[0] = Math.min(minimum[0], px - radius);
     minimum[1] = Math.min(minimum[1], py - radius);
     minimum[2] = Math.min(minimum[2], pz - radius);
