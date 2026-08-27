@@ -27,7 +27,7 @@ export type LinearTextureCopy = {
   destX: number;
   destY: number;
   width: number;
-  height: 1;
+  height: number;
 };
 
 export type MergedArenaBounds = {
@@ -42,7 +42,7 @@ const validatePositiveSafeInteger = (value: number, label: string) => {
 };
 
 /**
- * Split one linear splat range into row-bounded GPU texture copies.
+ * Copy a linear range exactly, batching vertical strips when widths match.
  *
  * PlayCanvas packs every stream in a 2D texture. Source staging resources and
  * the persistent arena can have different widths, so a single linear range
@@ -73,6 +73,8 @@ export const planLinearTextureCopies = (
     !Number.isSafeInteger(destinationOffset) ||
     sourceOffset < 0 ||
     destinationOffset < 0 ||
+    !Number.isSafeInteger(sourceOffset + count) ||
+    !Number.isSafeInteger(destinationOffset + count) ||
     sourceOffset + count > sourceWidth * sourceHeight ||
     destinationOffset + count > destinationWidth * destinationHeight
   ) {
@@ -83,6 +85,34 @@ export const planLinearTextureCopies = (
   let source = sourceOffset;
   let destination = destinationOffset;
   let remaining = count;
+  if (sourceWidth === destinationWidth) {
+    const partial = () => {
+      const sourceX = source % sourceWidth;
+      const destX = destination % destinationWidth;
+      const width = Math.min(sourceWidth - sourceX, destinationWidth - destX, remaining);
+      copies.push({ sourceX, sourceY: Math.floor(source / sourceWidth), destX,
+        destY: Math.floor(destination / destinationWidth), width, height: 1 });
+      source += width;
+      destination += width;
+      remaining -= width;
+    };
+    while (remaining > 0 && source % sourceWidth !== 0) partial();
+    const rows = Math.floor(remaining / sourceWidth);
+    if (rows > 0) {
+      const destX = destination % destinationWidth;
+      const sourceY = source / sourceWidth;
+      const destY = Math.floor(destination / destinationWidth);
+      // Two disjoint strips account for a destination row wrap. No gap is written.
+      copies.push({ sourceX: 0, sourceY, destX, destY, width: sourceWidth - destX, height: rows });
+      if (destX !== 0) copies.push({ sourceX: sourceWidth - destX, sourceY,
+        destX: 0, destY: destY + 1, width: destX, height: rows });
+      source += rows * sourceWidth;
+      destination += rows * sourceWidth;
+      remaining -= rows * sourceWidth;
+    }
+    while (remaining > 0) partial();
+    return copies;
+  }
   while (remaining > 0) {
     const sourceX = source % sourceWidth;
     const destinationX = destination % destinationWidth;

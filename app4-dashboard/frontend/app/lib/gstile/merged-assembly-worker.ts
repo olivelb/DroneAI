@@ -12,7 +12,10 @@ scope.onmessage = (event: MessageEvent<GsTileAssemblyRequest>) => {
     let transfer: ArrayBuffer[] = [];
     if (request.type === "init") {
       if (initialized) throw new Error("GSTile assembly Worker already initialized");
-      assembler = new GsTileMergedAssembler(request.capacity, request.counts);
+      if (!Number.isSafeInteger(request.textureWidth) || request.textureWidth < 1) {
+        throw new Error("GSTile assembly texture width is invalid");
+      }
+      assembler = new GsTileMergedAssembler(request.capacity, request.counts, request.textureWidth);
       initialized = true;
       response = { type: "ready", id: request.id };
     } else {

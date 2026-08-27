@@ -8,16 +8,17 @@ export const GSTILE_ASSEMBLY_MAX_WORKING_BYTES = 128 * 1024 * 1024;
 export const GSTILE_ASSEMBLY_MAX_DESTINATION_BYTES = 2 * 1024 * 1024 * 1024;
 export const GSTILE_ASSEMBLY_MIN_RECORDS = 2_000_000;
 
-export const gsTileNativeStreamBytes = (count: number) =>
-  count * 12 + gsTileTextureElementCapacity(count) * 160;
+export const gsTileNativeStreamBytes = (count: number, textureWidth?: number) =>
+  count * 12 + gsTileTextureElementCapacity(count, textureWidth) * 160;
 
 /** Payload and decoded result can coexist in a decoder until its task ends. */
 export const gsTileDecodeWorkingBytes = (count: number) =>
   count * GSTILE_RECORD_BYTES + gsTileNativeStreamBytes(count);
 
-export const canAssembleGsTileInWorker = (capacity: number, counts: readonly number[]) =>
+export const canAssembleGsTileInWorker = (capacity: number, counts: readonly number[], textureWidth?: number) =>
   Number.isSafeInteger(capacity) && capacity > 0 &&
-  gsTileNativeStreamBytes(capacity) <= GSTILE_ASSEMBLY_MAX_DESTINATION_BYTES &&
+  (textureWidth === undefined || Number.isSafeInteger(textureWidth) && textureWidth > 0 && textureWidth <= GSTILE_ASSEMBLY_MAX_DESTINATION_BYTES / 160) &&
+  gsTileNativeStreamBytes(capacity, textureWidth) <= GSTILE_ASSEMBLY_MAX_DESTINATION_BYTES &&
   counts.length > 0 && counts.every(count =>
     Number.isSafeInteger(count) && count > 0 &&
     gsTileDecodeWorkingBytes(count) <= GSTILE_ASSEMBLY_MAX_WORKING_BYTES) &&
@@ -32,8 +33,9 @@ const validateNativeStreams = (
   color: Uint16Array,
   sh: readonly Uint32Array[],
   opacity: readonly Float32Array[],
+  textureWidth?: number,
 ) => {
-  const length = gsTileTextureElementCapacity(count) * 4;
+  const length = gsTileTextureElementCapacity(count, textureWidth) * 4;
   if (
     !(center instanceof Float32Array) || center.length !== count * 3 ||
     !(transformA instanceof Uint32Array) || transformA.length !== length ||
@@ -58,11 +60,14 @@ export const gsTileNativeResultBuffers = (result: GsTileNativeDecodeResult) =>
     result.transformB, result.colorStream, result.shStreams, result.opacityStreams);
 
 export const gsTileNativeColumnBuffers = (columns: GsTilePlayCanvasColumns) => {
+  if (!Number.isSafeInteger(columns.textureWidth) || columns.textureWidth < 1) {
+    throw new Error("GSTile assembly texture width is inconsistent");
+  }
   if (!columns.centerStream || !columns.transformStreams || !columns.colorStream || !columns.shStreams) {
     throw new Error("GSTile assembly requires packed columns");
   }
   return validateNativeStreams(columns.count, columns.centerStream, columns.transformStreams[0],
-    columns.transformStreams[1], columns.colorStream, columns.shStreams, columns.opacityStreams);
+    columns.transformStreams[1], columns.colorStream, columns.shStreams, columns.opacityStreams, columns.textureWidth);
 };
 
 /** One cut, one owner, exactly one write for each planned compact range. */
@@ -70,8 +75,8 @@ export class GsTileMergedAssembler {
   #columns: GsTilePlayCanvasColumns | null;
   readonly #remaining = new Map<number, number>();
 
-  constructor(capacity: number, counts: readonly number[]) {
-    if (gsTileNativeStreamBytes(capacity) > GSTILE_ASSEMBLY_MAX_DESTINATION_BYTES || !counts.length) {
+  constructor(capacity: number, counts: readonly number[], textureWidth?: number) {
+    if (gsTileNativeStreamBytes(capacity, textureWidth) > GSTILE_ASSEMBLY_MAX_DESTINATION_BYTES || !counts.length) {
       throw new Error("GSTile assembly capacity is invalid");
     }
     let offset = 0;
@@ -85,6 +90,7 @@ export class GsTileMergedAssembler {
     }
     this.#columns = allocateGsTilePlayCanvasColumns(capacity, {
       color: true, centerBounds: true, sh: true, transform: true,
+      textureWidth,
     });
   }
 

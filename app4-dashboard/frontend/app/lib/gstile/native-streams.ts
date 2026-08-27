@@ -27,13 +27,37 @@ type StreamCollection<TTexture extends DisposableTexture, TSize> = {
   ) => TTexture;
 };
 
-/** Match PlayCanvas TextureUtils.calcTextureSize for one texel per splat. */
-export const gsTileTextureElementCapacity = (count: number) => {
+/** Square packing by default; incremental staging may match the arena width. */
+export const gsTileTextureDimensions = (count: number, textureWidth?: number) => {
   if (!Number.isSafeInteger(count) || count < 1) {
     throw new Error("GSTile texture element count must be positive");
   }
-  const width = Math.ceil(Math.sqrt(count));
-  return width * Math.ceil(count / width);
+  const width = textureWidth ?? Math.ceil(Math.sqrt(count));
+  if (!Number.isSafeInteger(width) || width < 1) {
+    throw new Error("GSTile texture width must be a positive safe integer");
+  }
+  const height = Math.ceil(count / width);
+  if (!Number.isSafeInteger(width * height * 4)) {
+    throw new Error("GSTile texture capacity overflows RGBA addressing");
+  }
+  return { width, height };
+};
+
+export const gsTileTextureElementCapacity = (count: number, textureWidth?: number) => {
+  const { width, height } = gsTileTextureDimensions(count, textureWidth);
+  return width * height;
+};
+
+/** Called on empty engine streams before the first native array is adopted. */
+export const resizeGsTileStagingStreams = (
+  streams: { textureDimensions: { x: number; y: number }; resize(width: number, height: number): void },
+  count: number,
+  textureWidth: number,
+) => {
+  const { width, height } = gsTileTextureDimensions(count, textureWidth);
+  if (streams.textureDimensions.x !== width || streams.textureDimensions.y !== height) {
+    streams.resize(width, height);
+  }
 };
 
 /**

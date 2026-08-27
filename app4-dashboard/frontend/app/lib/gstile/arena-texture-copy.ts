@@ -17,7 +17,8 @@ export function copyGsTileTextureRange<T extends TextureShape>(
   sourceOffset: number,
   destinationOffset: number,
   count: number,
-): void {
+): number {
+  let copyCount = 0;
   // One entry, local to this range: no retained cut-sized cache or stale offsets.
   let geometry: {
     sourceWidth: number;
@@ -61,10 +62,12 @@ export function copyGsTileTextureRange<T extends TextureShape>(
       };
     }
     // PlayCanvas 2.21.4 reads but does not mutate these options. Keep command order.
+    copyCount += geometry.copies.length;
     for (const options of geometry.copies) {
       if (!destinationTexture.copy(sourceTexture, options)) {
         throw new Error(`GSTile arena stream ${stream.name} copy failed`);
       }
     }
   }
+  return copyCount;
 }

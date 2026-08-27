@@ -1,4 +1,5 @@
 import type { GsTileNativeDecodeResult } from "./native-decode";
+import { gsTileTextureDimensions } from "./native-streams";
 import type { GsTileAssemblyRequest, GsTileAssemblyResponse } from "./merged-assembly-protocol";
 import {
   GSTILE_ASSEMBLY_MAX_TASKS, GSTILE_ASSEMBLY_MAX_WORKING_BYTES,
@@ -34,6 +35,7 @@ export class GsTileMergedAssemblyClient {
   readonly #worker: GsTileAssemblyWorker;
   readonly #signal: AbortSignal;
   readonly #capacity: number;
+  readonly #textureWidth: number;
   readonly #pending = new Map<number, Pending>();
   readonly #waiters: Waiter[] = [];
   #nextId = 1;
@@ -53,9 +55,11 @@ export class GsTileMergedAssemblyClient {
       new URL("./merged-assembly-worker.ts", import.meta.url),
       { type: "module", name: "gstile-merged-assembly" },
     ),
+    textureWidth?: number,
   ) {
     signal.throwIfAborted();
     this.#capacity = capacity;
+    this.#textureWidth = gsTileTextureDimensions(capacity, textureWidth).width;
     this.#signal = signal;
     try { this.#worker = workerFactory(); }
     catch (error) { throw new GsTileAssemblyError(String(error)); }
@@ -66,7 +70,7 @@ export class GsTileMergedAssemblyClient {
     };
     this.#worker.onmessageerror = () => this.dispose(new GsTileAssemblyError("GSTile assembly response is invalid"));
     signal.addEventListener("abort", this.#abort, { once: true });
-    this.ready = this.#request({ type: "init", id: this.#nextId++, capacity, counts: [...counts] }).then(() => undefined);
+    this.ready = this.#request({ type: "init", id: this.#nextId++, capacity, counts: [...counts], textureWidth: this.#textureWidth }).then(() => undefined);
   }
 
   #abort = () => this.dispose(this.#signal.reason ?? new DOMException("Aborted", "AbortError"));
@@ -152,7 +156,8 @@ export class GsTileMergedAssemblyClient {
       if (request.type === "init" && response.type !== "ready" ||
           request.type === "copy" && (response.type !== "copied" ||
             !Number.isFinite(response.copyMs) || response.copyMs < 0 || response.bytes !== request.result.count * 172) ||
-          request.type === "finish" && (response.type !== "finished" || response.columns.count !== this.#capacity)) {
+          request.type === "finish" && (response.type !== "finished" || response.columns.count !== this.#capacity ||
+            response.columns.textureWidth !== this.#textureWidth)) {
         throw new Error("GSTile assembly response does not match its request");
       }
       if (response.type === "finished") gsTileNativeColumnBuffers(response.columns);
