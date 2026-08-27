@@ -898,20 +898,24 @@ def _split_work_file(
             right_minimum = np.minimum(right_minimum, chunk_minimum)
             right_maximum = np.maximum(right_maximum, chunk_maximum)
 
-    with left_path.open("xb") as left, right_path.open("xb") as right:
-        for records in _chunks(item.path, dtype, chunk_records, cancellation_check):
-            mask = records[("x", "y", "z")[axis]] < midpoint
-            left_records, right_records = records[mask], records[~mask]
-            left_records.tofile(left)
-            right_records.tofile(right)
-            record_partition_bounds(left_records, left=True)
-            record_partition_bounds(right_records, left=False)
-            left_count += left_records.shape[0]
-            right_count += right_records.shape[0]
+    # Coincident centers necessarily produce an empty midpoint partition.
+    # Go straight to the identical stable count split, avoiding a full read/write.
+    if extent[axis] > 0.0:
+        with left_path.open("xb") as left, right_path.open("xb") as right:
+            for records in _chunks(item.path, dtype, chunk_records, cancellation_check):
+                mask = records[("x", "y", "z")[axis]] < midpoint
+                left_records, right_records = records[mask], records[~mask]
+                left_records.tofile(left)
+                right_records.tofile(right)
+                record_partition_bounds(left_records, left=True)
+                record_partition_bounds(right_records, left=False)
+                left_count += left_records.shape[0]
+                right_count += right_records.shape[0]
 
     if left_count == 0 or right_count == 0:
-        left_path.unlink(missing_ok=True)
-        right_path.unlink(missing_ok=True)
+        if extent[axis] > 0.0:
+            left_path.unlink()
+            right_path.unlink()
         left_count = item.count // 2
         right_count = item.count - left_count
         left_minimum.fill(np.inf)

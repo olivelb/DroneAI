@@ -19,16 +19,19 @@ from gaussian_tiles import (
     build_gstile_bundle,
     decode_pack,
     repack_gstile_bundle,
+    tiler,
     validate_manifest,
 )
 from gaussian_tiles.format import PACK_DTYPE, PACK_HEADER_SIZE, encode_pack
 from gaussian_tiles.tiler import (
+    _WorkFile,
     _adaptive_moment_lod_proxy,
     _gaussian_render_bounds,
     _invisible_giant_mask,
     _moment_matched_lod_proxy,
     _opacity_design_matrix,
     _proxy_support_error,
+    _split_work_file,
 )
 
 
@@ -90,6 +93,59 @@ def _write_ply(path: Path, records: np.ndarray) -> None:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("count,chunk_records", [(8, 3), (9, 2), (9, 20)])
+def test_coincident_partition_reads_once_and_preserves_exact_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, count: int, chunk_records: int,
+) -> None:
+    source_records = _records(count)
+    records = np.empty(count, dtype=np.dtype([*PLY_DTYPE.descr, ("source_id", "<u8")]))
+    for name in PROPERTY_NAMES:
+        records[name] = source_records[name]
+    records["source_id"] = np.arange(count, dtype=np.uint64)[::-1]
+    for name, value in zip(("x", "y", "z"), (1.0, 2.0, 3.0), strict=True):
+        records[name] = value
+    source = tmp_path / "r.work"
+    records.tofile(source)
+    original_chunks = tiler._chunks
+    reads = 0
+
+    def counted_chunks(*args, **kwargs):
+        nonlocal reads
+        reads += 1
+        yield from original_chunks(*args, **kwargs)
+
+    monkeypatch.setattr(tiler, "_chunks", counted_chunks)
+    left, right = _split_work_file(
+        _WorkFile(source, count, (1.0, 2.0, 3.0), (1.0, 2.0, 3.0)),
+        node_id="r", dtype=records.dtype, chunk_records=chunk_records,
+    )
+    assert reads == 1
+    assert left.count == count // 2
+    assert right.count == count - count // 2
+    assert left.path.read_bytes() == records[:count // 2].tobytes()
+    assert right.path.read_bytes() == records[count // 2:].tobytes()
+    assert left.bounds_min == left.bounds_max == (1.0, 2.0, 3.0)
+    assert right.bounds_min == right.bounds_max == (1.0, 2.0, 3.0)
+
+
+@pytest.mark.parametrize("child", ["r0.work", "r1.work"])
+def test_coincident_partition_does_not_overwrite_existing_children(tmp_path: Path, child: str) -> None:
+    records = _records(2)
+    for name in ("x", "y", "z"):
+        records[name] = 0.0
+    source = tmp_path / "r.work"
+    records.tofile(source)
+    existing = tmp_path / child
+    existing.write_bytes(b"existing-work-file")
+    with pytest.raises(FileExistsError):
+        _split_work_file(
+            _WorkFile(source, 2, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            node_id="r", dtype=records.dtype, chunk_records=1,
+        )
+    assert source.exists()
+    assert existing.read_bytes() == b"existing-work-file"
 
 
 def test_invisible_giant_filter_is_directionally_conservative() -> None:

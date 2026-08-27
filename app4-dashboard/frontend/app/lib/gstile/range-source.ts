@@ -25,8 +25,52 @@ export class GsTileRangeError extends Error {
   }
 }
 
+const MAXIMUM_RANGE_RETRIES = 2;
+const MAXIMUM_RETRY_DELAY_MS = 2_000;
+
+class GsTileHttpError extends GsTileRangeError {
+  constructor(readonly status: number, readonly retryAfter: string | null) {
+    super(`GSTile range request returned HTTP ${status}`);
+  }
+}
+
+const retryDelay = (error: unknown, retry: number): number | null => {
+  if (retry >= MAXIMUM_RANGE_RETRIES) return null;
+  if (error instanceof GsTileHttpError) {
+    if (![408, 429, 500, 502, 503, 504].includes(error.status)) return null;
+    if (error.retryAfter !== null) {
+      const seconds = /^\d+$/.test(error.retryAfter)
+        ? Number(error.retryAfter)
+        : (Date.parse(error.retryAfter) - Date.now()) / 1_000;
+      if (Number.isFinite(seconds)) {
+        // Do not retry earlier than the server asks, or stall a cut indefinitely.
+        if (seconds * 1_000 > MAXIMUM_RETRY_DELAY_MS) return null;
+        return Math.max(0, seconds * 1_000);
+      }
+    }
+  } else if (!(error instanceof TypeError)) {
+    // Fetch/stream network failures are TypeError; protocol/length errors are not.
+    return null;
+  }
+  return 150 * 2 ** retry + Math.floor(Math.random() * 100);
+};
+
+const waitForRetry = (milliseconds: number, signal: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    signal.throwIfAborted();
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+
 const expectedContentRange = (range: ByteRange, total: number | null) => {
-  const end = range.start + range.length - 1;
+  const end = range.start + (range.length - 1);
   return `bytes ${range.start}-${end}/${total ?? "*"}`;
 };
 
@@ -42,11 +86,14 @@ export const fetchGsTileRange = async (
     !Number.isSafeInteger(range.start) ||
     !Number.isSafeInteger(range.length) ||
     range.start < 0 ||
-    range.length < 1
+    range.length < 1 ||
+    !Number.isSafeInteger(range.start + (range.length - 1)) ||
+    !Number.isSafeInteger(responseByteLength) ||
+    responseByteLength < 1
   ) {
     throw new GsTileRangeError("Invalid GSTile byte range");
   }
-  const end = range.start + range.length - 1;
+  const end = range.start + (range.length - 1);
   const response = await fetch(url, {
     ...(requestRange
       ? { headers: { Range: `bytes=${range.start}-${end}` } }
@@ -57,8 +104,9 @@ export const fetchGsTileRange = async (
   const fullObjectResponse =
     allowFullObjectResponse && range.start === 0 && response.status === 200;
   if (response.status !== 206 && !fullObjectResponse) {
-    throw new GsTileRangeError(
-      `GSTile range request returned HTTP ${response.status}`,
+    void response.body?.cancel().catch(() => undefined);
+    throw new GsTileHttpError(
+      response.status, response.headers.get("retry-after"),
     );
   }
   if (!fullObjectResponse) {
@@ -67,8 +115,11 @@ export const fetchGsTileRange = async (
     if (
       !match ||
       Number(match[1]) !== range.start ||
-      Number(match[2]) !== end
+      Number(match[2]) !== end ||
+      (match[3] !== "*" &&
+        (!Number.isSafeInteger(Number(match[3])) || Number(match[3]) <= end))
     ) {
+      void response.body?.cancel().catch(() => undefined);
       throw new GsTileRangeError(
         `Invalid Content-Range; expected ${expectedContentRange(range, null)}`,
       );
@@ -145,6 +196,7 @@ export type GsTileRangeSchedulerStatistics = {
   persistentAvailabilityCandidates: number;
   persistentAvailabilityHits: number;
   networkBytes: number;
+  networkRetries: number;
   decodedBytes: number;
   zstdResponses: number;
   zstdFallbacks: number;
@@ -191,6 +243,7 @@ export class GsTileRangeScheduler {
   #persistentAvailabilityCandidates = 0;
   #persistentAvailabilityHits = 0;
   #networkBytes = 0;
+  #networkRetries = 0;
   #decodedBytes = 0;
   #zstdResponses = 0;
   #zstdFallbacks = 0;
@@ -270,6 +323,7 @@ export class GsTileRangeScheduler {
         this.#persistentAvailabilityCandidates,
       persistentAvailabilityHits: this.#persistentAvailabilityHits,
       networkBytes: this.#networkBytes,
+      networkRetries: this.#networkRetries,
       decodedBytes: this.#decodedBytes,
       zstdResponses: this.#zstdResponses,
       zstdFallbacks: this.#zstdFallbacks,
@@ -370,8 +424,6 @@ export class GsTileRangeScheduler {
         request.priority = "critical";
         request.orphanGraceMilliseconds = this.#orphanGraceMilliseconds;
         this.#priorityPromotions += 1;
-        this.#prefetchUsefulRequests += 1;
-        this.#prefetchUsefulBytes += range.length;
         request.promote?.();
       }
       return this.#subscribe(request, signal);
@@ -448,6 +500,32 @@ export class GsTileRangeScheduler {
     transport?: GsTileNetworkTransport,
   ) {
     await this.#acquire(signal, request);
+    let slotHeld = true;
+    const fetchWithRetry = async (...args: Parameters<typeof fetchGsTileRange>) => {
+      for (let retry = 0; ; retry += 1) {
+        try {
+          signal.throwIfAborted();
+          return await fetchGsTileRange(...args);
+        } catch (error) {
+          if (signal.aborted) throw error;
+          // HTTP content-decoding failures also surface as TypeError. When a
+          // raw fallback exists, try it immediately instead of repeating a
+          // potentially unsupported browser decoding path.
+          if (error instanceof TypeError && args[5] === false && transport?.fallbackUrl) {
+            throw error;
+          }
+          const delay = retryDelay(error, retry);
+          if (delay === null) throw error;
+          this.#networkRetries += 1;
+          // Sleeping prefetches must not occupy a slot needed by visible tiles.
+          slotHeld = false;
+          this.#release();
+          await waitForRetry(delay, signal);
+          await this.#acquire(signal, request);
+          slotHeld = true;
+        }
+      }
+    };
     try {
       if (this.#persistentCache && key.startsWith("immutable:")) {
         try {
@@ -457,6 +535,7 @@ export class GsTileRangeScheduler {
             signal,
           );
           if (persistent) {
+            signal.throwIfAborted();
             this.#persistentCacheHits += 1;
             this.#persistentBuffers.add(persistent);
             const admitted = this.#putMemory(key, persistent);
@@ -481,7 +560,7 @@ export class GsTileRangeScheduler {
       let encoded: ArrayBuffer;
       let content: ArrayBuffer;
       try {
-        encoded = await fetchGsTileRange(
+        encoded = await fetchWithRetry(
           transport?.url ?? url,
           networkRange,
           signal,
@@ -508,7 +587,7 @@ export class GsTileRangeScheduler {
           throw error;
         }
         this.#zstdFallbacks += 1;
-        encoded = await fetchGsTileRange(
+        encoded = await fetchWithRetry(
           transport.fallbackUrl,
           range,
           signal,
@@ -517,6 +596,7 @@ export class GsTileRangeScheduler {
         content = encoded;
         transport = undefined;
       }
+      signal.throwIfAborted();
       this.#networkBytes +=
         transport?.encoding === "zstd-http"
           ? transport.byteLength
@@ -538,7 +618,7 @@ export class GsTileRangeScheduler {
       );
       return content;
     } finally {
-      this.#release();
+      if (slotHeld) this.#release();
     }
   }
 
@@ -569,7 +649,10 @@ export class GsTileRangeScheduler {
     this.#prefetchCompletedBytes += decodedByteLength;
     if (source === "network") this.#prefetchNetworkBytes += networkByteLength;
     else this.#prefetchPersistentBytes += decodedByteLength;
-    if (admitted && request.priority === "prefetch") {
+    if (request.priority === "critical") {
+      this.#prefetchUsefulRequests += 1;
+      this.#prefetchUsefulBytes += decodedByteLength;
+    } else if (admitted) {
       this.#prefetchedMemory.add(key);
     }
   }
