@@ -6,6 +6,7 @@ import type {
   GsTilePackTransportUrls,
 } from "./backend";
 import { GaussianBackendUnavailable } from "./backend";
+import { copyGsTileCenters } from "./center-stream";
 import {
   type GsTileManifest,
   type GsTileNode,
@@ -2149,14 +2150,13 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     destinationOffset: number,
     count: number,
   ) {
-    const centers = destination.centers;
-    for (let record = 0; record < count; record += 1) {
-      const source = sourceOffset + record;
-      const target = (destinationOffset + record) * 3;
-      centers[target] = columns.position[0][source];
-      centers[target + 1] = columns.position[1][source];
-      centers[target + 2] = columns.position[2][source];
-    }
+    copyGsTileCenters(
+      columns,
+      sourceOffset,
+      destination.centers,
+      destinationOffset,
+      count,
+    );
   }
 
   #copyMergedArenaNode(
