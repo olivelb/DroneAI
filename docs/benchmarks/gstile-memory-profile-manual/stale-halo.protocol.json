@@ -1,0 +1,41 @@
+{
+  "schema": "gstile-stale-halo-pilot-v1",
+  "status": "frozen",
+  "reference": "b394f0e3ec5e2c26b099bf475b2a898a223be906",
+  "candidate": "5b1e290c4713de84444ab90c89febdd42d5a4eeb",
+  "port": 3030,
+  "ui": {
+    "title": "GSTile — halo plafonné, cache 1536 Mio",
+    "description": "Même cache 1536 Mio dans les deux variantes. Seul change le plafond du préchargement lorsque le mouvement caméra est périmé. Porte → façade → porte → façade."
+  },
+  "width": 1200, "height": 675, "devicePixelRatio": 1, "fov": 42,
+  "durationMs": 1200, "steps": 40, "settleQuietMs": 1000, "timeoutMs": 120000,
+  "memoryProfiles": {
+    "reference": {"profile":"desktop","bytes":1610612736},
+    "candidate": {"profile":"desktop","bytes":1610612736}
+  },
+  "databasePrefix": "gstile-stale-halo-20260827-",
+  "stabilizationMs": 5000,
+  "persistentCacheBytes": 2147483648,
+  "persistentCache": "fresh isolated database per arm, retained; drain writes at settle",
+  "httpCache": "no-store", "transport": "negotiated zstd-http; zero fallback required",
+  "door": {"target": [0, 3.05, 1.6], "distance": 3.7},
+  "facade": {"target": [0, -1.8, 1.6], "distance": 10.5},
+  "runs": [
+    {"arm":"reference","label":"warmup-reference"},
+    {"arm":"candidate","label":"warmup-candidate"},
+    {"arm":"reference","label":"pair-1-reference"},
+    {"arm":"candidate","label":"pair-1-candidate"},
+    {"arm":"candidate","label":"pair-2-candidate"},
+    {"arm":"reference","label":"pair-2-reference"}
+  ],
+  "cadence": {"durationMs":6000,"minimumFrames":180,"maximumMedianGapMs":40,"maximumGapMs":250},
+  "policy": "Fixed 5000 ms stabilization before every pre/post idle control. Stop on failed control, foreground loss or runtime error; retain all evidence, no selective retry.",
+  "decision": {
+    "scope":"Same-memory old/new halo two-pair pilot. Primary: compressed speculative bytes during gestures, with readiness non-regression and exact final cuts. Operator visual conformity required; no universal speedup claim.",
+    "readinessRelativeTolerance":0.10,"readinessAbsoluteToleranceMs":50,
+    "networkRelativeTolerance":0.05,
+    "engineLogicalGpuRelativeTolerance":0.05,
+    "memoryScope":"Check byte bounds and logical GPU counters. Total Chrome process memory is not a delivery prerequisite by explicit user decision."
+  }
+}

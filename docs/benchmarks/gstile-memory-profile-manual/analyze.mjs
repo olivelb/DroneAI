@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import {readFile,writeFile,readdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {cameraState,interpolatePose} from './camera.mjs';
-import {memoryProfile} from './profile.mjs';
+import {memoryProfile,runtimeDifferences} from './profile.mjs';
 import {cadenceSummary} from './controls.mjs';
 import {stabilizationMatchesControl} from './idle-window.mjs';
 const read=async p=>JSON.parse(await readFile(p,'utf8'));
 const protocol=await read('protocol.json'),provenance=await read('provenance.json'),descriptor=await read('descriptor-original.json');
+runtimeDifferences(protocol,provenance);
 const sha=x=>createHash('sha256').update(x).digest('hex');
 for(const [name,hash] of Object.entries(await read('frozen.json')))assert.equal(sha(await readFile(name)),hash,`frozen ${name}`);
 for(const [name,hashes] of Object.entries(provenance.modules)){
@@ -60,6 +61,12 @@ for(const spec of protocol.runs){
   }
   for(const p of r.phases){
     snap(p.snapshot);
+    if(protocol.schema==='gstile-stale-halo-pilot-v1'&&r.arm==='candidate'){
+      const halo=p.snapshot.performance.lodPrefetch;
+      const capped=halo.budgetAdaptive&&halo.motionAgeMs!==null&&halo.motionAgeMs>=1500;
+      assert.equal(halo.staleMotionCap,capped);
+      if(capped)assert.equal(halo.budgetBytes,64*1024**2);
+    }
     const input=r.inputs.filter(i=>i.phase===p.name);assert.equal(input.length,protocol.steps+1);
     const reverse=p.name==='return-facade-door',from=protocol[reverse?'facade':'door'],to=protocol[reverse?'door':'facade'];
     input.forEach((x,i)=>{assert.equal(x.index,i);assert.deepEqual(x.pose,interpolatePose(from,to,i/protocol.steps));close(x.scheduled,p.start+protocol.durationMs*i/protocol.steps);});
@@ -75,6 +82,7 @@ for(const spec of protocol.runs){
     rows.push({label:r.label,arm:r.arm,phase:p.name,cacheLimitBytes:profile.bytes,afterInputMs:p.afterInputMs,
       networkBytes:p.networkDelta.networkBytes,cacheHits:p.networkDelta.cacheHits,cacheMisses:p.networkDelta.cacheMisses,
       persistentHits:p.networkDelta.persistentCacheHits,prefetchBytes:p.networkDelta.prefetchNetworkBytes,
+      nonPrefetchBytes:p.networkDelta.networkBytes-p.networkDelta.prefetchNetworkBytes,
       rejectedPredictions:p.networkDelta.prefetchCacheAdmissionRejections??null,
       longTasks:tasks.length,longTaskMs:tasks.reduce((sum,t)=>sum+t.duration,0),
       cachePeakBytes:Math.max(...r.memory.map(m=>m.scheduler.cacheBytes)),
@@ -102,7 +110,8 @@ const summaries=['first-door-facade','return-facade-door','revisit-door-facade']
   const values=comparisons.filter(p=>p.phase===phase);if(!values.length)return{phase,pairs:0};
   return{phase,pairs:values.length,referenceMedianMs:median(values.map(v=>v.reference.afterInputMs)),candidateMedianMs:median(values.map(v=>v.candidate.afterInputMs)),
     pairedDeltaMedianMs:median(values.map(v=>v.candidate.afterInputMs-v.reference.afterInputMs)),
-    referenceNetworkMedian:median(values.map(v=>v.reference.networkBytes)),candidateNetworkMedian:median(values.map(v=>v.candidate.networkBytes))};
+    referenceNetworkMedian:median(values.map(v=>v.reference.networkBytes)),candidateNetworkMedian:median(values.map(v=>v.candidate.networkBytes)),
+    referencePrefetchMedian:median(values.map(v=>v.reference.prefetchBytes)),candidatePrefetchMedian:median(values.map(v=>v.candidate.prefetchBytes))};
 });
 const out={complete:runs.size===6&&comparisons.length===6&&!failures.length,
   pilotWithinTolerances:runs.size===6&&!failures.length&&comparisons.length===6&&comparisons.every(c=>c.readinessWithinTolerance&&c.networkWithinTolerance&&c.logicalGpuWithinTolerance),

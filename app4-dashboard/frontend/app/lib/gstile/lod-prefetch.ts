@@ -17,11 +17,13 @@ export type GsTilePrefetchBudget = {
  * Scale speculative traffic only after one meaningful cohort has had an
  * opportunity to be consumed. Visible-cut requests never use this budget.
  * MiB quantization keeps plans stable when a few packs are promoted between
- * consecutive camera samples.
+ * consecutive camera samples. Once motion expires, historical cache hits
+ * must not fund a large stationary halo: retain only the exploration floor.
  */
 export const gstileAdaptivePrefetchBudget = (
   completedBytes: number,
   usefulBytes: number,
+  motionIsStale = false,
 ): GsTilePrefetchBudget => {
   if (
     !Number.isSafeInteger(completedBytes) ||
@@ -49,7 +51,9 @@ export const gstileAdaptivePrefetchBudget = (
   );
   const mebibyte = 1024 * 1024;
   return {
-    maximumBytes: Math.round(boundedBytes / mebibyte) * mebibyte,
+    maximumBytes: motionIsStale
+      ? MINIMUM_GSTILE_PREFETCH_BYTES
+      : Math.round(boundedBytes / mebibyte) * mebibyte,
     adaptive: true,
     utilityRatio,
   };

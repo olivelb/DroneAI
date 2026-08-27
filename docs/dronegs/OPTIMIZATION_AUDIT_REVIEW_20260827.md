@@ -68,9 +68,12 @@ et le PlayCanvas 2.21.4 patché dans `node_modules/playcanvas/build/playcanvas/s
    de 13,24–21,47 % sur deux paires AB/BA, mais +44,01 % de réseau pendant les
    trois gestes. Livraison opt-in autorisée par l'utilisateur ; mémoire totale
    explicitement retirée des prérequis de merge, pas déclarée qualifiée.
-   Avant le chantier Worker, plafonner le halo de mouvement périmé : les budgets
-   156/126/109 Mio restent financés par une utilité historique, sans nouvelles
-   consommations utiles dans les phases mesurées. Garder 768 Mio par défaut.
+   **Correctif halo qualifié** : plafonner à 64 Mio le mouvement périmé réduit
+   le réseau de 37,27 % et le spéculatif de 50,91 % sur le nouveau comparatif
+   à mémoire constante, sans régression de latence hors tolérances. Visuel
+   confirmé ; aucun gain supplémentaire de fluidité revendiqué. Voir la
+   [qualification dédiée](../benchmarks/gstile-stale-halo-qualification.md).
+   Garder 768 Mio par défaut.
 2. **Prototype de propriété cache/décodage Worker** : commencer sur des packs
    et un trace replay figés. Protocole explicite pour lecture, pinning, annulation,
    éviction, retour de buffers et panne Worker. Garder un budget global, pas
