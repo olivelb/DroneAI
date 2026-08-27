@@ -53,9 +53,10 @@ public:
         }
         if (count > capacity_) {
             // Both allocations succeed before replacing existing storage.
-            // Default initialization starts object lifetimes without zeroing.
-            auto pruning = std::make_unique_for_overwrite<PruningSnapshot[]>(count);
-            auto statistics = std::make_unique_for_overwrite<float[]>(count * 5U);
+            // Initialize only on growth: first-touch faults during pageable
+            // downloads regressed fresh-context refinement without this pass.
+            auto pruning = std::make_unique<PruningSnapshot[]>(count);
+            auto statistics = std::make_unique<float[]>(count * 5U);
             pruning_ = std::move(pruning);
             statistics_ = std::move(statistics);
             capacity_ = count;

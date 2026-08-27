@@ -6,8 +6,8 @@ This changelog covers the standalone Gaussian trainer project.
 
 - Retain snapshot and five statistic buffers in each native training context;
   allocate only when the observed population exceeds the previous high-water mark.
-- Use default-initialized overwrite storage and bounded active spans; complete
-  every download before reading, and exclude stale tails after compaction.
+- Initialize new storage only on first use/growth; complete every download
+  before reading bounded active spans, excluding stale tails after compaction.
 - Preserve the exact snapshot layout, median/pruning/scoring algorithms, CUDA
   work and checkpoint state. Retain 52 bytes per peak input Gaussian on the host.
 - Add CPU lifetime/bounds/sentinel contracts and fresh-versus-reused full-state

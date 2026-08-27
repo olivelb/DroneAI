@@ -86,9 +86,11 @@ not the sum of worker CPU times. No additional telemetry fields, device work,
 transfer payload or timing-descriptor change is introduced.
 
 From dev.72, `host_prepare_seconds` acquires reusable per-context snapshot and
-statistic spans. Allocation occurs only on first use or growth, without a zero
-initialization pass. First-touch/page-fault costs may move to the download phase;
-use fenced whole-refinement comparisons, not preparation time alone. The six
+statistic spans. Allocation/initialization occurs only on first use or growth.
+An uninitialized-allocation experiment moved first-touch/page-fault costs to
+the download phase and regressed fresh contexts; new allocations keep their
+initialization pass. Use fenced whole-refinement comparisons, not preparation
+time alone. The six
 buffers are no longer freed under `other_seconds` on each call. Their retained
 payload is 52 bytes per largest encountered input count, separate from VRAM.
 Other temporary vectors retain their prior lifetime. Descriptor and bytes are
