@@ -31,6 +31,14 @@ observable. SHA verification, immutable range keys, the IndexedDB schema and
 data are unchanged. See the [component and camera-path qualification,
 with the remaining process-memory gate](../benchmarks/gstile-cache-isolation-qualification.md).
 
+Camera prediction expires when its last motion sample is one prediction
+horizon old (1,500 ms currently), even if no new input arrives. The backend
+checks a fresh monotonic timestamp and reports `lodPrefetch.motionAgeMs`;
+stationary halo prefetch remains active. This fixes stale extrapolation and
+skips its speculative traversal, but the recorded one-step replay shows no
+bandwidth saving because other halo packs still fill the 96 MiB floor. See
+the [freshness correction and negative traffic result](../benchmarks/gstile-prefetch-freshness-qualification.md).
+
 ## Decisions
 
 1. **Rendering base:** integrate PlayCanvas behind a DroneAI

@@ -180,16 +180,21 @@ export const updateGsTileCameraMotion = (
 
 /**
  * Extrapolate one short camera horizon, with strict translation and angular
- * caps. Returning null for negligible motion keeps stationary halo prefetch
- * behavior unchanged.
+ * caps. The estimate is valid for at most one horizon after its last sample:
+ * a slow cut commit must not extrapolate a camera that stopped seconds ago.
+ * timestampMs must use the same monotonic clock as the motion samples.
+ * Fresh estimates keep their full lookahead; returning null for expired or
+ * negligible motion leaves stationary halo prefetch available.
  */
 export const predictGsTileCameraPose = (
   motion: GsTileCameraMotion | null,
   horizonMs: number,
   maximumPositionDelta: number,
   maximumAngleRadians: number,
+  timestampMs: number,
 ): GsTileCameraPose | null => {
   if (
+    !Number.isFinite(timestampMs) ||
     !Number.isFinite(horizonMs) ||
     horizonMs < 0 ||
     !Number.isFinite(maximumPositionDelta) ||
@@ -201,6 +206,8 @@ export const predictGsTileCameraPose = (
     throw new Error("Invalid GSTile camera prediction bounds");
   }
   if (!motion || motion.samples < 2 || horizonMs === 0) return null;
+  const ageMs = timestampMs - motion.timestampMs;
+  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs >= horizonMs) return null;
   const positionDelta = scaledToMaximumLength(
     motion.positionVelocity.map((value) => value * horizonMs) as Vec3,
     maximumPositionDelta,

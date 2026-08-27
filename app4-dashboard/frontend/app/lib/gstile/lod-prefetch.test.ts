@@ -9,6 +9,7 @@ import {
   planGsTilePrefetchPacks,
   predictGsTileCameraPose,
   updateGsTileCameraMotion,
+  type GsTileCameraMotion,
 } from "./lod-prefetch";
 
 const pack = (id: string, byteLength: number): GsTilePack => ({
@@ -63,6 +64,58 @@ const manifest = (): GsTileManifest => {
 };
 
 describe("GSTile LOD halo prefetch", () => {
+  const movingCamera = (): GsTileCameraMotion => ({
+    pose: { position: [1, 0, 10], direction: [0, 0, -1], up: [0, 1, 0] },
+    timestampMs: 200,
+    positionVelocity: [0.01, 0, 0],
+    directionVelocity: [0, 0, 0],
+    upVelocity: [0, 0, 0],
+    samples: 41,
+  });
+
+  it.each([200, 800, 1_699.99])(
+    "preserves the bounded prediction for a fresh sample at %s ms",
+    (timestampMs) => {
+      expect(
+        predictGsTileCameraPose(movingCamera(), 1_500, 2, Math.PI / 4, timestampMs)?.position,
+      ).toEqual([3, 0, 10]);
+    },
+  );
+
+  it.each([1_700, 2_574.8, 4_060.4, 120_000])(
+    "expires motion at %s ms even when no new camera sample arrives",
+    (timestampMs) => {
+      const motion = movingCamera();
+      const before = structuredClone(motion);
+      expect(
+        predictGsTileCameraPose(motion, 1_500, 2, Math.PI / 4, timestampMs),
+      ).toBeNull();
+      expect(motion).toEqual(before);
+    },
+  );
+
+  it("ignores a sample from a future clock instant", () => {
+    expect(
+      predictGsTileCameraPose(movingCamera(), 1_500, 2, Math.PI / 4, 199),
+    ).toBeNull();
+  });
+
+  it.each([NaN, Infinity, -Infinity])("rejects a non-finite prediction timestamp %s", (timestampMs) => {
+    expect(() =>
+      predictGsTileCameraPose(movingCamera(), 1_500, 2, Math.PI / 4, timestampMs),
+    ).toThrow(/prediction/);
+  });
+
+  it("resumes prediction after two fresh samples following a long pause", () => {
+    const motion = movingCamera();
+    const restarted = updateGsTileCameraMotion(motion, motion.pose, 3_000);
+    expect(predictGsTileCameraPose(restarted, 1_500, 2, Math.PI / 4, 3_000)).toBeNull();
+    const next = updateGsTileCameraMotion(restarted, {
+      ...motion.pose, position: [2, 0, 10],
+    }, 3_030);
+    expect(predictGsTileCameraPose(next, 1_500, 2, Math.PI / 4, 3_630)?.position).toEqual([4, 0, 10]);
+  });
+
   it("keeps the full budget until a meaningful utility cohort exists", () => {
     expect(
       gstileAdaptivePrefetchBudget(
@@ -125,6 +178,7 @@ describe("GSTile LOD halo prefetch", () => {
       100,
       10,
       Math.PI / 4,
+      second.timestampMs,
     );
 
     expect(predicted).not.toBeNull();
@@ -158,6 +212,7 @@ describe("GSTile LOD halo prefetch", () => {
       100,
       2,
       Math.PI / 12,
+      second.timestampMs,
     );
 
     expect(predicted?.position).toEqual([102, 0, 0]);
@@ -187,7 +242,7 @@ describe("GSTile LOD halo prefetch", () => {
       16,
     );
     expect(
-      predictGsTileCameraPose(unchanged, 200, 10, Math.PI / 4),
+      predictGsTileCameraPose(unchanged, 200, 10, Math.PI / 4, 16),
     ).toBeNull();
 
     const stale = updateGsTileCameraMotion(
@@ -199,7 +254,7 @@ describe("GSTile LOD halo prefetch", () => {
       3_000,
     );
     expect(stale.samples).toBe(1);
-    expect(predictGsTileCameraPose(stale, 200, 10, Math.PI / 4)).toBeNull();
+    expect(predictGsTileCameraPose(stale, 200, 10, Math.PI / 4, 3_000)).toBeNull();
   });
 
   it("retains a slow deliberate pan sampled more than one second apart", () => {
@@ -225,7 +280,7 @@ describe("GSTile LOD halo prefetch", () => {
 
     expect(slowPan.samples).toBe(2);
     expect(
-      predictGsTileCameraPose(slowPan, 1_500, 10, Math.PI / 4)?.position,
+      predictGsTileCameraPose(slowPan, 1_500, 10, Math.PI / 4, 1_500)?.position,
     ).toEqual([2, 0, 10]);
   });
 
