@@ -9,7 +9,8 @@ explicitly GPL-3.0-or-later CUDA translation units; see
 
 Version `0.5.0-dev.72` reuses per-context host snapshot/statistic storage across
 refinements, including checkpoint restores. New storage is initialized only on
-first use/growth, and active spans are fully overwritten by completed downloads. The
+first use/growth, with the same six-vector layout as the reference. Active spans
+are fully overwritten by completed downloads. The
 cache retains 52 bytes per largest encountered Gaussian count until context
 destruction (260 MB at 5M); growth can temporarily hold old and new allocations.
 Scientific decisions, transfer payloads and checkpoint formats are unchanged.

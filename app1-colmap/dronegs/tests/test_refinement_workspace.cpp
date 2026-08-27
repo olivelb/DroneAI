@@ -33,9 +33,13 @@ void test_refinement_workspace() {
         auto statistics = fields(views);
         for (std::size_t field = 0U; field < statistics.size(); ++field) {
             require(statistics[field].size() == count);
-            if (count != 0U) require(statistics[field].data() == statistics[0].data() + field * peak);
+            if (count != 0U) {
+                for (std::size_t other = 0U; other < field; ++other) {
+                    require(statistics[field].data() != statistics[other].data());
+                }
+            }
             // Initialize every active element, including non-finite/signed-zero
-            // sentinels. No read of a fresh overwrite allocation is permitted.
+            // sentinels. Production also overwrites all active inputs.
             std::fill(statistics[field].begin(), statistics[field].end(), std::bit_cast<float>(sentinels[field]));
         }
         if (count != 0U) std::memset(views.pruning.data(), 0xa5, count * sizeof(views.pruning[0]));

@@ -8,6 +8,8 @@ This changelog covers the standalone Gaussian trainer project.
   allocate only when the observed population exceeds the previous high-water mark.
 - Initialize new storage only on first use/growth; complete every download
   before reading bounded active spans, excluding stale tails after compaction.
+  Preserve the reference's six separate vectors; aggregated-storage experiments
+  regressed fresh contexts and are not retained.
 - Preserve the exact snapshot layout, median/pruning/scoring algorithms, CUDA
   work and checkpoint state. Retain 52 bytes per peak input Gaussian on the host.
 - Add CPU lifetime/bounds/sentinel contracts and fresh-versus-reused full-state

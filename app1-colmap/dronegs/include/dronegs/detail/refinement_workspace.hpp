@@ -5,11 +5,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <memory>
 #include <span>
 #include <stdexcept>
 #include <type_traits>
-#include <utility>
+#include <vector>
 
 namespace dronegs::detail {
 
@@ -52,23 +51,24 @@ public:
             throw std::length_error("refinement host workspace size overflow");
         }
         if (count > capacity_) {
-            // Both allocations succeed before replacing existing storage.
-            // Initialize only on growth: first-touch faults during pageable
-            // downloads regressed fresh-context refinement without this pass.
-            auto pruning = std::make_unique<PruningSnapshot[]>(count);
-            auto statistics = std::make_unique<float[]>(count * 5U);
-            pruning_ = std::move(pruning);
-            statistics_ = std::move(statistics);
+            // Keep the reference's six separate value-initialized vectors.
+            // Combining statistics or omitting initialization regressed fresh
+            // contexts. All allocations succeed before replacing old storage.
+            std::vector<PruningSnapshot> pruning(count);
+            std::array<std::vector<float>, 5U> statistics;
+            for (auto& values : statistics) values = std::vector<float>(count);
+            pruning_.swap(pruning);
+            statistics_.swap(statistics);
             capacity_ = count;
         }
         if (count == 0U) return {};
         return {
-            {pruning_.get(), count},
-            {statistics_.get(), count},
-            {statistics_.get() + capacity_, count},
-            {statistics_.get() + capacity_ * 2U, count},
-            {statistics_.get() + capacity_ * 3U, count},
-            {statistics_.get() + capacity_ * 4U, count},
+            {pruning_.data(), count},
+            {statistics_[0].data(), count},
+            {statistics_[1].data(), count},
+            {statistics_[2].data(), count},
+            {statistics_[3].data(), count},
+            {statistics_[4].data(), count},
         };
     }
 
@@ -76,8 +76,8 @@ public:
     std::size_t retained_bytes() const noexcept { return capacity_ * bytes_per_gaussian; }
 
 private:
-    std::unique_ptr<PruningSnapshot[]> pruning_;
-    std::unique_ptr<float[]> statistics_;
+    std::vector<PruningSnapshot> pruning_;
+    std::array<std::vector<float>, 5U> statistics_;
     std::size_t capacity_ = 0U;
 };
 
