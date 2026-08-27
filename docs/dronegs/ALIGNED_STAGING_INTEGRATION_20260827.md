@@ -36,8 +36,10 @@ and zero padding, out-of-order assembly, default layout, invalid/overflowing wid
 budget padding, returned Worker shape and disjoint linear mapping.
 
 The prototype's 16–20% host gain must not be represented as measured renderer
-FPS or full loading acceleration. Human PLY acceptance of this revision is
-**pending**; the PR remains open until that gate is met.
+FPS or full loading acceleration. The user replied `ok` on 2026-08-27 to the
+explicit original-PLY visual-review request for served runtime `0627d65`.
+This records human visual acceptance of that candidate, not a new quantitative
+PLY metric or an end-to-end latency result. Required PR CI remains a merge gate.
 
 Evidence directory (retain all sources, raw results, failed attempts and logs):
 `/home/olivier/droneai-qualifications/gstile-aligned-integration-20260827`.
@@ -116,8 +118,8 @@ The fix forces the final debug snapshot immediately after commit/total timings
 are assigned, bypassing only the debug throttle at this completion boundary.
 It changes neither GPU commands nor Worker modules. The preceding GPU hashes
 therefore still apply to those identical modules. This also prevents future
-profiling from mixing generations. Full-frame/input-latency tails, other GPUs
-or browsers and original-PLY visual acceptance remain unqualified.
+profiling from mixing generations. Full-frame/input-latency tails and other
+GPUs or browsers remain unqualified; human visual acceptance is recorded above.
 
 Four new captures on `0627d65` (initial, pan, assembly disabled, normal reload)
 pass independent final-snapshot checks: DOM attributes match JSON timings,
@@ -149,7 +151,7 @@ above. Its exact source archive SHA256 is
 `bf007d9bed8b6787e00f62b25d0236517072dca388214fbcee13a73ad45b34b2`.
 The follow-up documentation commit does not change deployed runtime sources.
 
-The accepted `droneai-frontend-gstile-69e848c` container/image and intermediate
+The previously accepted `droneai-frontend-gstile-69e848c` container/image and intermediate
 `droneai-frontend-gstile-a968854` remain stopped and retained. Deployment scripts
 check exact identities and restore the preceding service on failed bounded
 health checks; that failure branch was not fault-injected. Manual rollback is
@@ -157,7 +159,8 @@ to stop only `droneai-frontend-gstile-0627d65`, start the retained accepted
 `droneai-frontend-gstile-69e848c`, verify HTTP readiness, then reload the page.
 No bundle, cache, historical evidence, image or container was deleted.
 
-Before merge: user checks the original PLY appearance in the normal merged
-viewer, including close door/facade movement; required PR CI must remain green.
+The original-PLY visual gate is accepted by the user; required PR CI must remain
+green before merge. See [PR #275](https://github.com/olivelb/DroneAI/pull/275)
+for the delivery state and exact merge commit.
 This batch establishes exact layout/copy behavior, not a universal browser/GPU
 qualification, network improvement, or production-wide renderer speedup.
