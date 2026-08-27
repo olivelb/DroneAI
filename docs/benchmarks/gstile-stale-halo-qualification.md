@@ -46,3 +46,34 @@ per explicit user decision; byte bounds and runtime errors remain checked.
 Rollback: revert this phase; no migration or cache reset is needed. Historical
 successful and failed cohorts, including their original analyzer verdicts,
 remain unchanged.
+
+## Manual comparison prepared
+
+The shared [manual harness](gstile-memory-profile-manual/) now supports two
+explicit protocols: same-code RAM comparison and same-memory stale-halo
+comparison. The latter requires distinct pinned revisions and rejects every
+runtime difference except `lod-prefetch.ts` and `playcanvas-backend.ts`.
+Unchanged modules must also have identical instrumentation and compiled hashes.
+The engine is shared and hashed. Existing frozen cohorts are not modified.
+
+Reference `b394f0e3ec5e2c26b099bf475b2a898a223be906`; candidate
+`5b1e290c4713de84444ab90c89febdd42d5a4eeb`. Both use desktop/1,536 MiB.
+Copy the shared sources to a new evidence directory and copy
+`stale-halo.protocol.json` to `protocol.json`, then run:
+
+```sh
+node --test camera.test.mjs controls.test.mjs profile.test.mjs idle-window.test.mjs
+node prepare.mjs
+node server.mjs
+# After descriptor capture, from another terminal:
+node freeze.mjs
+# Operator starts once in Chrome; after all six passages:
+node analyze.mjs analysis-completed.json
+```
+
+Directory: `/home/olivier/droneai-qualifications/gstile-stale-halo-20260827`.
+URL: `http://127.0.0.1:3030/`. Fresh per-passage IndexedDB databases, two warmups
+then two AB/BA pairs, fixed five-second stabilization, unchanged cadence limits,
+manual start. The analyzer checks cap telemetry as well as final cuts, errors,
+latency and network. It reports speculative bytes separately. Twelve harness
+tests pass; syntax checks pass. At preparation time this cohort is **not run**.

@@ -2,11 +2,12 @@ import {execFileSync} from 'node:child_process';
 import {readFile,writeFile,mkdir,cp,readdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import ts from '/home/olivier/droneAI/app4-dashboard/frontend/node_modules/typescript/lib/typescript.js';
+import {memoryProfile,runtimeDifferences} from './profile.mjs';
 const repo='/home/olivier/droneAI';
 const prefix='app4-dashboard/frontend/app/lib/';
 const protocol=JSON.parse(await readFile('protocol.json','utf8'));
 const arms={reference:protocol.reference,candidate:protocol.candidate};
-if(arms.reference!==arms.candidate||!/^[a-f0-9]{40}$/.test(arms.reference))throw Error('RAM experiment requires one pinned commit');
+memoryProfile(protocol,'reference');memoryProfile(protocol,'candidate');
 const sha=x=>createHash('sha256').update(x).digest('hex');
 const provenance={arms,modules:{},instrumentation:'identical camera/commit/queue and logical-memory hooks; unique IndexedDB name per arm; no shader or selection changes'};
 const once=(source,needle,replacement)=>{
@@ -54,6 +55,7 @@ for(const [arm,commit] of Object.entries(arms)){
  }
 }
 const engineRoot=`${repo}/app4-dashboard/frontend/node_modules/playcanvas`;
+runtimeDifferences(protocol,provenance);
 await cp(`${engineRoot}/build/playcanvas/src`,'engine-source',{recursive:true});
 await cp(`${engineRoot}/build/playcanvas/modules`,'modules',{recursive:true});
 provenance.engineInputs={};

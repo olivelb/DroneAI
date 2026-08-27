@@ -2,12 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {cadenceSummary} from './controls.mjs';
+import {memoryProfile} from './profile.mjs';
 
-test('protocol adds five seconds without weakening cadence or changing source arms',async()=>{
+test('protocol preserves five-second stabilization, cadence and paired order',async()=>{
   const p=JSON.parse(await readFile(new URL('./protocol.json',import.meta.url),'utf8'));
   assert.equal(p.stabilizationMs,5000);
-  assert.equal(p.schema,'gstile-memory-profile-pilot-v2');
-  assert.equal(p.reference,p.candidate);
+  memoryProfile(p,'reference');memoryProfile(p,'candidate');
   assert.deepEqual(p.cadence,{durationMs:6000,minimumFrames:180,maximumMedianGapMs:40,maximumGapMs:250});
   assert.deepEqual(p.runs.map(r=>r.arm),['reference','candidate','reference','candidate','candidate','reference']);
 });
