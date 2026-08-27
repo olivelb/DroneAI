@@ -1,6 +1,7 @@
 # GSTile explicit desktop RAM-cache pilot
 
-Date: 2026-08-27. Status: implemented, manual measurements **not started**.
+Date: 2026-08-27. Status: implemented; the original manual cohort stopped at
+the second warmup's pre-control. A new stabilized cohort is prepared, **not started**.
 Base: `43952f7f745f308e64ce76d9eb8f76df943f46ce` (draft PR #279).
 Runtime implementation pinned in both arms:
 `fe7c069fc3821693e92bf27d42531771538439ac`.
@@ -31,8 +32,8 @@ may still displace data. Q96 cache hits still need decode/copies/GPU work.
 
 Sources are versioned in [gstile-memory-profile-manual](gstile-memory-profile-manual/).
 The serving/evidence directory is
-`/home/olivier/droneai-qualifications/gstile-memory-profile-20260827`.
-The dedicated server is `http://127.0.0.1:3028/`; existing services and old
+`/home/olivier/droneai-qualifications/gstile-memory-stabilized-20260827`.
+The dedicated server is `http://127.0.0.1:3029/`; existing services and old
 cohorts are not replaced. The user starts the benchmark in a new tab of the
 already-open Chrome. **Opening the page does not run measurements.**
 
@@ -45,7 +46,12 @@ already-open Chrome. **Opening the page does not run measurements.**
   Pending disk writes and speculative requests drain at each settled endpoint.
 - No HTTP cache; native Zstd required, no fallback/retry/errors accepted.
 - Pre/post 6-second cadence controls retain the earlier thresholds:
-  minimum 180 frames, median gap ≤40 ms, maximum gap ≤250 ms.
+  minimum 180 frames, median gap <40 ms, maximum gap ≤250 ms.
+- Protocol v2 adds a fixed 5,000 ms stabilization before **each** pre/post
+  control in both arms. Its samples and elapsed duration are recorded
+  separately. The deadline never depends on observed cadence and a failed
+  control is never retried. Foreground/runtime requirements remain active
+  during stabilization. The analyzer verifies both stabilization windows.
 - Loss of foreground, control failure or runtime error stops the cohort;
   failed attempts remain saved. No selective retry or threshold relaxation.
 - Primary outcome: revisit `afterInputMs`; secondary: return and first
@@ -58,7 +64,7 @@ already-open Chrome. **Opening the page does not run measurements.**
   replace the operator's visual check against the PLY.
 
 The page automatically advances only after the first manual click. Keep that
-Chrome window foreground for roughly five minutes; do not navigate away.
+Chrome window foreground for roughly six minutes; do not navigate away.
 Results use exclusive-create writes. A server restart may renew signed URLs
 only for the same bundle/manifest; it cannot replace the frozen descriptor.
 
@@ -82,14 +88,20 @@ allocations. Camera, cadence (23 assertions) and two profile-contract tests
 pass. Syntax checks pass for harness, server and analyzer. Freeze validates
 60 runtime modules (30 per arm) and 1,203 engine JS files.
 The empty-cohort analysis correctly reports incomplete/unqualified, not success.
-No GPU timing or new visual acceptance is claimed.
+No candidate GPU timing or new visual acceptance is claimed. For v2, six new
+tests fail before implementation and pass afterward. All ten Node test-runner
+cases pass, including the existing 23 cadence assertions; harness/analyzer
+syntax checks pass. Tests cover fixed-window sampling, callback cleanup on
+errors, invalid windows, foreground checks and rejection of a 253.3 ms gap
+in the unchanged control after stabilization. The product sources have not
+changed, so the already-passing frontend checks are not rerun locally.
 
 For a new run, use a new evidence directory, port and database prefix; never
 reuse a directory with results. Copy the versioned scripts there, keep the
 source commit pinned, then:
 
 ```sh
-node --test camera.test.mjs controls.test.mjs profile.test.mjs
+node --test camera.test.mjs controls.test.mjs profile.test.mjs idle-window.test.mjs
 node prepare.mjs
 node server.mjs
 # In a second terminal, after the descriptor has been captured:
@@ -104,6 +116,35 @@ PlayCanvas build. Do not rebuild a served `.next` directory during a pilot.
 Raw results, descriptor URLs and compiled engine copies stay outside Git;
 sources and protocol are committed. Rollback: remove the query parameter for
 standard memory, or revert the profile commit. No dataset/cache migration.
+
+## Original cohort interrupted — retained negative evidence
+
+The original v1 cohort remains untouched at
+`/home/olivier/droneai-qualifications/gstile-memory-profile-20260827`, port 3028.
+Its frozen harness remains the correct analyzer for those results; do not
+analyze or pool them with v2. Its status is **incomplete/unqualified**.
+
+The reference warmup completed. The candidate stopped before fetching the
+descriptor, creating its scheduler or initializing the renderer: zero memory
+samples, no bundle ID, no camera phases. The pre-control recorded 801 frames,
+median 7.1 ms and maximum gap **253.3 ms**, above the unchanged 250 ms limit.
+The page remained visible/focused and recorded no runtime error or long task.
+The worst gap ended 919.3 ms after the control began (control start 329 ms
+after navigation). Navigation/browser cleanup is a hypothesis, not an
+established cause. This is not evidence of a 1.5 GiB cache failure.
+
+Both original files and `analysis-failed-20260827.json` are retained:
+
+- reference SHA-256: `9d7c85f61ff8a7d0fd8c5c32ad58d21da40bb78e0faec344fe4906452e737ef4`;
+- candidate SHA-256: `6805aa7dc701fc2362ae3df85257becf5e30de1d664641c1bffe328caaff4b2e`;
+- analysis SHA-256: `c70decec4c2c103a0d504292571d7d857b706f42fd3f3c6ddc3208d981105447`.
+
+The user approved a new, complete six-run cohort with a fixed stabilization.
+V2 uses a new origin, evidence directory and IndexedDB prefix, but the same
+runtime commit, source bundle, camera path, cache caps and cadence thresholds.
+It is a declared protocol revision, not selective reuse of the successful
+warmup or removal of bad samples. Whether it resolves the operational failure
+is still for the operator-run test to establish.
 
 ## Related audit
 

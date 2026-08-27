@@ -1,5 +1,5 @@
 {
-  "schema": "gstile-memory-profile-pilot-v1",
+  "schema": "gstile-memory-profile-pilot-v2",
   "status": "frozen",
   "reference": "fe7c069fc3821693e92bf27d42531771538439ac",
   "candidate": "fe7c069fc3821693e92bf27d42531771538439ac",
@@ -9,7 +9,8 @@
     "reference": {"profile":"standard","bytes":805306368},
     "candidate": {"profile":"desktop","bytes":1610612736}
   },
-  "databasePrefix": "gstile-memory-profile-20260827-",
+  "databasePrefix": "gstile-memory-stabilized-20260827-",
+  "stabilizationMs": 5000,
   "persistentCacheBytes": 2147483648,
   "persistentCache": "fresh isolated database per arm, retained; drain writes at settle",
   "httpCache": "no-store", "transport": "negotiated zstd-http; zero fallback required",
@@ -24,7 +25,7 @@
     {"arm":"reference","label":"pair-2-reference"}
   ],
   "cadence": {"durationMs":6000,"minimumFrames":180,"maximumMedianGapMs":40,"maximumGapMs":250},
-  "policy": "Stop whole cohort on failed idle control, loss of foreground, runtime/integrity error or memory-cap violation; retain all arms; no selective retries.",
+  "policy": "A fixed 5000 ms stabilization precedes every pre/post idle control in both arms; retain those samples separately, never wait until healthy. Stop whole cohort on failed idle control, loss of foreground, runtime/integrity error or memory-cap violation; retain all arms; no selective retries.",
   "decision": {
     "scope":"Same-code 768/1536 MiB two-pair pilot; primary outcome revisit afterInputMs, secondary return and first transition. Not proof of a universal speedup or peak per-tab RSS.",
     "readinessRelativeTolerance":0.10,"readinessAbsoluteToleranceMs":50,

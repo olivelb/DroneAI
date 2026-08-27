@@ -3,7 +3,7 @@ import {readFile,writeFile,mkdir,appendFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {resolve,extname} from 'node:path';
 import assert from 'node:assert/strict';
-const root=process.cwd(),port=3028;
+const root=process.cwd(),port=3029;
 const upstream='http://127.0.0.1:30080/missions/gstile-qualification/gaussians/viewer';
 const response=await fetch(upstream,{headers:{'Accept-Encoding':'zstd'},signal:AbortSignal.timeout(15000)});
 if(!response.ok)throw Error(`Descriptor HTTP ${response.status}`);

@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import {cameraState,interpolatePose} from './camera.mjs';
 import {memoryProfile} from './profile.mjs';
 import {cadenceSummary} from './controls.mjs';
+import {stabilizationMatchesControl} from './idle-window.mjs';
 const read=async p=>JSON.parse(await readFile(p,'utf8'));
 const protocol=await read('protocol.json'),provenance=await read('provenance.json'),descriptor=await read('descriptor-original.json');
 const sha=x=>createHash('sha256').update(x).digest('hex');
@@ -41,11 +42,14 @@ for(const spec of protocol.runs){
   const profile=memoryProfile(protocol,r.arm);assert.deepEqual(r.cacheProfile,profile);
   assert.deepEqual(r.protocol,protocol);assert.equal(r.provenanceCommit,provenance.arms[r.arm]);
   assert.equal(r.engineSourceHash,provenance.playcanvasSourceTree);
-  if(r.failure||!r.complete){failures.push({label:r.label,failure:r.failure,controls:r.controls.map(({samples,...x})=>x),errors:r.errors});continue;}
+  if(r.failure||!r.complete){failures.push({label:r.label,failure:r.failure,controls:r.controls.map(({samples,...x})=>x),stabilizations:r.stabilizations.map(({samples,...x})=>x),errors:r.errors});continue;}
   assert.equal(r.persistentDatabase,`${protocol.databasePrefix}${r.index}`);
   assert.equal(r.bundleId,descriptor.bundleId);assert.deepEqual(r.errors,[]);
   assert(r.visibility.every(x=>x.visibility==='visible'&&x.focus));
   assert.equal(r.controls.length,2);assert(r.controls.every(c=>c.healthy));
+  assert.deepEqual(r.controls.map(c=>c.name),['avant','après']);
+  assert.equal(r.stabilizations.length,2);
+  r.controls.forEach((control,i)=>assert(stabilizationMatchesControl(r.stabilizations[i],control,protocol.stabilizationMs),'Missing or invalid fixed stabilization'));
   for(const control of r.controls)assert(cadenceSummary(control.samples,control.durationMs,protocol.cadence).healthy);
   assert.equal(r.phases.length,3);snap(r.initial);snap(r.doorStart);
   assert(r.memory.length>0);

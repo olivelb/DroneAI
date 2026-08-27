@@ -13,7 +13,7 @@ for(const [name,entry] of Object.entries(provenance.modules)){
 assert.equal(provenance.modules['reference/gstile/playcanvas-backend.ts'].instrumented,
   provenance.modules['candidate/gstile/playcanvas-backend.ts'].instrumented);
 for(const [name,expected] of Object.entries(provenance.engineInputs))assert.equal(hash(await readFile(`engine-source/${name}`)),expected);
-const files=['provenance.json','protocol.json','descriptor-original.json','harness.mjs','server.mjs','index.html','camera.mjs','camera.test.mjs','controls.mjs','controls.test.mjs','prepare.mjs','freeze.mjs','analyze.mjs','profile.mjs','profile.test.mjs'];
+const files=['provenance.json','protocol.json','descriptor-original.json','harness.mjs','server.mjs','index.html','camera.mjs','camera.test.mjs','controls.mjs','controls.test.mjs','prepare.mjs','freeze.mjs','analyze.mjs','profile.mjs','profile.test.mjs','idle-window.mjs','idle-window.test.mjs'];
 const checks={};
 for(const name of files)checks[name]=hash(await readFile(name));
 await writeFile('frozen.json',JSON.stringify(checks,null,2),{flag:'wx'});

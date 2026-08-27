@@ -1,6 +1,7 @@
 import {cameraState,interpolatePose,numericDelta} from './camera.mjs';
 import {cadenceSummary} from './controls.mjs';
 import {memoryProfile} from './profile.mjs';
+import {collectIdleWindow,stabilizationMatchesControl} from './idle-window.mjs';
 const protocol=await (await fetch('/protocol.json')).json();
 const provenance=await (await fetch('/provenance.json')).json();
 const index=Number(new URLSearchParams(location.search).get('index')??0);
@@ -19,7 +20,7 @@ assert(gstileMemoryCacheBytes(cacheProfile.profile)===cacheProfile.bytes,'Produc
 let backend,scheduler,descriptor,statistics,animation,memoryTimer,running=false,pendingWrites=0;
 const result={schema:protocol.schema,arm,label,index,protocol,cacheProfile,provenanceCommit:provenance.arms[arm],
   engineSourceHash:provenance.playcanvasSourceTree,timeOrigin:performance.timeOrigin,userAgent:navigator.userAgent,
-  phases:[],commits:[],frames:[],inputs:[],longTasks:[],memory:[],visibility:[],errors:[],controls:[]};
+  phases:[],commits:[],frames:[],inputs:[],longTasks:[],memory:[],visibility:[],errors:[],controls:[],stabilizations:[]};
 const visibility=event=>result.visibility.push({at:now(),event,visibility:document.visibilityState,focus:document.hasFocus()});
 document.addEventListener('visibilitychange',()=>{if(running)visibility('visibility');});
 addEventListener('focus',()=>{if(running)visibility('focus');});
@@ -51,13 +52,17 @@ function frame(timestamp){
   animation=requestAnimationFrame(frame);
 }
 async function idle(name){
+  foreground();status(`Passage ${index+1}/6 — stabilisation ${name} (${protocol.stabilizationMs/1000} s)`);
+  const runtime={now,wait:delay,requestFrame:fn=>requestAnimationFrame(fn),cancelFrame:id=>cancelAnimationFrame(id),
+    state:()=>({focus:document.hasFocus(),visibility:document.visibilityState})};
+  const stabilization={name,...await collectIdleWindow(protocol.stabilizationMs,runtime)};
+  result.stabilizations.push(stabilization);
+  foreground();assert(stabilizationMatchesControl(stabilization,{name,start:now()},protocol.stabilizationMs),'Invalid stabilization');
   foreground();status(`Passage ${index+1}/6 — contrôle ${name}`);
-  const start=now(),samples=[];let raf;
-  const tick=()=>{samples.push({at:now()-start,focus:document.hasFocus(),visibility:document.visibilityState});raf=requestAnimationFrame(tick);};
-  raf=requestAnimationFrame(tick);await delay(protocol.cadence.durationMs+20);cancelAnimationFrame(raf);
-  const durationMs=now()-start,summary=cadenceSummary(samples,durationMs,protocol.cadence);
+  const {start,durationMs,samples}=await collectIdleWindow(protocol.cadence.durationMs+20,runtime);
+  const summary=cadenceSummary(samples,durationMs,protocol.cadence);
   result.controls.push({name,start,durationMs,samples,...summary});
-  foreground();assert(summary.healthy,`Idle cadence ${name} failed`);
+  foreground();assert(summary.healthy,`Idle cadence ${name} failed — ${summary.count} frames, médiane ${summary.medianGap?.toFixed(1)} ms, pause max ${summary.maxGap.toFixed(1)} ms (limite ${protocol.cadence.maximumGapMs} ms)`);
 }
 async function settle(){
   const start=now();let quiet=null,last=result.commits.length,lastWrites=-1;
