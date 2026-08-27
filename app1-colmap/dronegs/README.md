@@ -7,10 +7,17 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
+Version `0.5.0-dev.69` also compacts Gaussian data directly on the GPU, using
+the same stable chunked gather and existing scratch. CPU scoring statistics
+are gathered in place; no second Gaussian host vector or Gaussian H2D upload
+is needed. Hard-compaction uploads now contain only four-byte survivor indices.
+The initial snapshot and CPU pruning/scoring remain unchanged, as do all
+scientific policies, field values, checkpoint layouts and rendering equations.
+
 Version `0.5.0-dev.68` compacts Adam/refinement state directly on the GPU.
 It borrows disposable SH-gradient storage, uses at most 16 MiB of that buffer,
 and processes stable survivor chunks in order without extra device allocations.
-Pruning/scoring and Gaussian gathering remain on the CPU; selection equations,
+In that version pruning/scoring and Gaussian gathering remain on the CPU; selection equations,
 survivor order, opacity modes and checkpoint layouts remain unchanged.
 On the qualified 5M Saint-Etienne checkpoint, isolated refinement falls from
 7.62 to 2.28 s with byte-identical full state. This is not a whole-training

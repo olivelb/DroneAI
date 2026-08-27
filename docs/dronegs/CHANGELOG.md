@@ -2,6 +2,16 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.69 - Device-side Gaussian compaction
+
+- Extend stable GPU compaction to Gaussian records, avoiding a second full
+  host Gaussian vector and its upload; reuse existing bounded scratch storage.
+- Compact the five CPU scoring-statistic vectors in place in survivor order.
+- Reduce hard-compaction upload to survivor indices only, four bytes per row;
+  preserve snapshot traffic, pruning, selection, split/decay and checkpoint ABI.
+- Extend the bytewise CPU oracle to complete Gaussian records, including the
+  internal chunk cap and untouched tails, and enforce the reduced upload contract.
+
 ## 0.5.0-dev.68 - Device-side optimizer-state compaction
 
 - Gather stable survivors directly on device for scalar, color-SH and optional

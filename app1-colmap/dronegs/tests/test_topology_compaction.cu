@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "../cuda/topology_compaction.cuh"
+#include "dronegs/types.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -94,8 +95,10 @@ void test_topology_device_compaction() {
     check_components<float>(4U);
     check_components<float2>(15U);
     check_components<float2>(45U);
+    check_components<dronegs::Gaussian>(1U);
     std::vector<std::uint32_t> shift;
     for (std::uint32_t i = 1U; i < 65539U; ++i) shift.push_back(i);
     // Exceed the internal 16 MiB cap; cross-chunk source/destination overlap.
     compare_cpu_gather<float2>(65539U, 45U, shift, 65539U);
+    compare_cpu_gather<dronegs::Gaussian>(65539U, 1U, shift, 65539U);
 }
