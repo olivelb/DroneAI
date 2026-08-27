@@ -1,7 +1,8 @@
 # GSTile cache isolation — component qualification
 
-Date: 2026-08-27. Status: code and real-browser component checks pass;
-camera-path performance and new operator visual acceptance remain pending.
+Date: 2026-08-27. Status: code, real-browser component checks and operator
+visual acceptance pass; camera-path performance and peak-memory qualification
+remain pending.
 
 ## Findings and implementation
 
@@ -112,6 +113,48 @@ acceptance or a repeatable camera benchmark. No timing gain is inferred from
 that single startup.
 
 ## Retained evidence and rollout
+
+The operator confirmed visual conformity of candidate commit
+`9ee1bb579fa620d7adf06fdfa51e3ac7640e346d` on the 3022 preview with “validé”.
+This acceptance does not convert the component timings into a camera-path
+speedup and does not waive the pending memory/performance gates.
+
+## Subsequent camera pilot: stopped on the reference
+
+A separate frozen pilot enabled Zstd and real IndexedDB on the unchanged
+door-to-facade path, with a fresh retained database per arm. It planned two
+warmups followed by two AB/BA pairs. It stopped after the first **reference**
+warmup because the post-run idle cadence control failed. No candidate arm
+or measured pair was collected; this is not evidence of a candidate regression.
+
+The pre-control delivered 807 callbacks in 6.0235 s, median gap 7 ms and
+maximum 39 ms. The post-control delivered only six in 6.0226 s, median gap
+1,004 ms and maximum 1,004.6 ms. The unchanged limits require at least 180
+callbacks, median below 40 ms and maximum at most 250 ms. Focus/visibility
+remained true/visible and there were no reported runtime, GPU, Worker,
+compression or persistent-cache errors. No long task overlaps the failed
+post-control. During the camera phases, input timers remained around 30 ms
+and memory sampling around 100 ms, while render callbacks were about 1,004
+ms apart. This suggests browser/compositor cadence throttling rather than a
+continuous JS stall; the underlying cause is not established.
+
+All three reference phases finished with zero pending network work and the
+expected 7,450,287 / 7,453,039 / 7,450,287 resident Gaussians. The revisit
+recorded 283 persistent hits and 85,957,718 network payload bytes, all of the
+latter speculative prefetch. Those counts are diagnostic observations, not
+a qualified latency gain. The failed reference's timings are quarantined.
+Its sampled RAM-cache peak was 805,269,376 bytes (below the 805,306,368 cap),
+and the engine's logical GPU accounting peaked at 2,112,079,132 bytes. Windows
+Chrome aggregate private bytes peaked at 13,296,832,512 across all Chrome
+processes: this is not ownership-correct per-tab memory or physical VRAM.
+
+The failed cohort, raw frames/controls, OS memory samples, frozen sources and
+independent diagnostics are retained at
+`/home/olivier/droneai-qualifications/gstile-cache-path-20260827`.
+No failing passage was retried, removed or relaxed. A separate complete cohort
+on 3025 is prepared for manual foreground launch, with the same thresholds
+and source commits, an isolated origin and no pre-existing cache. PR #277
+remains draft until the remaining performance/memory decision is resolved.
 
 All sources, protocol, network logs, results and independent analysis are
 retained at `/home/olivier/droneai-qualifications/gstile-cache-isolation-20260827`.
