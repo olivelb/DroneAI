@@ -77,6 +77,15 @@ uncontrolled. The active descriptor exposes raw identity pack URLs, not Zstd
 encoding URLs. This does **not** test compression or production persistent-cache
 benefits. It also does not prove the corresponding production features absent.
 
+A post-collection read-only probe confirms the cause of the identity-only
+descriptor: the harness server's Node bootstrap fetch does not advertise Zstd.
+The same API/bundle returns zero encoded URLs with that default request and
+2,543 encoded URLs with `Accept-Encoding: zstd`; all 2,543 manifest packs already
+declare their Zstd representation. The API's capability negotiation works.
+This raw-only bench must not be generalized to Chrome's normal negotiated
+compressed loading. The probe downloads no pack and establishes no speedup;
+its compact results are retained as `exploratory/transport-negotiation.json`.
+
 ## Complete individual primary measurements
 
 All values are milliseconds, reference / candidate. Pair 2 remains included
@@ -165,9 +174,9 @@ failed while exploratory collection proceeds. HTTP boundary checks covered
 missing results, and tests cover no replay/overwrite, wrong identity, saved
 failure, server errors, ordering and unchanged measured function bodies.
 
-Next priority is a separate lossless loading experiment: verify why this test
-descriptor selects identity URLs, then compare available compressed transport
-and production persistent-cache paths with exact decoded hashes and fixed
+Next priority is a separate lossless loading experiment: compare the normal
+browser-negotiated compressed transport against the explicit raw control,
+and exercise production persistent-cache paths with exact decoded hashes and fixed
 door→facade/revisit conditions. Quantify useful prefetch bytes and cache churn
 before changing budgets or aggregation defaults. Do not lower visual quality,
 reuse this interrupted series as a formal baseline, or infer compression gains
