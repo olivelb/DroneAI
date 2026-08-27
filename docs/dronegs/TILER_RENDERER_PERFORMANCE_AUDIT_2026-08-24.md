@@ -285,6 +285,11 @@ ne constitue pas un plafond RSS et aucune absence générale de sursouscription
 BLAS n'est revendiquée. Voir la
 [qualification complète et ses résultats limités au pilote](../benchmarks/gstile-parallel-preparation-qualification.md).
 
+Complément V4 du 28 août : suivi des paires spécialisé après profilage, sans
+paralléliser les sous-arbres ni modifier les fusions. Voir la
+[qualification du matcher exact](../benchmarks/gstile-v4-pairs-qualification.md),
+séparée du gain de préparation des packs ; ne pas additionner ces résultats.
+
 ### 10. Opacité directionnelle évaluée par frame sans réupload global — impact moyen à élevé
 
 Déplacer la dépendance caméra du work-buffer vers le vertex/compute shader de
