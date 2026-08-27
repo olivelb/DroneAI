@@ -140,3 +140,37 @@ existing required CPU CI target; hardware qualification runs separately.
 
 No production long-training, portable multi-architecture performance, browser
 or new visual gate is claimed for this instrumentation-only change.
+
+## Exact-commit confirmation
+
+Final native source: `9a409bb1a4e7613a6ce639725e0d31e8f7a069ac`, clean at
+configuration and embedded verbatim in the binary. Evidence directory
+`/home/olivier/droneai-qualifications/refinement-telemetry-20260827-v3` retains
+the source archive, scripts, checkpoints, binaries, all build/test logs and
+benchmark JSONL. Same toolchain/image as v2.
+
+- Native binary SHA-256:
+  `6d7e513dc3a1f3ba8f2978a3eca332e81eb259b296538cf6f33e4cd6f507f339`.
+- Benchmark binary SHA-256:
+  `e034966637dd569ffe6931c1a6bdb33ef294611a7ce558547eded55a2a4aba35`.
+- `source-9a409bb.tar` SHA-256:
+  `891c4804e31655295e1b141f04cb22973cdb4f2e1d260f892651bc65f9d98ad3`.
+- Eight native suites pass (2.91 s); 22 targeted Python tests pass, including
+  the twelve schema cases; `make static PYTHON=.venv/bin/python` passes.
+- All 60 final benchmark pairs again have maximum parameter delta zero and
+  identical topology decisions. The 60 telemetry objects pass JSON Schema.
+
+Final repeat, same nine measured pairs per case (milliseconds):
+
+| Population / case | Disabled | Enabled | Paired delta median | Paired delta range | Median transfer-time share |
+|---|---:|---:|---:|---:|---:|
+| 32,768 / no growth | 8.793 | 8.498 | -0.456 | -14.870 to +8.236 | 56.7% |
+| 32,768 / compaction | 50.264 | 52.299 | -1.220 | -17.998 to +40.757 | 77.4% |
+| 32,768 / recycling | 9.351 | 10.600 | -1.744 | -5.727 to +11.740 | 58.5% |
+| 131,072 / no growth | 43.855 | 41.239 | +1.661 | -18.503 to +13.522 | 66.2% |
+| 131,072 / compaction | 182.026 | 185.888 | -7.133 | -45.318 to +42.440 | 73.4% |
+| 131,072 / recycling | 32.884 | 37.483 | +6.776 | -21.472 to +28.549 | 64.8% |
+
+The change of sign between runs reinforces the uncertainty of the overhead
+estimate. A shared GPU does not support a defensible sub-percent timing claim.
+Follow-up documentation commits do not alter the qualified native source.
