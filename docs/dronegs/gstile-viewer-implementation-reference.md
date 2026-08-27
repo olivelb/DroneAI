@@ -40,6 +40,14 @@ showed no bandwidth saving because other halo packs still filled the then
 96 MiB floor. See
 the [freshness correction and negative traffic result](../benchmarks/gstile-prefetch-freshness-qualification.md).
 
+Once motion is stale and at least 128 MiB of speculative data has completed,
+the halo is capped at the 64 MiB exploration floor regardless of historical
+usefulness. Fresh/absent motion and cold exploration retain the original policy.
+`lodPrefetch.staleMotionCap` exposes this decision. A same-memory manual pilot
+measured 37.27% fewer compressed bytes during gestures with readiness
+non-regression and operator-confirmed PLY fidelity; no extra latency speedup is
+claimed. See the [stale-halo qualification](../benchmarks/gstile-stale-halo-qualification.md).
+
 The adaptive speculative floor is now 64 MiB, retaining the 384 MiB initial
 ceiling, 128 MiB sampling threshold and 50% utility target. The floor reduction
 only affects low-utility prefetch; it does not change demand loading or cache

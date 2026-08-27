@@ -1,6 +1,7 @@
 # GSTile stale-motion halo budget
 
-2026-08-27. Status: implemented and unit-tested; browser comparison pending.
+2026-08-27. Status: complete six-run Chrome comparison accepted; visual
+conformity to the PLY confirmed by the operator. Ready for delivery with green CI.
 
 ## Observation and change
 
@@ -36,18 +37,58 @@ network savings or latency**. The new policy also changes preparation, eviction
 and later usefulness. Replaying only the historical download union cannot
 reconstruct IndexedDB evictions, so no full-path counterfactual is claimed.
 
-A separate same-memory old/new Chrome cohort will measure readiness, critical
+The separate same-memory old/new Chrome cohort measured readiness, critical
 and speculative compressed bytes, and exact final cuts with the unchanged
-stabilized AB/BA protocol. It must show a useful improvement and retain operator
-visual conformity before merge. The prior RAM cohort's visual approval is not
-silently applied to a new loading sequence. Total Chrome memory is not a gate,
-per explicit user decision; byte bounds and runtime errors remain checked.
+stabilized AB/BA protocol. It passed all frozen tolerances and received its own
+operator visual approval. Total Chrome memory is not a gate, per explicit user
+decision; byte bounds and runtime errors remain checked.
+
+## Completed result
+
+Both measured pairs have identical payload totals per arm. Over the three
+gestures, compressed network bytes fall from **428,965,262 to 269,085,824
+(−37.27%)**. Speculative bytes fall from **311,143,606 to 152,753,618 (−50.91%)**.
+Including initialization and door preparation, each complete passage falls
+from 1,850,645,135 bytes / 974 responses to 1,531,744,645 / 854 (−17.23% bytes).
+The same counts hold for both warmups, which are excluded from timing medians.
+The server log reconciles exactly with every browser result; no partial or
+unattributed transfer is present.
+
+| Gesture | Old median after-input ms | Capped median ms | Old compressed bytes | Capped bytes |
+| --- | ---: | ---: | ---: | ---: |
+| First door → facade | 2,592.15 | 2,572.50 | 239,810,647 | 167,138,249 |
+| Return facade → door | 1,264.00 | 1,238.85 | 102,894,388 | 51,364,484 |
+| Revisit door → facade | 1,350.30 | 1,347.20 | 86,260,227 | 50,583,091 |
+
+The two-pair pilot establishes reduced traffic with readiness non-regression,
+**not a meaningful additional latency speedup**. Pair 1 first transition is
+30.9 ms slower and pair 2 revisit is 39.6 ms slower; both remain within frozen
+tolerances. One main-thread long task per gesture remains (113–139 ms in the
+measured pairs). No smoothness improvement is established.
+
+The first transition retains the same 116,332,206 demand bytes. Return demand
+falls from 1,489,450 bytes to zero; revisit demand remains zero. Return and
+revisit both retain zero IndexedDB reads. Every candidate measured halo reports
+the 64 MiB stale-motion cap. Raw-cache peaks stay below 1,536 MiB and the logical
+GPU peak stays about 2.112 GB; these are not total process or physical VRAM.
+All six runs, twelve cadence controls, stabilizations, foreground checks, runtime
+checks and exact final-cut comparisons pass. Operator visual approval is for
+this cohort, not inherited from the previous RAM experiment.
+
+The immutable `analysis-completed.json` reports `complete: true`,
+`pilotWithinTolerances: true`, no failures; total process peak remains unmeasured.
+SHA-256: `ee3769a55c8f437109632216c52d4c5d7713a029b095ce12c3822b5353172013`.
+Frozen manifest SHA-256:
+`8ed7a3c02f2b89e882a7b8ade0080e6cf0d96d6d7a48bc2a6a6659ea58967697`.
+`audit-network.mjs` and `audit-network.json` are retained alongside all six raw
+results, hashes, controls and network logs in the evidence directory below.
+No original result or previous failed verdict was replaced.
 
 Rollback: revert this phase; no migration or cache reset is needed. Historical
 successful and failed cohorts, including their original analyzer verdicts,
 remain unchanged.
 
-## Manual comparison prepared
+## Manual comparison and reproduction
 
 The shared [manual harness](gstile-memory-profile-manual/) now supports two
 explicit protocols: same-code RAM comparison and same-memory stale-halo
@@ -76,4 +117,5 @@ URL: `http://127.0.0.1:3030/`. Fresh per-passage IndexedDB databases, two warmup
 then two AB/BA pairs, fixed five-second stabilization, unchanged cadence limits,
 manual start. The analyzer checks cap telemetry as well as final cuts, errors,
 latency and network. It reports speculative bytes separately. Twelve harness
-tests pass; syntax checks pass. At preparation time this cohort is **not run**.
+tests pass; syntax checks pass. This cohort is now complete; reproduce into a
+new directory/origin/database prefix, never overwrite its results.
