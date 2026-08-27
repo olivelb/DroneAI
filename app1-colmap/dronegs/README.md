@@ -12,6 +12,10 @@ CPU threads including the caller. Each axis uses the unchanged exact floor-rank
 algorithm; bounds and pruning are applied in the same order. Small populations
 and axes stay sequential below 262,144 values, and the runtime can defer work.
 There is no CUDA worker work, approximation, profile or checkpoint change.
+On the frozen 5M Saint-Etienne checkpoint, fenced refinement drops from 0.468
+to 0.318 s versus dev.70 (32.13%), with byte-identical full state. This is not
+a full-training or viewer speedup; see the
+[dev.71 qualification and limits](../../docs/dronegs/PARALLEL_PERCENTILES_DEV71.md).
 
 Version `0.5.0-dev.70` downloads a compact 32-byte pruning snapshot instead of
 the full 296-byte Gaussian. Positions, log-scales and scalar opacity retain their

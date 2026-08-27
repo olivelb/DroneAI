@@ -12,6 +12,10 @@ This changelog covers the standalone Gaussian trainer project.
 - Keep all CUDA work on the caller and retain source-order scales for pruning.
 - Add CPU bitwise/sorted oracles around the scheduling threshold and an optional
   alternating-order CPU benchmark; no profile, telemetry or checkpoint change.
+- Qualify 32.13% shorter fenced refinement on the frozen 5M Saint-Etienne
+  checkpoint versus dev.70, with exact real/synthetic full-state parity.
+  CPU sanitizers, two-GPU native tests and portable compilation pass. See
+  [the protocol, resource tradeoff and limits](PARALLEL_PERCENTILES_DEV71.md).
 
 ## 0.5.0-dev.70 - Compact pruning snapshot
 
