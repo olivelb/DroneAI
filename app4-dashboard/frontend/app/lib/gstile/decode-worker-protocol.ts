@@ -14,5 +14,6 @@ export type GsTileDecodeWorkerResponse =
       type: "decoded";
       id: number;
       result: GsTileNativeDecodeResult;
+      computeMs: number;
     }
   | { type: "error"; id: number; message: string };

@@ -1,5 +1,6 @@
 import type { GsTileManifest } from "./contracts";
 import type { GsTileRangeScheduler } from "./range-source";
+import type { GsTileDecodeBreakdown } from "./decode-telemetry";
 
 export type GaussianViewFrame = {
   kind: "facade";
@@ -50,6 +51,7 @@ export type GaussianRenderStatistics = {
   lodDecodeCpuMs: number | null;
   lodDecodeWorkerServiceMs: number | null;
   lodDecodeWorkerFallbacks: number | null;
+  lodDecodeBreakdown: GsTileDecodeBreakdown | null;
   lodResourceCreateMs: number | null;
   lodResourceColorMs: number | null;
   lodResourceTransformMs: number | null;

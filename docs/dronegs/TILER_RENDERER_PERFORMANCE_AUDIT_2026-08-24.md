@@ -991,9 +991,13 @@ géométrique par splat.
 
 ## Prochaines gates
 
-1. Ajouter attente Worker, copies entrée/sortie, upload et longues tâches à la
-   télémétrie structurée ; les passes GPU nommées couvrent désormais compaction,
-   projection, OneSweep et raster.
+1. Attente Worker, calcul, aller-retour et copies entrée/sortie sont maintenant
+   séparés, avec correction des pannes de dispatch/création du pool : voir la
+   [qualification du 27 août](WORKER_DECODE_QUALIFICATION_20260827.md).
+   Les observations à cache chaud confirment un coût CPU important, sans
+   démontrer de gain de vitesse pour ce lot. Les longues tâches UI et le temps
+   GPU réel des uploads restent à mesurer ; les passes GPU nommées couvrent
+   déjà compaction, projection, OneSweep et raster.
 2. Répéter les essais appariés Chrome sur un corpus de caméras figé et publier
    médiane, p95, long tasks, mémoire CPU/VRAM et différences d'image.
 3. Conserver le décodage Q96 complet dans le Worker borné et mesurer les tâches

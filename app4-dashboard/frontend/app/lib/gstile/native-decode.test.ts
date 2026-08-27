@@ -165,7 +165,7 @@ describe("GSTile native transform payload decoding", () => {
       sh: true,
       transform: true,
     });
-    copyGsTileNativeResult(destination, 1, source);
+    expect(copyGsTileNativeResult(destination, 1, source)).toBe(172);
     expect(destination.centerStream?.slice(3, 6)).toEqual(source.centerStream);
     expect(destination.transformStreams?.[0].slice(4, 8)).toEqual(
       source.transformA.slice(0, 4),

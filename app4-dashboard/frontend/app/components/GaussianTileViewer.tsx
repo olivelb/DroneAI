@@ -88,6 +88,7 @@ const emptyStatistics: GaussianRenderStatistics = {
   lodDecodeCpuMs: null,
   lodDecodeWorkerServiceMs: null,
   lodDecodeWorkerFallbacks: null,
+  lodDecodeBreakdown: null,
   lodResourceCreateMs: null,
   lodResourceColorMs: null,
   lodResourceTransformMs: null,
@@ -296,6 +297,7 @@ export default function GaussianTileViewer({
       data-lod-decode-cpu-ms={statistics.lodDecodeCpuMs ?? ""}
       data-lod-decode-worker-service-ms={statistics.lodDecodeWorkerServiceMs ?? ""}
       data-lod-decode-worker-fallbacks={statistics.lodDecodeWorkerFallbacks ?? ""}
+      data-lod-decode-breakdown={statistics.lodDecodeBreakdown ? JSON.stringify(statistics.lodDecodeBreakdown) : ""}
       data-lod-resource-create-ms={statistics.lodResourceCreateMs ?? ""}
       data-lod-resource-color-ms={statistics.lodResourceColorMs ?? ""}
       data-lod-resource-transform-ms={statistics.lodResourceTransformMs ?? ""}
@@ -396,6 +398,8 @@ export default function GaussianTileViewer({
                 Σ fetch {statistics.lodFetchServiceMs?.toFixed(0)} · SHA {statistics.lodSha256ServiceMs?.toFixed(0)} · Q96 {statistics.lodDecodeCpuMs.toFixed(0)} ms
                 {statistics.lodDecodeWorkerServiceMs !== null &&
                   ` · Worker Σ ${statistics.lodDecodeWorkerServiceMs.toFixed(0)} (fallbacks ${statistics.lodDecodeWorkerFallbacks ?? 0})`}
+                {statistics.lodDecodeBreakdown &&
+                  ` · attente ${statistics.lodDecodeBreakdown.queueMs.toFixed(0)} · calcul ${statistics.lodDecodeBreakdown.computeMs.toFixed(0)} · copies E/S ${statistics.lodDecodeBreakdown.inputCopyMs.toFixed(0)}/${statistics.lodDecodeBreakdown.outputCopyMs.toFixed(0)}`}
                 {statistics.lodResourceCreateMs !== null &&
                   ` · resource ${statistics.lodResourceCreateMs.toFixed(0)}`}
                 {statistics.lodResourceShMs !== null &&
