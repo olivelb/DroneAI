@@ -6219,28 +6219,20 @@ struct OrderedAlphaTrainingContext::Impl {
         const bool compacted = pruned != 0U && !in_place_recycle;
         timer.finish(&TopologyRefinementTelemetry::cpu_prune_seconds);
         if (compacted) {
-            std::vector<Gaussian> compact_gaussians;
-            compact_gaussians.reserve(survivors.size());
-            std::vector<float> compact_weights;
-            std::vector<float> compact_visibility;
-            std::vector<float> compact_edge_weights;
-            std::vector<float> compact_absgrad_sum;
-            std::vector<float> compact_absgrad_count;
-            compact_weights.reserve(survivors.size());
-            compact_visibility.reserve(survivors.size());
-            compact_edge_weights.reserve(survivors.size());
-            compact_absgrad_sum.reserve(survivors.size());
-            compact_absgrad_count.reserve(survivors.size());
-            for (const auto source : survivors) {
-                compact_gaussians.push_back(host_gaussians[source]);
-                compact_weights.push_back(host_weights[source]);
-                compact_visibility.push_back(host_visibility[source]);
-                compact_edge_weights.push_back(host_edge_weights[source]);
-                compact_absgrad_sum.push_back(
-                    host_absgrad_sum[source]);
-                compact_absgrad_count.push_back(
-                    host_absgrad_count[source]);
-            }
+            // Only statistics are needed by CPU scoring below. Survivors are
+            // strictly increasing (source[d] >= d), so gather those in place;
+            // the Gaussian snapshot is no longer read after pruning.
+            const auto compact_host_statistics = [&](std::vector<float>& values) {
+                for (std::size_t destination = 0U; destination < survivors.size(); ++destination) {
+                    values[destination] = values[survivors[destination]];
+                }
+                values.resize(survivors.size());
+            };
+            compact_host_statistics(host_weights);
+            compact_host_statistics(host_visibility);
+            compact_host_statistics(host_edge_weights);
+            compact_host_statistics(host_absgrad_sum);
+            compact_host_statistics(host_absgrad_count);
             // Previous Adam work is complete at the snapshot download above.
             // SH gradients are either unused (FastGS) or cleared before their
             // next backward pass; borrow that allocation without growing VRAM.
@@ -6251,48 +6243,36 @@ struct OrderedAlphaTrainingContext::Impl {
                 telemetry->compaction_upload_bytes += device_survivors.size() * sizeof(std::uint32_t);
             }
             timer.finish(&TopologyRefinementTelemetry::compaction_upload_seconds);
-            const auto compact_moments = [&](
+            const auto compact_device_state = [&](
                 auto& allocation, std::size_t components) {
                 require_cuda(detail::compact_survivor_values(
                     allocation.data(), previous_count, survivors.size(), components,
                     refinement_indices.data(), sh_rest_gradient.data(),
                     sh_rest_gradient.capacity() * sizeof(float)),
-                    "compact persistent optimizer state on device");
+                    "compact persistent Gaussian/optimizer state on device");
                 timer.finish(&TopologyRefinementTelemetry::device_submit_seconds);
             };
-            compact_moments(first_dc, 3U);
-            compact_moments(second_dc, 3U);
-            compact_moments(
+            compact_device_state(gaussians, 1U);
+            compact_device_state(first_dc, 3U);
+            compact_device_state(second_dc, 3U);
+            compact_device_state(
                 sh_rest_moments, maximum_sh_rest_values);
-            compact_moments(first_opacity, 1U);
-            compact_moments(second_opacity, 1U);
+            compact_device_state(first_opacity, 1U);
+            compact_device_state(second_opacity, 1U);
             if (opacity_sh_enabled) {
-                compact_moments(
+                compact_device_state(
                     opacity_sh_moments,
                     maximum_opacity_sh_coefficients);
             }
-            compact_moments(first_xyz, 3U);
-            compact_moments(second_xyz, 3U);
-            compact_moments(first_log_scale, 3U);
-            compact_moments(second_log_scale, 3U);
-            compact_moments(first_rotation, 4U);
-            compact_moments(second_rotation, 4U);
-            compact_moments(absgrad_sum, 1U);
-            compact_moments(absgrad_observation_count, 1U);
-            gaussian_count = compact_gaussians.size();
-            timer.finish(&TopologyRefinementTelemetry::compaction_cpu_seconds);
-            gaussians.copy_from_host(
-                compact_gaussians.data(), gaussian_count);
-            if (telemetry) {
-                telemetry->compaction_upload_bytes += gaussian_count * sizeof(Gaussian);
-            }
-            timer.finish(&TopologyRefinementTelemetry::compaction_upload_seconds);
-            host_gaussians = std::move(compact_gaussians);
-            host_weights = std::move(compact_weights);
-            host_visibility = std::move(compact_visibility);
-            host_edge_weights = std::move(compact_edge_weights);
-            host_absgrad_sum = std::move(compact_absgrad_sum);
-            host_absgrad_count = std::move(compact_absgrad_count);
+            compact_device_state(first_xyz, 3U);
+            compact_device_state(second_xyz, 3U);
+            compact_device_state(first_log_scale, 3U);
+            compact_device_state(second_log_scale, 3U);
+            compact_device_state(first_rotation, 4U);
+            compact_device_state(second_rotation, 4U);
+            compact_device_state(absgrad_sum, 1U);
+            compact_device_state(absgrad_observation_count, 1U);
+            gaussian_count = survivors.size();
             timer.finish(&TopologyRefinementTelemetry::compaction_cpu_seconds);
         }
         std::vector<float> surviving_edge_weights;

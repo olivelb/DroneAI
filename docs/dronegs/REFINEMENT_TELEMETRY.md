@@ -53,12 +53,22 @@ The following formulas describe the dev.67 baseline:
   with opacity SH; upload: survivors times `(296 + 480)` or `(296 + 600)`.
 - Split upload: `added * 8` bytes. In-place recycling has no compaction traffic.
 
-From dev.68, hard-compaction moment/statistic downloads disappear. Compaction
+In dev.68, hard-compaction moment/statistic downloads disappear. Compaction
 upload becomes `survivors * (296 + 4)` for Gaussian data and survivor indices,
 regardless of opacity mode. GPU gather/D2D submission is counted under
 `device_submit_seconds`; the following pageable Gaussian upload can include a
 wait for that work. Existing field semantics remain host API wall time, not
 isolated kernel time. Snapshot and split formulas are unchanged.
+
+From dev.69, Gaussian records also stay on device during hard compaction.
+Compaction upload is only `survivors * 4` bytes (indices), and compaction
+download remains zero. The five CPU scoring-statistic arrays are compacted
+in place; the Gaussian snapshot is no longer gathered into a second host array.
+Gaussian gather/D2D submission joins moment compaction in `device_submit_seconds`.
+Without the former Gaussian H2D operation, its implicit wait may move to a
+later API call or the benchmark-only completion fence. Phase times are still
+host-wall measurements, not independent GPU timings; use fenced benchmark
+wall time for comparisons. Snapshot/split payloads and the descriptor are unchanged.
 
 The strict optional object is defined in
 [trainer-run-v1.schema.json](contracts/trainer-run-v1.schema.json). The schema

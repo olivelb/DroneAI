@@ -1619,7 +1619,7 @@ int main() {
             if (telemetry.measured_calls != 1U ||
                 telemetry.snapshot_download_bytes != 2U * (sizeof(dronegs::Gaussian) + 5U * sizeof(float)) ||
                 telemetry.compaction_download_bytes != 0U ||
-                telemetry.compaction_upload_bytes != sizeof(std::uint32_t) + sizeof(dronegs::Gaussian) ||
+                telemetry.compaction_upload_bytes != sizeof(std::uint32_t) ||
                 telemetry.split_upload_bytes != refinement.added * 2U * sizeof(std::uint32_t) ||
                 !std::isfinite(telemetry.total_seconds) || telemetry.total_seconds <= 0.0 ||
                 std::abs(dronegs::topology_accounted_seconds(telemetry) - telemetry.total_seconds) > 1.0e-9) {
