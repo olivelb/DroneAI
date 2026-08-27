@@ -18,6 +18,7 @@ describe("GSTile decode breakdown", () => {
     expect(total).toEqual({
       workerTasks: 2, queueMs: 4, inputCopyMs: 6, inputCopyBytes: 192,
       roundTripMs: 22, computeMs: 10, outputCopyMs: 0, outputCopyBytes: 0,
+      assemblyWorkerMs: 0, assemblyAdmissionMs: 0, assemblyTransferMs: 0, assemblyBytes: 0, assemblyPeakBytes: 0, assemblyPeakTasks: 0,
     });
     expect(timing.computeMs).toBe(5);
   });

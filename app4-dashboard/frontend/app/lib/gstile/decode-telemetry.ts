@@ -12,6 +12,12 @@ export type GsTileDecodeBreakdown = GsTileWorkerDecodeTiming & {
   workerTasks: number;
   outputCopyMs: number;
   outputCopyBytes: number;
+  assemblyWorkerMs: number;
+  assemblyAdmissionMs: number;
+  assemblyTransferMs: number;
+  assemblyBytes: number;
+  assemblyPeakBytes: number;
+  assemblyPeakTasks: number;
 };
 
 export const emptyGsTileDecodeBreakdown = (): GsTileDecodeBreakdown => ({
@@ -23,6 +29,12 @@ export const emptyGsTileDecodeBreakdown = (): GsTileDecodeBreakdown => ({
   computeMs: 0,
   outputCopyMs: 0,
   outputCopyBytes: 0,
+  assemblyWorkerMs: 0,
+  assemblyAdmissionMs: 0,
+  assemblyTransferMs: 0,
+  assemblyBytes: 0,
+  assemblyPeakBytes: 0,
+  assemblyPeakTasks: 0,
 });
 
 export const accumulateGsTileWorkerTiming = (

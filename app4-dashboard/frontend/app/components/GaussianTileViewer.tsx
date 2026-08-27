@@ -55,6 +55,7 @@ const defaultBackendFactory = () => {
     radialSorting: search.get("gstileRadialSort") === "1",
     debugTiles,
     gpuAssembly,
+    workerAssembly: search.get("gstileWorkerAssembly") !== "0",
   });
 };
 
@@ -400,6 +401,8 @@ export default function GaussianTileViewer({
                   ` · Worker Σ ${statistics.lodDecodeWorkerServiceMs.toFixed(0)} (fallbacks ${statistics.lodDecodeWorkerFallbacks ?? 0})`}
                 {statistics.lodDecodeBreakdown &&
                   ` · attente ${statistics.lodDecodeBreakdown.queueMs.toFixed(0)} · calcul ${statistics.lodDecodeBreakdown.computeMs.toFixed(0)} · copies E/S ${statistics.lodDecodeBreakdown.inputCopyMs.toFixed(0)}/${statistics.lodDecodeBreakdown.outputCopyMs.toFixed(0)}`}
+                {!!statistics.lodDecodeBreakdown?.assemblyBytes &&
+                  ` · assemblage Worker ${statistics.lodDecodeBreakdown.assemblyWorkerMs.toFixed(0)} · transfert ${statistics.lodDecodeBreakdown.assemblyTransferMs.toFixed(0)} · admission Σ ${statistics.lodDecodeBreakdown.assemblyAdmissionMs.toFixed(0)} ms`}
                 {statistics.lodResourceCreateMs !== null &&
                   ` · resource ${statistics.lodResourceCreateMs.toFixed(0)}`}
                 {statistics.lodResourceShMs !== null &&
