@@ -617,15 +617,6 @@ def _positions_and_scales(records: np.ndarray) -> tuple[np.ndarray, np.ndarray, 
     return positions, log_scales, scales
 
 
-def _squared_edge_deltas(values: np.ndarray, left: np.ndarray, right: np.ndarray) -> np.ndarray:
-    """Reuse an owned gather for subtraction and square; never mutate vertices."""
-
-    delta = values[left]
-    np.subtract(delta, values[right], out=delta)
-    np.square(delta, out=delta)
-    return delta
-
-
 def _adaptive_candidate_edges(records: np.ndarray, neighbors: int = 8) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build deterministic local candidates and a scene-normalized merge cost."""
 
@@ -638,26 +629,23 @@ def _adaptive_candidate_edges(records: np.ndarray, neighbors: int = 8) -> tuple[
         [morton_order[offset:] for offset in range(1, min(neighbors, count - 1) + 1)]
     )
     positions, log_scales, scales = _positions_and_scales(records)
-    # Each vertex participates in many edges. Preserve the same row-wise sum,
-    # but calculate its squared scale norm once before gathering the endpoints.
-    scale_norms = np.sum(np.square(scales), axis=1)
-    spatial = np.sum(_squared_edge_deltas(positions, left, right), axis=1) / np.maximum(
-        scale_norms[left] + scale_norms[right],
+    spatial = np.sum(np.square(positions[left] - positions[right]), axis=1) / np.maximum(
+        np.sum(np.square(scales[left]), axis=1) + np.sum(np.square(scales[right]), axis=1),
         1e-12,
     )
-    shape = np.mean(_squared_edge_deltas(log_scales, left, right), axis=1)
+    shape = np.mean(np.square(log_scales[left] - log_scales[right]), axis=1)
     color_dc = np.column_stack(
         (records["f_dc_0"], records["f_dc_1"], records["f_dc_2"])
     ).astype(np.float64, copy=False)
-    appearance = np.sum(_squared_edge_deltas(color_dc, left, right), axis=1)
+    appearance = np.sum(np.square(color_dc[left] - color_dc[right]), axis=1)
     alpha = _sigmoid(records["opacity"].astype(np.float64, copy=False))
-    opacity = _squared_edge_deltas(alpha, left, right)
+    opacity = np.square(alpha[left] - alpha[right])
     opacity_names = _opacity_property_names(records)
     if opacity_names:
         opacity_sh = np.column_stack([records[name] for name in opacity_names]).astype(
             np.float64, copy=False
         )
-        directional = np.mean(_squared_edge_deltas(opacity_sh, left, right), axis=1)
+        directional = np.mean(np.square(opacity_sh[left] - opacity_sh[right]), axis=1)
     else:
         directional = np.zeros(left.shape[0], dtype=np.float64)
     cost = (

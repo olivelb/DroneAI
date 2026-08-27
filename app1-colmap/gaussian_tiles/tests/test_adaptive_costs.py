@@ -44,30 +44,6 @@ def reference_candidate_edges(records, neighbors=8):
     return left[order], right[order], cost[order]
 
 
-@pytest.mark.parametrize("columns", [None, 1, 3, 15])
-@pytest.mark.parametrize("layout", ["c", "f", "strided"])
-def test_squared_edge_scratch_is_exact_owned_and_input_readonly(columns, layout):
-    rng = np.random.default_rng(91)
-    shape = (64,) if columns is None else (64, columns)
-    values = rng.normal(size=shape)
-    if layout == "f":
-        values = np.asfortranarray(values)
-    elif layout == "strided":
-        values = values[::-2]
-    values.flags.writeable = False
-    before = values.tobytes()
-    left = np.array([0, 3, 2, 0, 1, 1], dtype=np.intp)
-    right = np.array([1, 2, 3, 0, 1, 2], dtype=np.intp)
-    expected = np.square(values[left] - values[right])
-    actual = tiler._squared_edge_deltas(values, left, right)
-    assert actual.dtype == expected.dtype
-    assert actual.tobytes() == expected.tobytes()
-    assert actual.flags.owndata
-    assert not np.shares_memory(actual, values)
-    actual.fill(123)
-    assert values.tobytes() == before
-
-
 @pytest.mark.parametrize("width", [0, 3, 8, 15])
 @pytest.mark.parametrize("neighbors", [1, 8, 32])
 @pytest.mark.parametrize("mode", ["random", "coincident", "extreme", "signed_zero"])

@@ -1,8 +1,9 @@
 # GSTile V4 candidate-cost scratch reuse
 
-2026-08-28. Candidate implementation; complete-build qualification pending.
+2026-08-28. **Performance gate failed; experimental runtime not delivered.**
+Only the numerical regression tests and this retained evaluation are delivered.
 
-## Scope and exactness
+## Evaluated change and exactness
 
 Reuse the owned left-endpoint gather for subtraction and squaring in all five
 edge-distance terms. NumPy advanced indexing owns that gather; no source,
@@ -23,7 +24,7 @@ it in place. This reduces that temporary's live storage, **not a total process
 RSS guarantee**. Scalar scale norms add N float64 values but eliminate repeated
 three-column per-edge scale gathers/squares. Full RSS is measured separately.
 
-## Verification before timing
+## Experimental verification before timing
 
 Two helper-contract tests fail before implementation (missing helper; stopped
 at two failures). **67 new tests and 155 affected tiler/probe tests pass**.
@@ -67,3 +68,65 @@ is covered by the small tests, not a throughput claim from this pilot. No
 repeat Chrome/GPU gate is needed if canonical output bytes are identical.
 Existing PLY visual qualification is not expanded. Do not add this percentage
 to the previous pair-matching or pack-worker gains.
+
+## Results: insufficient gain, rejected
+
+All **10 builds completed**, with no excluded sample or runtime failure.
+All 630 files, including raw packs, Zstd sidecars and manifest, are identical
+to the reference. The source hash is unchanged and every report is clean and
+pinned. An independent explicit-argv recursive binary comparison confirms the
+other nine bundle directories match the reference. The common bundle ID is
+`sha256:190c82ac43ce470269737fd70c35f8a6d0f669e9999b55e8a1edc8443b22d7eb`.
+
+| Trial | Order | Reference seconds | Scratch seconds | Time reduction |
+| --- | --- | ---: | ---: | ---: |
+| Warmup | AB | 28.485 | 28.691 | — |
+| Pair 1 | AB | 30.004 | 28.782 | 4.07% |
+| Pair 2 | BA | 30.441 | 29.448 | 3.26% |
+| Pair 3 | AB | 30.115 | 29.697 | 1.39% |
+| Pair 4 | BA | 30.133 | 29.931 | 0.67% |
+| Measured median | — | **30.124** | **29.572** | **1.83%** |
+
+All measured pairs are slightly faster, but the fixed **3% median gate fails**.
+The warmup is not silently discarded from evidence: it is slower with scratch
+reuse and excluded from medians only as predeclared. The median averages the
+two central observations. Peak child RSS is 462,412 KiB reference versus
+464,760 KiB scratch: no process-memory reduction was observed. Filesystem
+output blocks remain 3,381,408 in every run.
+
+**Decision:** restore production `tiler.py` byte-for-byte to `acf9e6f`; do not
+ship scratch reuse or norm precomputation. Preserve the experimental commits,
+all raw evidence, driver and results. Retain 55 algorithm-independent numerical
+contract tests for the next attempt; the 12 tests specific to the discarded
+helper remain in the experimental commit, not in the delivered suite. The
+delivered baseline suite has 143 affected tests. No dead production flag or
+fallback path is added. Existing renderer and bundles are unchanged.
+
+This does not establish a meaningful general speedup or a regression outside
+the tested pilot. A future blocked-distance experiment would need a fresh
+protocol, exact costs/ordering and complete-build evidence; it must not be
+presented as already effective. Do not reduce the threshold after seeing data.
+
+## Provenance and reproduction
+
+- Runtime commit: `3888e2a8e0d24a1dc928f3da785b07ac2b7bb8c2`.
+- Clean measured candidate with frozen driver:
+  `6ae2d70b1b86f398ee91413e250c1adf0bb7e209`.
+- Retained evidence:
+  `/home/olivier/droneai-qualifications/gstile-v4-costs-20260828`.
+  Reference worktree, all bundles, raw reports/stdout/stderr, inventories,
+  protocol, trials, verified results and independent binary check are retained.
+- Original source retained at
+  `/home/olivier/droneai-qualifications/gstile-parallel-builds-20260827/source.ply`.
+- Versioned [driver](gstile-v4-costs-builds.mjs) and
+  [results](gstile-v4-costs-results.json) include pinned provenance, every trial,
+  raw report hashes and the complete reference file inventory.
+
+Run the driver from the retained **experimental candidate commit** above (not
+the final delivery, which restores the baseline), with a new evidence directory and a
+detached reference checkout named `baseline`. The fixture path/hash, code pins
+and configuration are deliberately fixed; declare a new protocol before
+altering them. Existing results directories are refused. The source hash is
+checked again at the end; post-build hashing is outside the timed region.
+The diagnostic from `gstile-v4-pairs-profile-20260828` motivated this change
+but is not a baseline for the performance calculation.
