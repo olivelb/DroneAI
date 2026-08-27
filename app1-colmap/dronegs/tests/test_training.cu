@@ -12,6 +12,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <jpeglib.h>
@@ -200,11 +201,14 @@ double reference_objective(
 
 }  // namespace
 
+void test_topology_device_compaction();
+
 int main() {
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto root = std::filesystem::temp_directory_path() /
                       ("dronegs-training-test-" + std::to_string(suffix));
     try {
+        test_topology_device_compaction();
         std::filesystem::create_directories(root / "images");
         write_solid_jpeg(root / "images" / "frame.jpg");
         const auto full_decode = dronegs::load_training_image(
@@ -1599,23 +1603,23 @@ int main() {
             throw std::runtime_error(
                 "checkpoint snapshot changed the restored model");
         }
-        for (const bool opacity_sh_enabled : {false, true}) {
+        for (const auto [opacity_sh_enabled, fastgs] : {
+                 std::pair{false, false}, std::pair{false, true},
+                 std::pair{true, false}, std::pair{true, true}}) {
             const std::vector<dronegs::Gaussian> initial{
                 split_parent, pruned_parent};
             dronegs::OrderedAlphaTrainingContext source(
                 initial, 32U * 32U, 4U, 3U,
                 dronegs::MrnfOptimizerProfile::reference_absolute,
-                3U, 1U, 42U, true, 54.59815F, opacity_sh_enabled);
+                3U, 1U, 42U, fastgs, 54.59815F, opacity_sh_enabled);
             static_cast<void>(source.train_step(
                 quality_camera, split_target.data(), split_target.size()));
             dronegs::TopologyRefinementTelemetry telemetry;
             const auto refinement = source.refine_topology(0.0F, 1.0F, 7U, true, &telemetry);
-            const std::size_t moment_bytes = sizeof(float) *
-                (120U + (opacity_sh_enabled ? 2U * dronegs::maximum_opacity_sh_coefficients : 0U));
             if (telemetry.measured_calls != 1U ||
                 telemetry.snapshot_download_bytes != 2U * (sizeof(dronegs::Gaussian) + 5U * sizeof(float)) ||
-                telemetry.compaction_download_bytes != 2U * moment_bytes ||
-                telemetry.compaction_upload_bytes != moment_bytes + sizeof(dronegs::Gaussian) ||
+                telemetry.compaction_download_bytes != 0U ||
+                telemetry.compaction_upload_bytes != sizeof(std::uint32_t) + sizeof(dronegs::Gaussian) ||
                 telemetry.split_upload_bytes != refinement.added * 2U * sizeof(std::uint32_t) ||
                 !std::isfinite(telemetry.total_seconds) || telemetry.total_seconds <= 0.0 ||
                 std::abs(dronegs::topology_accounted_seconds(telemetry) - telemetry.total_seconds) > 1.0e-9) {
@@ -1627,7 +1631,8 @@ int main() {
                     "optional opacity-SH fixture did not compact and split");
             }
             const auto optional_checkpoint = root /
-                (opacity_sh_enabled ? "opacity-on.ckpt" : "opacity-off.ckpt");
+                (std::string(opacity_sh_enabled ? "opacity-on" : "opacity-off") +
+                 (fastgs ? "-fastgs.ckpt" : "-bounded.ckpt"));
             const std::string configuration =
                 opacity_sh_enabled ? "opacity-on" : "opacity-off";
             source.save_checkpoint(
@@ -1637,7 +1642,7 @@ int main() {
             dronegs::OrderedAlphaTrainingContext restored(
                 initial, 32U * 32U, 4U, 3U,
                 dronegs::MrnfOptimizerProfile::reference_absolute,
-                3U, 1U, 42U, true, 54.59815F, opacity_sh_enabled);
+                3U, 1U, 42U, fastgs, 54.59815F, opacity_sh_enabled);
             static_cast<void>(restored.load_checkpoint(
                 optional_checkpoint, "optional-storage-dataset", configuration));
             const auto expected_bytes = opacity_sh_enabled

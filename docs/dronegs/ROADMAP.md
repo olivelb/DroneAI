@@ -21,7 +21,13 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.67.
+- Current development version: 0.5.0-dev.68.
+- Dev.68 moves Adam/refinement-state compaction to stable GPU chunks using
+  existing disposable gradient storage. CPU pruning, selection and Gaussian
+  compaction remain unchanged; this is not a full GPU topology migration.
+  Isolated 5M-checkpoint refinement is 3.34x faster on RTX 3090 with exact
+  full-state parity; native suites pass on Ampere/Ada. See
+  [the qualification and scope limits](GPU_COMPACTION_DEV68.md).
 - Dev.67 adds invocation-local refinement phase/transfer telemetry without
   extra GPU synchronization or algorithm changes. Frozen-checkpoint comparisons
   preserve all Gaussian parameters; shared-GPU timing does not establish a

@@ -163,7 +163,7 @@ if(DRONEGS_BUILD_TESTS)
         NAME dronegs_rasterization_cuda_tests
         COMMAND dronegs_rasterization_cuda_tests)
 
-    add_executable(dronegs_training_tests tests/test_training.cu)
+    add_executable(dronegs_training_tests tests/test_training.cu tests/test_topology_compaction.cu)
     target_link_libraries(dronegs_training_tests PRIVATE dronegs_cuda)
     set_target_properties(
         dronegs_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
@@ -182,6 +182,9 @@ if(DRONEGS_BUILD_TESTS)
 endif()
 
 if(DRONEGS_BUILD_BENCHMARKS)
+    add_executable(dronegs_checkpoint_topology_benchmark benchmarks/benchmark_checkpoint_topology.cu)
+    target_link_libraries(dronegs_checkpoint_topology_benchmark PRIVATE dronegs_cuda)
+    set_target_properties(dronegs_checkpoint_topology_benchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     add_executable(dronegs_topology_benchmark benchmarks/benchmark_topology.cu)
     target_link_libraries(dronegs_topology_benchmark PRIVATE dronegs_cuda)
     set_target_properties(dronegs_topology_benchmark PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
