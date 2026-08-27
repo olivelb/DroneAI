@@ -28,8 +28,8 @@ cover both pools, not just network contention.
 `cacheProtectedBytes` and `prefetchCacheAdmissionRejections` make the policy
 observable. SHA verification, immutable range keys, the IndexedDB schema and
 2 GiB production cache ceiling, Zstd transport, final cut selection, and GPU
-data are unchanged. See the [component qualification and remaining
-camera-path gates](../benchmarks/gstile-cache-isolation-qualification.md).
+data are unchanged. See the [component and camera-path qualification,
+with the remaining process-memory gate](../benchmarks/gstile-cache-isolation-qualification.md).
 
 ## Decisions
 
