@@ -14,7 +14,10 @@ commit. No shader, native decoder arithmetic, SH encoding, opacity, culling,
 sort, cut selection, budget, fixture or tiler change. Merged remains the default.
 
 The range-cache input is never transferred: its existing 96 B/splat defensive
-copy stays. The 172 B/splat output copy is **moved off the main thread, not
+copy stays. A later [bounded input-recycling increment](INPUT_RECYCLE_QUALIFICATION_20260827.md)
+reuses its scratch allocation and documents the additional capacity separately;
+the measurements and 128 MiB accounting below describe this earlier revision.
+The 172 B/splat output copy is **moved off the main thread, not
 eliminated**. GPU staging/upload and the subsequent 12 B/splat arena-center copy
 are unchanged. ArrayBuffer ownership transfer is the standard browser mechanism,
 not SharedArrayBuffer: no COOP/COEP or security-header change. See
