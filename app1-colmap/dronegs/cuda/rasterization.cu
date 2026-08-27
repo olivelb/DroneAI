@@ -54,6 +54,7 @@
  */
 #include "dronegs/rasterization.hpp"
 #include "dronegs/ordered_training.hpp"
+#include "dronegs/topology_percentiles.hpp"
 #include "topology_compaction.cuh"
 #include "topology_snapshot.cuh"
 
@@ -6101,10 +6102,12 @@ struct OrderedAlphaTrainingContext::Impl {
                 gaussian.log_scale[1],
                 gaussian.log_scale[2]})));
         }
+        PruningPercentiles percentiles;
         if (previous_count >= 8U) {
+            percentiles = compute_pruning_percentiles(
+                std::move(coordinates_by_axis), maximum_scales);
             for (std::size_t axis = 0U; axis < 3U; ++axis) {
-                const auto [q10, q90] = exact_floor_percentile_pair(
-                    std::move(coordinates_by_axis[axis]), 0.1F, 0.9F);
+                const auto [q10, q90] = percentiles.coordinates[axis];
                 percentile_center[axis] = 0.5F * (q10 + q90);
                 percentile_max_extent = std::max(
                     percentile_max_extent, 0.5F * (q90 - q10));
@@ -6133,8 +6136,7 @@ struct OrderedAlphaTrainingContext::Impl {
             : std::min(
                   std::max(
                       1.0e-10F,
-                      10.0F * exact_floor_percentile(
-                          maximum_scales, 0.8F)),
+                      10.0F * percentiles.scale80),
                   spatial_pruning_bounds
                       ? std::max(
                             1.0e-10F,

@@ -7,6 +7,12 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
+Version `0.5.0-dev.71` computes independent pruning percentiles on at most four
+CPU threads including the caller. Each axis uses the unchanged exact floor-rank
+algorithm; bounds and pruning are applied in the same order. Small populations
+and axes stay sequential below 262,144 values, and the runtime can defer work.
+There is no CUDA worker work, approximation, profile or checkpoint change.
+
 Version `0.5.0-dev.70` downloads a compact 32-byte pruning snapshot instead of
 the full 296-byte Gaussian. Positions, log-scales and scalar opacity retain their
 bits; all opacity-SH coefficients retain the same finiteness decision through

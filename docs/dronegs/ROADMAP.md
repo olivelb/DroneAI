@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.70.
+- Current development version: 0.5.0-dev.71.
 - Dev.68 moves Adam/refinement-state compaction to stable GPU chunks using
   existing disposable gradient storage. CPU pruning, selection and Gaussian
   compaction remain unchanged; this is not a full GPU topology migration.
