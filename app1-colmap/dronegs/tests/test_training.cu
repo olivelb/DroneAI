@@ -203,6 +203,7 @@ double reference_objective(
 
 void test_topology_device_compaction();
 void test_topology_pruning_snapshot();
+void test_refinement_workspace_reuse(const std::filesystem::path& root);
 
 int main() {
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -212,6 +213,7 @@ int main() {
         test_topology_device_compaction();
         test_topology_pruning_snapshot();
         std::filesystem::create_directories(root / "images");
+        test_refinement_workspace_reuse(root);
         write_solid_jpeg(root / "images" / "frame.jpg");
         const auto full_decode = dronegs::load_training_image(
             root / "images" / "frame.jpg", 4U, 32U, false);

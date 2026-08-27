@@ -2,6 +2,7 @@
 #pragma once
 
 #include "dronegs/types.hpp"
+#include "dronegs/detail/refinement_workspace.hpp"
 
 #include <cuda_runtime.h>
 #include <algorithm>
@@ -16,16 +17,6 @@ namespace dronegs::detail {
 // Transient pruning input only; not a Gaussian ABI or checkpoint format.
 // All arithmetic (including exp/percentiles) stays on the CPU. Opacity SH is
 // only inspected for finiteness, even when directional opacity is disabled.
-struct PruningSnapshot {
-    std::array<float, 3U> xyz;
-    std::array<float, 3U> log_scale;
-    float opacity_logit;
-    std::uint32_t opacity_sh_finite;
-};
-static_assert(sizeof(PruningSnapshot) == 32U);
-static_assert(std::is_trivially_copyable_v<PruningSnapshot>);
-static_assert(sizeof(float) == 4U && std::numeric_limits<float>::is_iec559);
-
 static __global__ void pack_pruning_snapshot(
     const Gaussian* source, PruningSnapshot* destination,
     std::size_t offset, std::size_t count) {

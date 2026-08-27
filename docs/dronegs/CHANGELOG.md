@@ -2,6 +2,19 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.72 - Reusable refinement host workspace
+
+- Retain snapshot and five statistic buffers in each native training context;
+  allocate only when the observed population exceeds the previous high-water mark.
+- Use default-initialized overwrite storage and bounded active spans; complete
+  every download before reading, and exclude stale tails after compaction.
+- Preserve the exact snapshot layout, median/pruning/scoring algorithms, CUDA
+  work and checkpoint state. Retain 52 bytes per peak input Gaussian on the host.
+- Add CPU lifetime/bounds/sentinel contracts and fresh-versus-reused full-state
+  CUDA tests over changing populations, bounded/FastGS and opacity SH off/on.
+- Extend the optional checkpoint benchmark with `fresh|reuse` context modes;
+  always reload the frozen input and save first/last outputs in reuse mode.
+
 ## 0.5.0-dev.71 - Bounded CPU pruning percentiles
 
 - Schedule the three independent spatial percentile pairs on at most three

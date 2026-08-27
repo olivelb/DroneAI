@@ -7,6 +7,13 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
+Version `0.5.0-dev.72` reuses per-context host snapshot/statistic storage across
+refinements, including checkpoint restores. Active spans are fully overwritten
+by completed downloads before reading; no initialization pass is needed. The
+cache retains 52 bytes per largest encountered Gaussian count until context
+destruction (260 MB at 5M); growth can temporarily hold old and new allocations.
+Scientific decisions, transfer payloads and checkpoint formats are unchanged.
+
 Version `0.5.0-dev.71` computes independent pruning percentiles on at most four
 CPU threads including the caller. Each axis uses the unchanged exact floor-rank
 algorithm; bounds and pruning are applied in the same order. Small populations

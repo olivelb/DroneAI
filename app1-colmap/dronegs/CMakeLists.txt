@@ -133,7 +133,7 @@ if(DRONEGS_BUILD_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
-    add_executable(dronegs_core_tests tests/test_core.cpp tests/test_topology_telemetry.cpp tests/test_topology_percentiles.cpp)
+    add_executable(dronegs_core_tests tests/test_core.cpp tests/test_topology_telemetry.cpp tests/test_topology_percentiles.cpp tests/test_refinement_workspace.cpp)
     target_link_libraries(dronegs_core_tests PRIVATE dronegs_core)
     add_test(NAME dronegs_core_tests COMMAND dronegs_core_tests)
 
@@ -164,7 +164,7 @@ if(DRONEGS_BUILD_TESTS)
         NAME dronegs_rasterization_cuda_tests
         COMMAND dronegs_rasterization_cuda_tests)
 
-    add_executable(dronegs_training_tests tests/test_training.cu tests/test_topology_compaction.cu tests/test_topology_snapshot.cu)
+    add_executable(dronegs_training_tests tests/test_training.cu tests/test_topology_compaction.cu tests/test_topology_snapshot.cu tests/test_refinement_workspace.cu)
     # Compile the snapshot oracle's device path with the production kernel flags.
     set_source_files_properties(tests/test_topology_snapshot.cu PROPERTIES
         COMPILE_OPTIONS "--expt-relaxed-constexpr;--use_fast_math")
