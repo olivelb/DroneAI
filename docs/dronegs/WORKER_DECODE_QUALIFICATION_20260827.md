@@ -145,6 +145,11 @@ buffer speculatively. Neither change is promoted by this lot.
 
 ## Retained evidence and rollback
 
+Follow-up: [exact scale-exponential reuse](NATIVE_DECODE_EXP_REUSE_20260827.md)
+reduces isolated Chrome Worker decode time by 6.49% in the recorded paired
+benchmark. Two SH-loop variants were rejected. Main-thread copies and full
+camera-path latency remain separate, unqualified optimization targets.
+
 Local WSL and BIGZEN evidence directory:
 `/home/olivier/droneai-qualifications/gstile-worker-latency-20260827`.
 Contains red/green tests, final tests/static/typecheck/lint, source archive,
