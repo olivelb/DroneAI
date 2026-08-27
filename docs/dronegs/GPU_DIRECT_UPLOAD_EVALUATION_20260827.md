@@ -135,6 +135,12 @@ risks. It must preserve exact coefficients, resident gaps, cut identity and boun
 memory, and pass target-GPU integration and visual acceptance before promotion.
 Do not lower quality to compensate for transport or scheduling costs.
 
+A subsequent [aligned-staging experiment](ALIGNED_STAGING_EVALUATION_20260827.md)
+retains staging and reduces rectangular-copy commands by matching its width to
+the arena. Both host and completion timings improve in that component harness,
+including uploads. It is a different approach, not a reversal of the direct-write
+no-go; renderer/Worker integration and full-viewer qualification remain pending.
+
 ## Reproduction and retained evidence
 
 Directory in WSL and on BIGZEN:
