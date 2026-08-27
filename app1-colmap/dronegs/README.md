@@ -12,6 +12,9 @@ It borrows disposable SH-gradient storage, uses at most 16 MiB of that buffer,
 and processes stable survivor chunks in order without extra device allocations.
 Pruning/scoring and Gaussian gathering remain on the CPU; selection equations,
 survivor order, opacity modes and checkpoint layouts remain unchanged.
+On the qualified 5M Saint-Etienne checkpoint, isolated refinement falls from
+7.62 to 2.28 s with byte-identical full state. This is not a whole-training
+speedup; see [the qualification](../../docs/dronegs/GPU_COMPACTION_DEV68.md).
 
 Version `0.5.0-dev.67` records refinement phase durations and logical CPU/GPU
 transfer bytes in events and the run manifest, without extra GPU synchronization.

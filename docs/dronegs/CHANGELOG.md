@@ -13,6 +13,10 @@ This changelog covers the standalone Gaussian trainer project.
 - Add bitwise CPU-oracle tests for scalar/float2 fields, overlap, tails, bounds,
   signed zeros/NaN payloads and chunk limits; test bounded/FastGS resume with
   opacity SH both on and off.
+- Qualify exact full-checkpoint parity on 5M Saint-Etienne Gaussians and a
+  70.07% reduction in isolated refinement time on RTX 3090. Native tests pass
+  on Ampere/Ada, memcheck reports zero errors, and portable compilation passes.
+  See [the benchmark scope and retained evidence](GPU_COMPACTION_DEV68.md).
 
 ## 0.5.0-dev.67 - Refinement diagnostics
 
