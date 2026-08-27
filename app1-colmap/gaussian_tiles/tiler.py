@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterator, Literal
 
@@ -27,12 +28,15 @@ from shared.gstile_manifest import (
 from .format import (
     PACK_HEADER_SIZE,
     PACK_RECORD_SIZE,
+    PreparedPack,
     canonical_manifest_bytes,
     encode_pack,
+    prepare_encoded_pack,
     validate_manifest,
     write_bundle_aggregate_pack_atomic,
-    write_pack_atomic,
+    write_prepared_pack_atomic,
 )
+from .pack_preparation import OrderedPackPreparation
 
 
 @dataclass(frozen=True)
@@ -52,8 +56,14 @@ class GsTileBuildOptions:
     invisible_gaussian_scale_threshold: float | None = None
     visibility_opacity_threshold: float = 0.05
     pack_target_bytes: int | None = None
+    pack_workers: int = 1
+    pack_pending_bytes: int = 128 * 1024**2
 
     def validate(self) -> None:
+        if type(self.pack_workers) is not int or self.pack_workers not in (1, 2, 4):
+            raise ValueError("GSTile pack_workers must be 1, 2 or 4")
+        if type(self.pack_pending_bytes) is not int or not 1024**2 <= self.pack_pending_bytes <= 1024**3:
+            raise ValueError("GSTile pack_pending_bytes must be between 1 MiB and 1 GiB")
         if not 1_024 <= self.leaf_size <= 1_048_576:
             raise ValueError("GSTile leaf_size must be between 1,024 and 1,048,576")
         if not 1_024 <= self.chunk_records <= 1_048_576:
@@ -134,6 +144,19 @@ class _PendingEncodedTile:
     payload: memoryview
     tile: dict[str, Any]
     errors: dict[str, float]
+
+
+@dataclass(frozen=True)
+class _PreparedTile:
+    content: bytes
+    quantization: dict[str, Any]
+    errors: dict[str, float]
+    pack: PreparedPack | None
+
+
+def _prepare_tile(records: np.ndarray, source_ids: np.ndarray, node_id: str, standalone: bool) -> _PreparedTile:
+    content, quantization, errors = encode_pack(records, source_ids, node_id=node_id)
+    return _PreparedTile(content, quantization, errors, prepare_encoded_pack(content) if standalone else None)
 
 
 def _emit_progress(
@@ -996,6 +1019,9 @@ class _GsTileTreeBuilder:
             "exact": 0,
             "proxy": 0,
         }
+        self.preparation = OrderedPackPreparation[_PreparedTile](
+            options.pack_workers, options.pack_pending_bytes, options.cancellation_check,
+        )
 
     def pack_tile(
         self,
@@ -1006,14 +1032,31 @@ class _GsTileTreeBuilder:
         kind: Literal["exact", "proxy"],
         depth: int,
     ) -> dict[str, Any]:
+        # Own the inputs before the traversal reuses/releases records. Reserve
+        # input arrays plus raw and retained compressed output, not NumPy scratch.
+        raw_bytes = PACK_HEADER_SIZE + records.shape[0] * PACK_RECORD_SIZE
+        reserved_bytes = records.shape[0] * (self.layout.dtype.itemsize + 8) + 2 * raw_bytes
+        self.preparation.make_room(reserved_bytes)
         ply_records = np.empty(records.shape[0], dtype=self.layout.dtype)
         _copy_record_prefix(records, ply_records)
+        source_ids = records["source_id"].copy()
+        ply_records.flags.writeable = False
+        source_ids.flags.writeable = False
+        tile: dict[str, Any] = {}
+        self.preparation.submit(
+            reserved_bytes,
+            partial(_prepare_tile, ply_records, source_ids, node_id, self.options.pack_target_bytes is None),
+            lambda prepared: self._accept_tile(prepared, tile, pack_id=pack_id, kind=kind, depth=depth),
+        )
+        return tile
+
+    def _accept_tile(
+        self, prepared: _PreparedTile, tile: dict[str, Any], *,
+        pack_id: str, kind: Literal["exact", "proxy"], depth: int,
+    ) -> None:
+        content, quantization, errors = prepared.content, prepared.quantization, prepared.errors
+        record_count = (len(content) - PACK_HEADER_SIZE) // PACK_RECORD_SIZE
         if self.options.pack_target_bytes is not None:
-            content, quantization, errors = encode_pack(
-                ply_records,
-                records["source_id"],
-                node_id=node_id,
-            )
             payload = memoryview(content)[PACK_HEADER_SIZE:]
             key = (kind, depth)
             pending = self.pending_tiles.setdefault(key, [])
@@ -1026,14 +1069,14 @@ class _GsTileTreeBuilder:
             ):
                 self._flush_aggregate(key)
                 pending = self.pending_tiles.setdefault(key, [])
-            tile = {
+            tile.update({
                 "pack": "",
                 "byteOffset": 0,
                 "byteLength": len(payload),
-                "recordCount": records.shape[0],
+                "recordCount": record_count,
                 "sha256": "",
                 "quantization": quantization,
-            }
+            })
             pending.append(
                 _PendingEncodedTile(payload=payload, tile=tile, errors=errors)
             )
@@ -1041,15 +1084,12 @@ class _GsTileTreeBuilder:
             if self.pending_payload_bytes[key] >= target_payload_bytes:
                 self._flush_aggregate(key)
             self._enforce_aggregate_memory_bound()
-            return tile
+            return
 
         relative = Path("packs") / f"{pack_id}.gst"
-        pack, errors = write_pack_atomic(
-            self.bundle_tmp / relative,
-            ply_records,
-            records["source_id"],
-            node_id=node_id,
-        )
+        if prepared.pack is None:
+            raise RuntimeError("GSTile standalone pack preparation is missing")
+        pack = write_prepared_pack_atomic(self.bundle_tmp / relative, prepared.pack)
         pack["id"] = pack_id
         pack["path"] = relative.as_posix()
         if zstd_encoding := pack.get("encodings", {}).get("zstd"):
@@ -1058,20 +1098,19 @@ class _GsTileTreeBuilder:
             ).as_posix()
         pack["byteOffset"] = PACK_HEADER_SIZE
         self.packs.append(pack)
-        tile = {
+        tile.update({
             "pack": pack_id,
             "byteOffset": PACK_HEADER_SIZE,
             "byteLength": pack["byteLength"] - PACK_HEADER_SIZE,
-            "recordCount": records.shape[0],
+            "recordCount": record_count,
             "sha256": pack["sha256"],
-            "quantization": pack.pop("quantization"),
-        }
+            "quantization": quantization,
+        })
         self._record_errors(errors)
         if kind == "exact":
             self.exact_pack_bytes += pack["byteLength"]
         else:
             self.proxy_pack_bytes += pack["byteLength"]
-        return tile
 
     def _record_errors(self, errors: dict[str, float]) -> None:
         for key, value in errors.items():
@@ -1132,9 +1171,13 @@ class _GsTileTreeBuilder:
 
     def finish(self) -> None:
         """Flush bounded aggregate buffers before manifest publication."""
-
+        self.preparation.drain()
         for key in sorted(self.pending_tiles):
             self._flush_aggregate(key)
+        _emit_progress(self.options.progress_callback, "pack_preparation",
+                       workers=self.options.pack_workers, maximumPendingBytes=self.options.pack_pending_bytes,
+                       peakPendingBytes=self.preparation.peak_bytes, peakPendingTasks=self.preparation.peak_tasks,
+                       oversizedInlineTasks=self.preparation.oversized_inline_tasks)
 
     def _lod_proxy(
         self,
@@ -1428,8 +1471,12 @@ def build_gstile_bundle(
             sha256=source_sha256,
         )
         tree = _GsTileTreeBuilder(layout, options, bundle_tmp)
-        tree.visit(root_work, "r", 0)
-        tree.finish()
+        try:
+            tree.visit(root_work, "r", 0)
+            tree.finish()
+        finally:
+            # Join pure workers before the publisher's exception cleanup.
+            tree.preparation.close()
         if options.cancellation_check is not None:
             options.cancellation_check()
         if options.lod_proxy_strategy == "adaptive-moment":
