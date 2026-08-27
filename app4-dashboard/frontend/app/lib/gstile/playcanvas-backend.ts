@@ -3094,6 +3094,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       if (mergedAssembly) this.render(performance.now());
       this.#lodCommitMs = performance.now() - commitStarted;
       this.#lodTotalMs = performance.now() - lodStarted;
+      // The synchronous render above can publish before these final timings.
+      // Replace that transitional snapshot even inside the one-second throttle.
+      this.#updateDebugSnapshot(performance.now(), true);
       this.#scheduleLodPrefetch(selection.selectedNodeIds);
     } catch (error) {
       mergedColumns = null;
@@ -3667,10 +3670,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#renderFramesRemaining = Math.max(this.#renderFramesRemaining, frames);
   }
 
-  #updateDebugSnapshot(timestampMs: number) {
+  #updateDebugSnapshot(timestampMs: number, force = false) {
     if (
       !this.#debugSnapshotElement ||
-      timestampMs - this.#lastDebugSnapshotTimestampMs < 1_000
+      (!force && timestampMs - this.#lastDebugSnapshotTimestampMs < 1_000)
     ) {
       return;
     }
