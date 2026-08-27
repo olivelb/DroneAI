@@ -11,6 +11,10 @@ This changelog covers the standalone Gaussian trainer project.
   preserve snapshot traffic, pruning, selection, split/decay and checkpoint ABI.
 - Extend the bytewise CPU oracle to complete Gaussian records, including the
   internal chunk cap and untouched tails, and enforce the reduced upload contract.
+- Qualify byte-identical full checkpoints on real 5M Saint-Etienne state and
+  synthetic growth/recycling; isolated refinement falls 45.57% versus dev.68.
+  Ampere/Ada suites, Ada memcheck and portable compilation pass. See
+  [measurements and limitations](GPU_GAUSSIAN_COMPACTION_DEV69.md).
 
 ## 0.5.0-dev.68 - Device-side optimizer-state compaction
 

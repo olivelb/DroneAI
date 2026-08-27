@@ -13,6 +13,10 @@ are gathered in place; no second Gaussian host vector or Gaussian H2D upload
 is needed. Hard-compaction uploads now contain only four-byte survivor indices.
 The initial snapshot and CPU pruning/scoring remain unchanged, as do all
 scientific policies, field values, checkpoint layouts and rendering equations.
+On the same 5M Saint-Etienne frozen checkpoint, isolated refinement drops from
+2.274 to 1.238 s versus dev.68 (45.57%), with byte-identical full state. This
+does not establish whole-training or viewer gains; see
+[the dev.69 qualification](../../docs/dronegs/GPU_GAUSSIAN_COMPACTION_DEV69.md).
 
 Version `0.5.0-dev.68` compacts Adam/refinement state directly on the GPU.
 It borrows disposable SH-gradient storage, uses at most 16 MiB of that buffer,
