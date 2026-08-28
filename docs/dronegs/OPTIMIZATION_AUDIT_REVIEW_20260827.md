@@ -16,6 +16,10 @@ L'expérience distincte de **distances par blocs de 4 096 arêtes est qualifiée
 29,741 → 28,158 s, soit 5,32 % de temps médian en moins sur le pilote synthétique
 1 M, quatre paires plus rapides et 630 fichiers identiques. Pas de baisse du
 RSS global observée ; [protocole et résultats](../benchmarks/gstile-v4-blocked-costs-qualification.md).
+La fusion des attributs par blocs de huit colonnes est ensuite **qualifiée** :
+25,889 → 22,817 s (−11,87 %) et pic RSS mesuré −11,21 %, sur un nouveau pilote
+V4 synthétique 1 M. Référence variable, quatre paires plus rapides, 630 fichiers
+identiques ; [résultats et limites](../benchmarks/gstile-moment-columns-qualification.md).
 
 ## Conclusion
 
@@ -113,6 +117,13 @@ et le PlayCanvas 2.21.4 patché dans `node_modules/playcanvas/build/playcanvas/s
    exactes et 5,32 % de gain médian, au-dessus du seuil figé de 3 % ; voir la
    [qualification](../benchmarks/gstile-v4-blocked-costs-qualification.md).
    Aucun gain global de RSS ni extrapolation au vrai Saint-Étienne 50 M.
+   **Moyennes des attributs par huit colonnes : retenues.** Tous les champs et
+   contrôles de finitude sont conservés, multiplication dans le tableau possédé,
+   mêmes réductions par groupe. V3/V4 couverts par contrats exacts ; nouveau
+   pilote complet V4 avec gain médian de 11,87 % et RSS mesuré −11,21 %.
+   La référence varie fortement et les gains par paire vont de 5,13 à 26,48 % :
+   voir les [limites de qualification](../benchmarks/gstile-moment-columns-qualification.md).
+   Pas de gain V3 chronométré ni d'extrapolation au corpus réel.
 4. **Prototype tri externe Morton** (priorité producteur 100 M) : runs bornés,
    fusion multi-voies, tie-break source ID, feuilles contiguës et métadonnées
    bottom-up. Tester centres confondus, distributions très déséquilibrées,
