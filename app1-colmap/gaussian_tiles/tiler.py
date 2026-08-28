@@ -481,6 +481,30 @@ def _rotation_matrices_to_quaternions(matrices: np.ndarray) -> np.ndarray:
     return result
 
 
+def _average_group_attributes(
+    ordered: np.ndarray, mass: np.ndarray, starts: np.ndarray, group_mass: np.ndarray
+) -> tuple[np.ndarray, bool]:
+    """Average all float fields in bounded column blocks, preserving reductions."""
+
+    output = ordered[starts].copy()
+    float_names = [
+        name
+        for name in ordered.dtype.names or ()
+        if np.issubdtype(ordered.dtype.fields[name][0], np.floating)
+    ]
+    finite_averages = True
+    for start in range(0, len(float_names), 8):
+        names = float_names[start:start + 8]
+        values = np.column_stack([ordered[name] for name in names]).astype(np.float64, copy=False)
+        # column_stack owns its result, including float64 input: weight in place.
+        values *= mass[:, None]
+        averaged = np.add.reduceat(values, starts, axis=0) / group_mass[:, None]
+        finite_averages &= bool(np.all(np.isfinite(averaged)))
+        for index, name in enumerate(names):
+            output[name] = averaged[:, index]
+    return output, finite_averages
+
+
 def _moment_match_ordered_groups(
     ordered: np.ndarray,
     ordered_errors: np.ndarray,
@@ -538,18 +562,7 @@ def _moment_match_ordered_groups(
     )
     merged_alpha = np.clip(merged_alpha, 1e-7, 1.0 - 1e-7)
 
-    output = ordered[starts].copy()
-    float_names = [
-        name
-        for name in ordered.dtype.names or ()
-        if np.issubdtype(ordered.dtype.fields[name][0], np.floating)
-    ]
-    float_values = np.column_stack([ordered[name] for name in float_names]).astype(
-        np.float64, copy=False
-    )
-    averaged = np.add.reduceat(float_values * mass[:, None], starts, axis=0) / group_mass[:, None]
-    for index, name in enumerate(float_names):
-        output[name] = averaged[:, index]
+    output, finite_averages = _average_group_attributes(ordered, mass, starts, group_mass)
     output["x"], output["y"], output["z"] = centers.T
     output["scale_0"], output["scale_1"], output["scale_2"] = np.log(merged_scales).T
     output["rot_0"], output["rot_1"], output["rot_2"], output["rot_3"] = merged_quaternions.T
@@ -568,7 +581,7 @@ def _moment_match_ordered_groups(
     coverage = np.linalg.norm(offsets, axis=1) + ordered_errors
     errors = np.maximum.reduceat(coverage, starts)
     if not (
-        np.all(np.isfinite(averaged))
+        finite_averages
         and np.all(np.isfinite(centers))
         and np.all(np.isfinite(merged_scales))
         and np.all(np.isfinite(merged_quaternions))
