@@ -58,6 +58,8 @@ the current release status:
 - [`benchmarks/`](benchmarks/) and [`dronegs/benchmarks/`](dronegs/benchmarks/)
 - rejected V4 candidate-cost scratch optimization (runtime not delivered):
   [`benchmarks/gstile-v4-costs-qualification.md`](benchmarks/gstile-v4-costs-qualification.md)
+- rejected directional-opacity refit scratch experiment (runtime not delivered):
+  [`benchmarks/gstile-refit-scratch-qualification.md`](benchmarks/gstile-refit-scratch-qualification.md)
 - superseded fixed-cap quality profile contract:
   [`contracts/quality-profiles-v1.md`](contracts/quality-profiles-v1.md)
 - machine-readable Helenenschacht sparse/RTK evidence:

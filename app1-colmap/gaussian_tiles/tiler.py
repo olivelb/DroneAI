@@ -406,18 +406,15 @@ def _refit_directional_opacity(
     ).astype(np.float64, copy=False)
     source_alpha = _sigmoid(coefficients @ design.T)
     source_area = _ellipsoid_area(scales)
-    # Reuse owned arrays without changing the multiply/reduce/divide order.
-    source_alpha *= source_area[:, None]
-    target_logits = np.add.reduceat(source_alpha, starts, axis=0)
-    # The reduced buffer progresses from optical mass to alpha, then logits.
-    np.divide(
-        target_logits,
-        np.maximum(_ellipsoid_area(merged_scales)[:, None], 1e-30),
-        out=target_logits,
+    directional_mass = np.add.reduceat(
+        source_alpha * source_area[:, None], starts, axis=0
     )
-    np.clip(target_logits, 1e-7, 1.0 - 1e-7, out=target_logits)
-    np.divide(target_logits, 1.0 - target_logits, out=target_logits)
-    np.log(target_logits, out=target_logits)
+    target_alpha = np.clip(
+        directional_mass / np.maximum(_ellipsoid_area(merged_scales)[:, None], 1e-30),
+        1e-7,
+        1.0 - 1e-7,
+    )
+    target_logits = np.log(target_alpha / (1.0 - target_alpha))
     fitted = target_logits @ np.linalg.pinv(design).T
     if not np.all(np.isfinite(fitted)):
         raise RuntimeError("GSTile directional opacity refit produced non-finite values")
