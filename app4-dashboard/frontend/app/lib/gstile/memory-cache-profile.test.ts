@@ -5,15 +5,19 @@ import {
 } from "./range-source";
 import { GsTileMemoryRangeCache } from "./memory-range-cache";
 
-describe("GSTile explicit memory cache profile", () => {
-  it.each([null, undefined, "standard", "", "Desktop", "1536", "Infinity"])(
-    "keeps the conservative default for %s", (value) => {
-      expect(gstileMemoryCacheBytes(value)).toBe(768 * 1024 * 1024);
+describe("GSTile qualified memory cache default", () => {
+  it.each([null, undefined, "desktop", "", "Desktop", "1536", "Infinity"])(
+    "uses the bounded qualified default for %s", (value) => {
+      expect(gstileMemoryCacheBytes(value)).toBe(1536 * 1024 * 1024);
       expect(gstileMemoryCacheBytes(value)).toBe(DEFAULT_GSTILE_MEMORY_CACHE_BYTES);
     },
   );
 
-  it("opts into a fixed 1.5 GiB desktop cap without eager allocation", () => {
+  it("retains the explicit standard rollback", () => {
+    expect(gstileMemoryCacheBytes("standard")).toBe(768 * 1024 * 1024);
+  });
+
+  it("uses a fixed 1.5 GiB desktop cap without eager allocation", () => {
     const bytes = gstileMemoryCacheBytes("desktop");
     expect(bytes).toBe(1536 * 1024 * 1024);
     const cache = new GsTileMemoryRangeCache(bytes, () => undefined);

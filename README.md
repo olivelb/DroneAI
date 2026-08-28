@@ -14,6 +14,10 @@ Splatting, raster generation, optional AI inference and an operator dashboard.
 
 ## Production processes
 
+The GSTile viewer and producer use the [qualified production defaults](docs/contracts/gstile-production-defaults-v1.md):
+merged rendering, a bounded 1,536 MiB RAM cache, adaptive V4 LOD, 2 MiB packs
+and two pack-preparation workers. Previously published bundles remain immutable.
+
 Both processes start with image ingest, feature matching, sparse
 reconstruction and qualified DroneGS training. The dashboard exposes them as
 separate choices:

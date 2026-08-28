@@ -16,11 +16,11 @@ export type GsTileRangeAvailabilityRequest = {
   immutableIdentity?: string;
 };
 
-export const DEFAULT_GSTILE_MEMORY_CACHE_BYTES = 768 * 1024 * 1024;
-/** Explicit desktop experiment; never infer a larger allocation from the browser. */
+export const DEFAULT_GSTILE_MEMORY_CACHE_BYTES = 1536 * 1024 * 1024;
+/** Qualified bounded default, with an explicit smaller rollback; no eager allocation. */
 export const gstileMemoryCacheBytes = (profile?: string | null): number =>
-  profile === "desktop"
-    ? 1536 * 1024 * 1024
+  profile === "standard"
+    ? 768 * 1024 * 1024
     : DEFAULT_GSTILE_MEMORY_CACHE_BYTES;
 
 export const DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS = 300;

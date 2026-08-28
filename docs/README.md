@@ -38,7 +38,8 @@ implemented system as it exists now.
 | Production boundaries and release gates | [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md) |
 | DroneGS architecture and backend boundary | [`dronegs/ARCHITECTURE.md`](dronegs/ARCHITECTURE.md), [`dronegs/BACKENDS.md`](dronegs/BACKENDS.md) |
 | GSTile tiler/renderer performance audit and implementation ledger | [`dronegs/TILER_RENDERER_PERFORMANCE_AUDIT_2026-08-24.md`](dronegs/TILER_RENDERER_PERFORMANCE_AUDIT_2026-08-24.md) |
-| GSTile bounded parallel pack preparation (opt-in) | [`benchmarks/gstile-parallel-preparation-qualification.md`](benchmarks/gstile-parallel-preparation-qualification.md) |
+| GSTile current production defaults and explicit rollbacks | [`contracts/gstile-production-defaults-v1.md`](contracts/gstile-production-defaults-v1.md) |
+| GSTile bounded parallel pack preparation evidence | [`benchmarks/gstile-parallel-preparation-qualification.md`](benchmarks/gstile-parallel-preparation-qualification.md) |
 | GSTile V4 exact pair-matching optimization | [`benchmarks/gstile-v4-pairs-qualification.md`](benchmarks/gstile-v4-pairs-qualification.md) |
 | GSTile V4 exact blocked candidate distances | [`benchmarks/gstile-v4-blocked-costs-qualification.md`](benchmarks/gstile-v4-blocked-costs-qualification.md) |
 | GSTile exact moment averaging in bounded columns | [`benchmarks/gstile-moment-columns-qualification.md`](benchmarks/gstile-moment-columns-qualification.md) |

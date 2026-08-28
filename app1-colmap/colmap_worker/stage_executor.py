@@ -730,6 +730,7 @@ def run_gaussian_viewer_stage(
             merge_partition_buffers_to_ply,
         )
         from gaussian_tiles import GsTileBuildOptions, build_gstile_bundle
+        from shared.gstile_defaults import GSTILE_DEFAULTS_PROFILE
 
         from .stages.gaussian import prepare_gaussian_product_run
 
@@ -772,18 +773,24 @@ def run_gaussian_viewer_stage(
             raise ValueError("gaussian_viewer stage parameters must be an object")
         output_root = workspace / ".droneai" / "gaussian-viewer"
         temporary_root = workspace / ".droneai" / "gaussian-viewer-temporary"
-        result = build_gstile_bundle(
-            source_path,
-            output_root,
-            options=GsTileBuildOptions(
+        defaults = GsTileBuildOptions()
+        build_options = GsTileBuildOptions(
                 leaf_size=int(raw_options.get("leaf_size", 65_536)),
                 chunk_records=int(raw_options.get("chunk_records", 131_072)),
                 maximum_depth=int(raw_options.get("maximum_depth", 48)),
-                pack_target_bytes=(
-                    int(raw_options["pack_target_bytes"])
-                    if raw_options.get("pack_target_bytes") is not None
+                lod_proxy_size=(
+                    int(raw_options.get("lod_proxy_size", defaults.lod_proxy_size))
+                    if raw_options.get("lod_proxy_size", defaults.lod_proxy_size) is not None
                     else None
                 ),
+                lod_proxy_strategy=raw_options.get("lod_proxy_strategy", defaults.lod_proxy_strategy),
+                pack_target_bytes=(
+                    int(raw_options.get("pack_target_bytes", defaults.pack_target_bytes))
+                    if raw_options.get("pack_target_bytes", defaults.pack_target_bytes) is not None
+                    else None
+                ),
+                pack_workers=raw_options.get("pack_workers", defaults.pack_workers),
+                pack_pending_bytes=raw_options.get("pack_pending_bytes", defaults.pack_pending_bytes),
                 temporary_root=temporary_root,
                 cancellation_check=control.raise_if_cancelled,
                 invisible_gaussian_scale_threshold=(
@@ -794,8 +801,8 @@ def run_gaussian_viewer_stage(
                 visibility_opacity_threshold=float(
                     raw_options.get("filter_visibility_opacity", 0.05)
                 ),
-            ),
         )
+        result = build_gstile_bundle(source_path, output_root, options=build_options)
         control.raise_if_cancelled()
         if artifact.partition_models:
             source_path.unlink()
@@ -812,6 +819,16 @@ def run_gaussian_viewer_stage(
             role_overrides={"manifest.json": "gaussian-viewer-manifest"},
         )
         viewer_metadata: dict[str, Any] = {
+            "build_configuration": {
+                "defaults_profile": GSTILE_DEFAULTS_PROFILE,
+                "leaf_size": build_options.leaf_size,
+                "chunk_records": build_options.chunk_records,
+                "lod_proxy_size": build_options.lod_proxy_size,
+                "lod_proxy_strategy": build_options.lod_proxy_strategy,
+                "pack_target_bytes": build_options.pack_target_bytes,
+                "pack_workers": build_options.pack_workers,
+                "pack_pending_bytes": build_options.pack_pending_bytes,
+            },
             "manifest_key": published.manifest_key,
             "file_count": published.file_count,
             "viewer_manifest_file": "manifest.json",
@@ -847,6 +864,7 @@ def run_gaussian_viewer_stage(
             },
             provenance={
                 "stage_adapter": "gaussian-viewer-v1",
+                "build_configuration": viewer_metadata["build_configuration"],
                 "tiler_profile": manifest["profile"],
                 "lod_profile": manifest["statistics"]["lod"],
                 "source_merge": source_merge,

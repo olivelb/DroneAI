@@ -163,6 +163,7 @@ def test_parallel_failure_never_publishes_and_joins_workers(tmp_path, monkeypatc
     with pytest.raises((ValueError, OSError, RuntimeError), match="failed|disk full|cancelled"):
         build_gstile_bundle(source, target, options=GsTileBuildOptions(
             leaf_size=2048, chunk_records=2048, pack_workers=4,
+            lod_proxy_size=None, pack_target_bytes=None,
             progress_callback=progress, cancellation_check=cancel))
     assert not target.exists()
     assert not (tmp_path / ".bundle.partial").exists()
@@ -179,6 +180,7 @@ def test_parallel_queue_telemetry_and_oversize_keep_bundle_identical(tmp_path):
         events = []
         results.append(build_gstile_bundle(source, tmp_path / str(cap), options=GsTileBuildOptions(
             leaf_size=4096, chunk_records=4096, pack_workers=4,
+            lod_proxy_size=None, pack_target_bytes=None,
             pack_pending_bytes=cap, progress_callback=events.append)))
         telemetry = next(event for event in events if event["event"] == "pack_preparation")
         assert telemetry["peakPendingBytes"] <= cap
@@ -294,6 +296,7 @@ def test_bundle_filters_only_invisible_giants_before_partition(tmp_path: Path) -
             leaf_size=1_024,
             chunk_records=1_024,
             invisible_gaussian_scale_threshold=0.05,
+            lod_proxy_size=None,
             visibility_opacity_threshold=0.05,
         ),
     )
@@ -351,6 +354,7 @@ def test_tiler_is_deterministic_and_spatially_bounded(tmp_path: Path) -> None:
         leaf_size=1_024,
         chunk_records=1_024,
         progress_callback=events.append,
+        lod_proxy_size=None, pack_target_bytes=None,
     )
     first = build_gstile_bundle(source, tmp_path / "first", options=options)
     second = build_gstile_bundle(source, tmp_path / "second", options=options)
@@ -396,6 +400,7 @@ def test_tiler_aggregates_adjacent_tiles_losslessly_and_deterministically(
         leaf_size=1_024,
         chunk_records=1_024,
         pack_target_bytes=220_000,
+        lod_proxy_size=None,
     )
     first = build_gstile_bundle(source, tmp_path / "first", options=options)
     second = build_gstile_bundle(source, tmp_path / "second", options=options)
@@ -450,6 +455,7 @@ def test_manifest_rejects_overlapping_aggregate_tile_ranges(tmp_path: Path) -> N
             leaf_size=1_024,
             chunk_records=1_024,
             pack_target_bytes=220_000,
+            lod_proxy_size=None,
         ),
     )
     manifest = json.loads(result.manifest_path.read_text("ascii"))
@@ -540,6 +546,7 @@ def test_repack_preserves_every_canonical_tile_payload(tmp_path: Path) -> None:
             leaf_size=1_024,
             chunk_records=1_024,
             lod_proxy_size=1_024,
+            pack_target_bytes=None,
         ),
     )
     first = repack_gstile_bundle(
@@ -623,6 +630,7 @@ def test_stratified_lod_profile_is_deterministic_and_preserves_exact_leaves(
         chunk_records=1_024,
         lod_proxy_size=1_024,
         lod_proxy_strategy="spatial-stratified",
+        pack_target_bytes=None,
     )
     first = build_gstile_bundle(source, tmp_path / "first", options=options)
     second = build_gstile_bundle(source, tmp_path / "second", options=options)
@@ -634,6 +642,7 @@ def test_stratified_lod_profile_is_deterministic_and_preserves_exact_leaves(
             chunk_records=1_024,
             lod_proxy_size=1_024,
             lod_proxy_strategy="minhash",
+            pack_target_bytes=None,
         ),
     )
     first_manifest = json.loads(first.manifest_path.read_text("ascii"))
@@ -745,7 +754,8 @@ def test_moment_matched_lod_profile_is_explicit(tmp_path: Path) -> None:
     result = build_gstile_bundle(
         source,
         tmp_path / "moment",
-        options=GsTileBuildOptions(leaf_size=1_024, chunk_records=1_024, lod_proxy_size=1_024),
+        options=GsTileBuildOptions(leaf_size=1_024, chunk_records=1_024, lod_proxy_size=1_024,
+                                  lod_proxy_strategy="moment-matched"),
     )
     manifest = json.loads(result.manifest_path.read_text("ascii"))
     assert manifest["profile"].endswith("moment-lod-v3")

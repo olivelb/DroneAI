@@ -15,6 +15,13 @@ from typing import Any, Callable, Iterator, Literal
 import numpy as np
 
 from gaussian_ortho.ply_stream import BinaryPlyLayout, read_binary_ply_layout
+from shared.gstile_defaults import (
+    GSTILE_LOD_PROXY_SIZE,
+    GSTILE_LOD_PROXY_STRATEGY,
+    GSTILE_PACK_PENDING_BYTES,
+    GSTILE_PACK_TARGET_BYTES,
+    GSTILE_PACK_WORKERS,
+)
 from shared.gstile_manifest import (
     GSTILE_ADAPTIVE_LOD_PROFILE,
     GSTILE_LOD_PROFILE,
@@ -49,15 +56,15 @@ class GsTileBuildOptions:
     crs: str | None = None
     cancellation_check: Callable[[], None] | None = None
     progress_callback: Callable[[dict[str, Any]], None] | None = None
-    lod_proxy_size: int | None = None
+    lod_proxy_size: int | None = GSTILE_LOD_PROXY_SIZE
     lod_proxy_strategy: Literal[
         "adaptive-moment", "moment-matched", "spatial-stratified", "minhash"
-    ] = "moment-matched"
+    ] = GSTILE_LOD_PROXY_STRATEGY
     invisible_gaussian_scale_threshold: float | None = None
     visibility_opacity_threshold: float = 0.05
-    pack_target_bytes: int | None = None
-    pack_workers: int = 1
-    pack_pending_bytes: int = 128 * 1024**2
+    pack_target_bytes: int | None = GSTILE_PACK_TARGET_BYTES
+    pack_workers: int = GSTILE_PACK_WORKERS
+    pack_pending_bytes: int = GSTILE_PACK_PENDING_BYTES
 
     def validate(self) -> None:
         if type(self.pack_workers) is not int or self.pack_workers not in (1, 2, 4):
