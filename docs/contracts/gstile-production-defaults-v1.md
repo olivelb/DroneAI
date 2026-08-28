@@ -81,6 +81,10 @@ only the qualification viewer is running.
 
 ## Evidence and limits
 
+The [2026-08-28 promotion and BIGZEN rollout record](../benchmarks/gstile-production-defaults-qualification.md)
+records integrated parity on both hosts, target image identities, the installed
+CLI, actual Chrome loading and the exercised container rollback.
+
 - [RAM pilot](../benchmarks/gstile-memory-profile-qualification.md): accepted
   visual conformity and revisits; its recorded network regression is not erased
   by promotion (subsequent freshness fixes remain in the production tree).
