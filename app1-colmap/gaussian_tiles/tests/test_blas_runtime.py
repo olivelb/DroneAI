@@ -71,9 +71,8 @@ print(json.dumps({'timeout': os.environ['OPENBLAS_THREAD_TIMEOUT']}))
     assert json.loads(result.stdout)["timeout"] == ("16" if timeout is None else timeout)
 
 
-@pytest.mark.parametrize("strategy", ["moment-matched", "adaptive-moment"])
 @pytest.mark.parametrize("workers", [1, 2])
-def test_complete_bundle_matches_backend_default_timeout(tmp_path, strategy, workers):
+def test_complete_bundle_matches_backend_default_timeout(tmp_path, workers):
     source = tmp_path / "source.ply"
     _write_ply(source, _records(8193))
     inherited = {k: v for k, v in os.environ.items() if k not in CONTROLS}
@@ -87,7 +86,7 @@ def test_complete_bundle_matches_backend_default_timeout(tmp_path, strategy, wor
             env["OPENBLAS_THREAD_TIMEOUT"] = timeout
         result = subprocess.run(
             [sys.executable, str(SCRIPT), str(source), str(target), "--leaf-size", "2048",
-             "--chunk-records", "2048", "--lod-proxy-size", "1024", "--lod-proxy-strategy", strategy,
+             "--chunk-records", "2048", "--lod-proxy-size", "1024", "--lod-proxy-strategy", "adaptive-moment",
              "--pack-workers", str(workers), "--pack-target-bytes", "262144", "--progress-jsonl"],
             cwd=REPOSITORY, env=env, capture_output=True, text=True, timeout=60,
         )

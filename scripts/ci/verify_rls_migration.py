@@ -64,7 +64,7 @@ def seed() -> None:
                     event_id, event_type, topic, payload, status, attempts,
                     available_at, created_at
                 ) VALUES (
-                    :event_id, 'mission', 'vols-bruts', CAST(:payload AS json),
+                    :event_id, 'control', 'pipeline-control', CAST(:payload AS json),
                     'pending', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
                 """
@@ -72,7 +72,7 @@ def seed() -> None:
             {
                 "event_id": EVENT_ID,
                 "payload": json.dumps(
-                    {"event_type": "mission", "vol_id": MISSION_ID}
+                    {"event_type": "control", "vol_id": MISSION_ID, "command": "cancel"}
                 ),
             },
         )

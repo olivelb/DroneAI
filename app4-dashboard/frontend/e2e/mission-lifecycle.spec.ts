@@ -1,12 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
 
 type ApiOptions = {
+  analysisRuns?: Record<string, unknown>[];
+  onAnalysisAction?: (action: string, payload: Record<string, unknown>) => void;
   missionStatus?: "processing" | "cancelled" | "success";
   sessionAuthenticated?: boolean;
   onSessionCreate?: (apiKey: string) => void;
   onMissionLaunch?: (payload: Record<string, unknown>) => void;
   onMissionCancel?: (volId: string) => void;
   onMapExport?: (url: string) => void;
+  onMapVectors?: (sources: string[]) => void;
   onGcpPointUpdate?: (payload: Record<string, unknown>) => void;
   onGcpObservationUpdate?: (payload: Record<string, unknown>) => void;
   onGcpCandidateRefresh?: () => void;
@@ -79,7 +82,17 @@ const gcpFeature = (overrides: Record<string, unknown> = {}) => ({
   },
 });
 
+
+const analysisFixture = (overrides: Record<string, unknown> = {}) => ({
+  run_id: "analysis-new", vol_id: "mission-existing", name: "Vehicles", description: "",
+  color: "#f43f5e", tags: [], backend: "yolo", model_variant: "yolo26l", prompt: "",
+  classes: [], confidence: 0.3, tile_size: 1024, persist_results: true,
+  status: "queued", phase: "queued", progress: 0, total_tiles: 0, tiles_completed: 0,
+  detection_count: 0, retry_count: 0, result_s3_key: null, ...overrides,
+});
+
 async function mockApi(page: Page, options: ApiOptions = {}) {
+  let analysisRuns = options.analysisRuns ?? [];
   const missionStatus = options.missionStatus ?? "success";
   const missionStep =
     missionStatus === "cancelled"
@@ -135,7 +148,6 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
       await route.fulfill(json({
         pipelines: {
           modern: { orthophoto_mode: "map" },
-          legacy: { orthophoto_mode: "map" },
         },
         processes: [
           {
@@ -147,11 +159,11 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
           },
         ],
         metadata: {},
-        quality_profile_default: "normal-v1",
+        quality_profile_default: "normal-v3",
         quality_profiles: [
           {
-            id: "fast-v1",
-            version: 1,
+            id: "fast-v2",
+            version: 2,
             name: "Fast",
             description: "Fast production profile",
             parameters: {
@@ -162,27 +174,27 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
             },
           },
           {
-            id: "normal-v1",
-            version: 1,
+            id: "normal-v3",
+            version: 3,
             name: "Normal",
             description: "Balanced production profile",
             parameters: {
               feature_max_image_size: "2400",
               feature_max_num_features: "4096",
               gs_iterations: "15000",
-              gs_cap_max: "3000000",
+              gs_cap_max: "8000000",
             },
           },
           {
-            id: "high-quality-v1",
-            version: 1,
+            id: "high-quality-v4",
+            version: 4,
             name: "High Quality",
             description: "High quality production profile",
             parameters: {
               feature_max_image_size: "4096",
               feature_max_num_features: "16384",
               gs_iterations: "30000",
-              gs_cap_max: "5000000",
+              gs_cap_max: "6000000",
             },
           },
         ],
@@ -268,10 +280,29 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
       }));
       return;
     }
-    if (url.pathname === "/maps/mission-existing/analyses") {
-      await route.fulfill(json({ runs: [] }));
+
+    const analysisAction = url.pathname.match(/^\/maps\/mission-existing\/analyses\/([^/]+)\/(cancel|retry)$/);
+    if (analysisAction && request.method() === "POST") {
+      const [, runId, action] = analysisAction;
+      options.onAnalysisAction?.(action, { run_id: runId });
+      const run = analysisRuns.find((item) => item.run_id === runId)!;
+      Object.assign(run, { status: action === "cancel" ? "cancelled" : "queued", phase: action === "cancel" ? "cancelled" : "queued" });
+      await route.fulfill(json(run, 202));
       return;
     }
+    if (url.pathname === "/maps/mission-existing/analyses") {
+      if (request.method() === "POST") {
+        const payload = request.postDataJSON() as Record<string, unknown>;
+        options.onAnalysisAction?.("create", payload);
+        const run = analysisFixture(payload);
+        analysisRuns = [run, ...analysisRuns];
+        await route.fulfill(json(run, 202));
+      } else {
+        await route.fulfill(json({ runs: analysisRuns }));
+      }
+      return;
+    }
+
     if (url.pathname === "/maps/mission-existing/metadata/ortho") {
       await route.fulfill(json({
         bounds: { wgs84: [2.0, 48.0, 2.1, 48.1] },
@@ -283,6 +314,7 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
       return;
     }
     if (url.pathname === "/maps/mission-existing/vectors.geojson") {
+      options.onMapVectors?.((url.searchParams.get("sources") ?? "").split(","));
       await route.fulfill(json({
         type: "FeatureCollection",
         features: [],
@@ -395,7 +427,7 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
           current_step: missionStep,
           progress: missionProgress,
           pipeline: "modern",
-          quality_profile: "normal-v1",
+          quality_profile: "normal-v3",
           attempt_count: 1,
           updated_at: "2026-08-09T12:00:00Z",
           overall_status: missionStatus,
@@ -415,12 +447,12 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
         current_step: missionStep,
         progress: missionProgress,
         pipeline: "modern",
-        quality_profile: "normal-v1",
+        quality_profile: "normal-v3",
         attempt_count: 1,
         updated_at: "2026-08-09T12:00:00Z",
         overall_status: missionStatus,
         is_stale: false,
-        parameters: { quality_profile: "normal-v1" },
+        parameters: { quality_profile: "normal-v3" },
         attempts: [{ attempt: 0, status: missionStatus }],
         phases: {
           COLMAP: {
@@ -440,7 +472,17 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
               ? "Published"
               : `Mission ${missionStatus}`,
         }],
-        products: [{ kind: "orthomosaic", s3_key: "missions/mission-existing/orthomosaic.tif" }],
+        products: [{
+          kind: "raster_product_workspace",
+          artifact_id: "raster-current",
+          stage_run_id: "raster-run-current",
+          s3_key: "organizations/e2e-organization/missions/mission-existing/artifacts/raster/manifest.json",
+          checksum_sha256: "a".repeat(64),
+          metadata: {
+            ortho_file: "orthomosaic.tif",
+            height_file: "orthomosaic.height.tif",
+          },
+        }],
       }));
       return;
     }
@@ -473,7 +515,7 @@ test("an operator selects a dataset and launches a mission", async ({ page }) =>
     vol_id: "mission-e2e",
     input_dataset: "datasets/survey-set",
     pipeline: "modern",
-    quality_profile: "normal-v1",
+    quality_profile: "normal-v3",
     work_drive: "local",
     phases: [
       "reconstruction",
@@ -496,7 +538,7 @@ test("the owner-scoped catalogue opens a durable mission detail", async ({ page 
   await expect(page).toHaveURL(/\/missions\/mission-existing$/);
   await expect(page.getByRole("heading", { name: "mission-existing" })).toBeVisible();
   await expect(page.getByText("Published")).toBeVisible();
-  await expect(page.getByText("orthomosaic", { exact: true })).toBeVisible();
+  await expect(page.getByText("raster_product_workspace", { exact: true })).toBeVisible();
 });
 
 test("the English default can be switched to persistent French", async ({ page }) => {
@@ -540,11 +582,11 @@ test("a versioned quality profile applies its effective parameters", async ({ pa
   await page.getByTitle("Select as input dataset").click();
   await page.getByLabel("Mission ID").fill("mission-fast-profile");
   await page.getByRole("button", { name: /2\. Align/ }).click();
-  await page.getByRole("button", { name: /Fast fast-v1/ }).click();
+  await page.getByRole("button", { name: /Fast fast-v2/ }).click();
   await page.getByRole("button", { name: "Launch pipeline" }).click();
 
   await expect.poll(() => launched).toMatchObject({
-    quality_profile: "fast-v1",
+    quality_profile: "fast-v2",
     colmap_params: {
       feature_max_image_size: "1600",
       feature_max_num_features: "2048",
@@ -619,9 +661,11 @@ test("live mission updates recover after a WebSocket disconnect", async ({ page 
 
 test("a completed mission exports its vectors as a projected GeoPackage", async ({ page }) => {
   let exportedUrl = "";
+  const vectorSources: string[][] = [];
   await mockApi(page, {
     missionStatus: "success",
     onMapExport: (url) => { exportedUrl = url; },
+    onMapVectors: (sources) => { vectorSources.push(sources); },
   });
   await page.addInitScript(() => {
     Object.defineProperty(window, "showSaveFilePicker", {
@@ -635,6 +679,10 @@ test("a completed mission exports its vectors as a projected GeoPackage", async 
   await page.goto("/");
   await expect(page.getByText("success", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: /5\. Explore/ }).click();
+  await expect.poll(() => vectorSources.length).toBeGreaterThan(0);
+  expect(vectorSources.some((sources) => sources.includes("pipeline"))).toBe(true);
+  expect(vectorSources.flat()).not.toContain("legacy");
+  await expect(page.getByRole("button", { name: "Elevation map", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "Export", exact: true }).click();
   const exportButton = page.getByRole("button", {
     name: "Save layer",
@@ -693,4 +741,53 @@ test("an operator edits a GCP and marks its native image observation", async ({ 
   });
   expect(Number(observationUpdate?.pixel_x)).toBeGreaterThan(0);
   expect(Number(observationUpdate?.pixel_y)).toBeGreaterThan(0);
+});
+
+test("an operator creates and cancels a standalone analysis without cancelling the mission", async ({ page }) => {
+  const actions: Array<{ action: string; payload: Record<string, unknown> }> = [];
+  let missionCancelled = false;
+  await mockApi(page, {
+    missionStatus: "success",
+    onAnalysisAction: (action, payload) => { actions.push({ action, payload }); },
+    onMissionCancel: () => { missionCancelled = true; },
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: /5\. Explore/ }).click();
+  await page.getByRole("button", { name: "AI", exact: true }).click();
+  await page.getByRole("button", { name: "New GeoTIFF analysis" }).click();
+  await page.getByPlaceholder("Layer name").fill("Independent vehicles");
+  await page.locator("select").filter({ has: page.locator('option[value="yolo26l"]') }).selectOption("yolo26l");
+  await page.getByRole("button", { name: "Launch", exact: true }).click();
+  await expect(page.getByText("Independent vehicles", { exact: true })).toBeVisible();
+  await expect.poll(() => actions[0]).toMatchObject({
+    action: "create", payload: { name: "Independent vehicles", backend: "yolo", persist_results: true },
+  });
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect.poll(() => actions.at(-1)?.action).toBe("cancel");
+  await expect(page.getByText("cancelled", { exact: true }).first()).toBeVisible();
+  expect(missionCancelled).toBe(false);
+});
+
+test("analysis retry and GeoJSON download keep the mission-scoped API contract", async ({ page }) => {
+  const actions: string[] = [];
+  await mockApi(page, {
+    missionStatus: "success",
+    analysisRuns: [
+      analysisFixture({ run_id: "analysis-failed", status: "failed", phase: "finalization_failed", name: "Failed vehicles" }),
+      analysisFixture({
+        run_id: "analysis-complete", status: "completed", phase: "completed", name: "Published vehicles",
+        result_s3_key: "organizations/e2e-organization/blobs/sha256/aa/result", progress: 100,
+      }),
+    ],
+    onAnalysisAction: (action) => { actions.push(action); },
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: /5\. Explore/ }).click();
+  await page.getByRole("button", { name: "AI", exact: true }).click();
+  await expect(page.getByRole("link", { name: "GeoJSON", exact: true })).toHaveAttribute(
+    "href", "http://127.0.0.1:30080/maps/mission-existing/analyses/analysis-complete/vectors.geojson?limit=50000",
+  );
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect.poll(() => actions).toEqual(["retry"]);
+  await expect(page.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
 });

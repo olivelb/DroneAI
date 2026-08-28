@@ -98,7 +98,7 @@ def test_dronegs_adapter_passes_validated_production_tuning():
     training_request = request(
         dronegs=DroneGSTuning(
             profile_id="custom",
-            optimizer_profile="dev38-staged-rotation008-absgrad050-fastgs",
+            optimizer_profile="reference-absolute",
             pruning_policy="spatial-bounds",
             raster_profile="fastgs",
             background_mode="random",
@@ -116,7 +116,7 @@ def test_dronegs_adapter_passes_validated_production_tuning():
 
     command = DroneGSBackend("/opt/dronegs").build_command(training_request)
 
-    assert command[command.index("--optimizer-profile") + 1] == ("dev38-staged-rotation008-absgrad050-fastgs")
+    assert command[command.index("--optimizer-profile") + 1] == ("reference-absolute")
     assert command[command.index("--pruning-policy") + 1] == "spatial-bounds"
     assert command[command.index("--raster-profile") + 1] == "fastgs"
     assert command[command.index("--background-mode") + 1] == "random"
@@ -143,9 +143,18 @@ def test_dronegs_tuning_rejects_non_boolean_adaptive_growth():
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("background_mode", "white"), ("loss_pixel_mask", "foreground")],
+    [
+        ("background_mode", "white"),
+        ("loss_pixel_mask", "foreground"),
+        ("optimizer_profile", "dronegs-dev16"),
+        ("optimizer_profile", "reference-absolute-absgrad025"),
+        ("optimizer_profile", "dev38-staged-rotation008-absgrad050-fastgs"),
+        ("raster_profile", "auto"),
+        ("raster_profile", "bounded"),
+        ("pruning_policy", "original"),
+    ],
 )
-def test_dronegs_tuning_rejects_invalid_image_objective_policy(field, value):
+def test_dronegs_tuning_rejects_invalid_or_retired_policy(field, value):
     with pytest.raises(ValueError, match=field):
         DroneGSTuning(**{field: value})
 

@@ -97,7 +97,7 @@ def test_reconstruction_adapter_runs_aligned_pipeline_and_publishes_workspace(
             "organizations/acme-survey/missions/quarry-001"
         )
         assert mission_parameters["stage_parameters"] == {
-            "gcp_bundle": {"schema_version": 1}
+            "gcp_bundle": {"schema_version": 2, "organization_id": "acme-survey"}
         }
         Path(workspace, "dense", "sparse").mkdir(parents=True)
         Path(workspace, "dense", "sparse", "cameras.bin").write_bytes(b"model")
@@ -121,7 +121,7 @@ def test_reconstruction_adapter_runs_aligned_pipeline_and_publishes_workspace(
 
     published_prefix = {}
 
-    def publish(workspace, prefix, cancellation_check):
+    def publish(workspace, prefix, cancellation_check, **kwargs):
         calls.append("publish")
         cancellation_check()
         published_prefix["value"] = prefix
@@ -152,7 +152,7 @@ def test_reconstruction_adapter_runs_aligned_pipeline_and_publishes_workspace(
     control = FakeControl()
 
     result = stage_executor.run_reconstruction_stage(
-        _context(parameters={"gcp_bundle": {"schema_version": 1}}),
+        _context(parameters={"gcp_bundle": {"schema_version": 2, "organization_id": "acme-survey"}}),
         control,
     )
 
@@ -192,7 +192,7 @@ def test_reconstruction_adapter_cleans_workspace_after_failure(tmp_path, monkeyp
     assert not (tmp_path / "work" / ("a" * 32)).exists()
 
 
-def test_v2_workspace_publication_preserves_exact_parent_and_roles(
+def test_v3_workspace_publication_preserves_exact_parent_and_roles(
     tmp_path,
     monkeypatch,
 ):
@@ -200,7 +200,7 @@ def test_v2_workspace_publication_preserves_exact_parent_and_roles(
     workspace.mkdir()
     captured = {}
 
-    def publish_v2(workspace, prefix, **kwargs):
+    def publish_v3(workspace, prefix, **kwargs):
         captured.update(kwargs)
         return PublishedWorkspace(
             manifest_key=f"{prefix}/manifest.json",
@@ -210,12 +210,7 @@ def test_v2_workspace_publication_preserves_exact_parent_and_roles(
             file_count=1,
         )
 
-    monkeypatch.setattr(
-        stage_executor,
-        "artifact_manifest_v2_write_enabled",
-        lambda: True,
-    )
-    monkeypatch.setattr(stage_executor, "publish_workspace_v2", publish_v2)
+    monkeypatch.setattr(stage_executor, "publish_workspace", publish_v3)
     context = _context(
         stage="gaussian_training",
         input_kind="reconstruction_workspace",
@@ -259,7 +254,7 @@ def _mock_workspace_transfer(monkeypatch, calls):
             manifest_size_bytes=77,
         )
 
-    def publish(workspace, prefix, cancellation_check):
+    def publish(workspace, prefix, cancellation_check, **kwargs):
         calls.append("publish")
         cancellation_check()
         return PublishedWorkspace(
@@ -285,7 +280,7 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
     checkpoint = tmp_path / "trainer" / "final.ply"
     checkpoint.parent.mkdir()
     checkpoint.write_bytes(b"unfiltered")
-    config = SimpleNamespace(dronegs_profile_id="normal-v1")
+    config = SimpleNamespace(dronegs_profile_id="normal-v3")
     monkeypatch.setattr(
         gaussian_stage,
         "prepare_gaussian_product_run",
@@ -330,7 +325,7 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
     assert result.metadata["gaussian_count"] == 1_500_000
     assert result.provenance["trainer_binary_sha256"] == "d" * 64
     assert result.provenance["workspace_transfer"]["restore"] == {
-        "manifest_schema_version": 1,
+        "manifest_schema_version": 3,
         "logical_bytes": 123,
         "file_count": 2,
         "transferred_bytes": 200,
@@ -356,7 +351,7 @@ def test_gaussian_filtering_adapter_never_overwrites_training_model(
     config = SimpleNamespace(
         sh_degree=3,
         opacity_sh_enabled=True,
-        dronegs_profile_id="normal-v1",
+        dronegs_profile_id="normal-v3",
     )
     monkeypatch.setattr(
         gaussian_stage,
@@ -454,7 +449,7 @@ def test_rasterization_adapter_qualifies_filtered_model_without_refiltering(
     config = SimpleNamespace(
         sh_degree=3,
         opacity_sh_enabled=True,
-        dronegs_profile_id="normal-v1",
+        dronegs_profile_id="normal-v3",
     )
     monkeypatch.setattr(
         gaussian_stage,
@@ -566,9 +561,9 @@ def test_rasterization_adapter_qualifies_filtered_model_without_refiltering(
 
 @pytest.mark.parametrize("raw_options", [
     {},
-    {"leaf_size": 1024, "lod_proxy_size": 1024, "lod_proxy_strategy": "moment-matched",
-     "pack_target_bytes": None, "pack_workers": 1},
-    {"lod_proxy_size": None, "pack_target_bytes": None, "pack_workers": 1},
+    {"leaf_size": 1024, "lod_proxy_size": 1024, "lod_proxy_strategy": "adaptive-moment",
+     "pack_target_bytes": 262144, "pack_workers": 1},
+    {"lod_proxy_size": 16384, "pack_target_bytes": 2097152, "pack_workers": 1},
 ])
 @pytest.mark.parametrize("real_tiler", [False, True])
 def test_gaussian_viewer_adapter_builds_product_only_from_filtered_model(
@@ -587,7 +582,7 @@ def test_gaussian_viewer_adapter_builds_product_only_from_filtered_model(
     _mock_workspace_transfer(monkeypatch, calls)
     state = (SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
     monkeypatch.setattr(stage_executor, "load_reconstruction_state", lambda _path: state)
-    config = SimpleNamespace(dronegs_profile_id="normal-v1")
+    config = SimpleNamespace(dronegs_profile_id="normal-v3")
     monkeypatch.setattr(
         gaussian_stage,
         "prepare_gaussian_product_run",

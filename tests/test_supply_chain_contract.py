@@ -114,7 +114,6 @@ def test_cuda_runtimes_refresh_fixable_openssl_packages() -> None:
 
 def test_python_runtime_bases_and_artifacts_are_immutable() -> None:
     runtime_dockerfiles = [
-        ROOT / "app3-processing" / "Dockerfile",
         ROOT / "app4-dashboard" / "api" / "Dockerfile",
     ]
     for path in runtime_dockerfiles:

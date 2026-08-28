@@ -36,7 +36,7 @@ class MissionParams(BaseModel):
 
     vol_id: str
     input_dataset: str
-    pipeline: Literal["modern", "legacy"] = "modern"
+    pipeline: Literal["modern"] = "modern"
     quality_profile: QualityProfileId = DEFAULT_QUALITY_PROFILE_ID
     tile_size: int = Field(default=1024, ge=256, le=4096)
     ai_confidence: float = Field(default=0.5, ge=0.0, le=1.0)

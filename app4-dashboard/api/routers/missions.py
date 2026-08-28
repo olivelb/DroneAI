@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 
 from shared.cancellation import mark_cancellation_requested
-from shared.config import TOPIC_CONTROL, TOPIC_MISSION
+from shared.config import TOPIC_CONTROL
 from shared.database import Mission, MissionStageRun, get_session
 from shared.facade_process import product_process_catalog
 from shared.inbox_outbox import enqueue_outbox
@@ -26,7 +26,6 @@ from shared.tenancy import (
 from shared.quality_profiles import (
     DEFAULT_QUALITY_PROFILE_ID,
     profile_overrides_for_new_mission,
-    quality_profile_candidates_enabled,
     quality_profile_for_new_mission,
     selectable_quality_profiles,
 )
@@ -39,16 +38,12 @@ from ..dataset_access import get_owned_dataset
 from ..mission_access import mission_query, resolve_owner_subject
 from ..messaging import (
     build_cancel_event,
-    build_new_mission_event,
-    build_resume_event,
 )
 from ..mission_state import (
     MissionStateResult,
-    ResumeResponse,
     StatusSummary,
     get_mission_state,
     get_status_summary,
-    prepare_resume_in_session,
 )
 from ..schemas import MissionParams
 from ..security import (
@@ -136,7 +131,8 @@ def _find_mission(
         vol_id=vol_id,
     ).filter(Mission.vol_id == vol_id)
     if for_update:
-        query = query.with_for_update()
+        # Non-key mission updates must not block publishing child-artifact FKs.
+        query = query.with_for_update(key_share=True)
     return cast(MissionMutationRecord | None, query.first())
 
 
@@ -359,64 +355,6 @@ def _delete_mission(
     }
 
 
-@router.post(
-    "/mission/resume",
-    dependencies=[Depends(require_operator)],
-)
-def resume_mission(
-    vol_id: str,
-    principal: Annotated[Principal, Depends(require_operator)],
-    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
-) -> ResumeResponse:
-    return _resume_mission(vol_id, principal, owner_subject)
-
-
-def _resume_mission(
-    vol_id: str,
-    principal: Principal,
-    owner_subject: str | None = None,
-) -> ResumeResponse:
-    try:
-        owner = _resolve_owner_for_direct_lookup(
-            principal,
-            owner_subject,
-            action="resume",
-            vol_id=vol_id,
-        )
-        with get_session() as session:
-            payload, response = prepare_resume_in_session(
-                session,
-                vol_id,
-                owner,
-                principal.organization_id,
-            )
-            if payload is not None:
-                enqueue_outbox(
-                    session,
-                    topic=TOPIC_MISSION,
-                    event=build_resume_event(payload),
-                    key=tenant_mission_key(principal.organization_id, vol_id),
-                )
-    except HTTPException:
-        raise
-    except Exception as error:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Unable to queue mission resume: {error}",
-        ) from error
-    if payload is None:
-        code = (
-            status.HTTP_404_NOT_FOUND
-            if "not found" in response.get("message", "").lower()
-            else status.HTTP_409_CONFLICT
-        )
-        raise HTTPException(
-            status_code=code,
-            detail=response.get("message", "Mission cannot be resumed"),
-        )
-    return response
-
-
 @router.get("/mission/parameters")
 def mission_parameters() -> MissionParametersResponse:
     work_drives = configured_work_drives()
@@ -424,7 +362,7 @@ def mission_parameters() -> MissionParametersResponse:
     work_drive_default = os.getenv("WORK_DRIVE_DEFAULT", "").strip()
     if work_drive_default not in configured_names:
         work_drive_default = work_drives[0]["name"] if work_drives else ""
-    profiles = selectable_quality_profiles(include_candidates=quality_profile_candidates_enabled())
+    profiles = selectable_quality_profiles()
     return {
         "pipelines": PIPELINE_DEFAULTS,
         "processes": product_process_catalog(),
@@ -454,6 +392,11 @@ def _start_mission(
     params: MissionParams,
     principal: Principal,
 ) -> StartMissionResponse:
+    if not stage_jobs_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Mission execution requires Stage Jobs",
+        )
     organization_id = getattr(
         principal,
         "organization_id",
@@ -488,7 +431,7 @@ def _start_mission(
             if existing is not None:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail=(f"Mission {params.vol_id} already exists; use the resume endpoint for an existing mission"),
+                    detail=(f"Mission {params.vol_id} already exists; retry an individual stage for an existing mission"),
                 )
             dataset = get_owned_dataset(
                 session,
@@ -521,19 +464,13 @@ def _start_mission(
             session.add(mission)
             session.flush()
             initialize_stage_runs(session, mission, payload)
-            if not stage_jobs_enabled():
-                enqueue_outbox(
-                    session,
-                    topic=TOPIC_MISSION,
-                    event=build_new_mission_event(payload),
-                    key=tenant_mission_key(organization_id, params.vol_id),
-                )
+
     except HTTPException:
         raise
     except IntegrityError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(f"Mission {params.vol_id} already exists; choose a new mission ID or use resume"),
+            detail=(f"Mission {params.vol_id} already exists; choose a new mission ID or retry an individual stage"),
         ) from error
     except Exception as error:
         raise HTTPException(

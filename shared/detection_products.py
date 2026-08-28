@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -22,6 +23,18 @@ from shared.detection_geometry import (
 
 DetectionRecord = dict[str, Any]
 JsonObject = dict[str, Any]
+
+
+def dedupe_configured(
+    detections: list[DetectionRecord],
+) -> list[DetectionRecord]:
+    """Apply the deployment-configured overlap thresholds."""
+
+    return dedupe_mission_detections(
+        detections,
+        center_threshold=float(os.getenv("UNTILER_DEDUPE_CENTER_THRESHOLD", "40")),
+        iou_threshold=float(os.getenv("UNTILER_DEDUPE_IOU_THRESHOLD", "0.05")),
+    )
 
 
 class RasterTileReader(Protocol):

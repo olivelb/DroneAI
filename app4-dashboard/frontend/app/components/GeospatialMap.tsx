@@ -329,7 +329,7 @@ function DrawController({
 
 function ViewportVectors({
   missionId,
-  showLegacy,
+  showPipeline,
   showManual,
   analyses,
   refreshToken,
@@ -338,7 +338,7 @@ function ViewportVectors({
   onFeatureSelect,
 }: {
   missionId: string;
-  showLegacy: boolean;
+  showPipeline: boolean;
   showManual: boolean;
   analyses: AnalysisRun[];
   refreshToken: number;
@@ -357,11 +357,11 @@ function ViewportVectors({
         north,
       ];
       const requests: Promise<FeatureCollection>[] = [];
-      if (showLegacy || showManual) {
+      if (showPipeline || showManual) {
         requests.push(
           getVectorLayer(missionId, bbox, {
             sources: [
-              ...(showLegacy ? ["legacy"] : []),
+              ...(showPipeline ? ["pipeline"] : []),
               ...(showManual ? ["manual"] : []),
             ],
           }),
@@ -379,7 +379,7 @@ function ViewportVectors({
         ),
       );
     },
-    [analyses, missionId, showLegacy, showManual],
+    [analyses, missionId, showPipeline, showManual],
   );
   const map = useMapEvents({
     moveend: () => {
@@ -531,7 +531,7 @@ export default function GeospatialMap({
   missionId,
   layer,
   rasterStyle,
-  showLegacy,
+  showPipeline,
   showManual,
   showGcps,
   gcpCollection,
@@ -551,7 +551,7 @@ export default function GeospatialMap({
   missionId: string;
   layer: "ortho" | "depth";
   rasterStyle: RasterStyleRecipe;
-  showLegacy: boolean;
+  showPipeline: boolean;
   showManual: boolean;
   showGcps: boolean;
   gcpCollection: GcpCollection | null;
@@ -668,7 +668,7 @@ export default function GeospatialMap({
       <ZoomControl position="bottomright" />
       <ViewportVectors
         missionId={missionId}
-        showLegacy={showLegacy}
+        showPipeline={showPipeline}
         showManual={showManual}
         analyses={analyses}
         refreshToken={refreshToken}

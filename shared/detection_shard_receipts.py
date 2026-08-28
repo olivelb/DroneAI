@@ -29,9 +29,7 @@ def _lower_sha256(value: str, field: str) -> str:
 def _result_key(
     value: str,
     checksum_sha256: str,
-    organization_id: str | None = None,
-    *,
-    allow_legacy_global: bool = False,
+    organization_id: str,
 ) -> str:
     if not value or "\\" in value:
         raise ValueError("Detection shard result key must be a canonical S3 key")
@@ -48,11 +46,9 @@ def _result_key(
         organization_id=organization_id,
     )
     if value != expected_key:
-        legacy_key = content_addressed_blob_key(checksum_sha256)
-        if not allow_legacy_global or value != legacy_key:
-            raise ValueError(
-                "Detection shard result key must match its content checksum"
-            )
+        raise ValueError(
+            "Detection shard result key must match its content checksum"
+        )
     return value
 
 
@@ -220,7 +216,6 @@ def complete_detection_shard_receipts(
             cast(str, receipt.result_key),
             checksum,
             durable_organization,
-            allow_legacy_global=True,
         )
         if cast(int, receipt.result_size_bytes) <= 0:
             raise ValueError("Durable shard result size must be positive")

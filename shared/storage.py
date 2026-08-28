@@ -269,7 +269,7 @@ def publish_content_addressed_file(
     local_path: str | Path,
     bucket: str | None = None,
     *,
-    organization_id: str | None = None,
+    organization_id: str,
     cancellation_check: Callable[[], None] | None = None,
     force_multipart: bool = False,
 ) -> ContentAddressedUpload:

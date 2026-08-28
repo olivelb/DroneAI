@@ -53,6 +53,8 @@ def _run_timestamp(run: Any) -> datetime | None:
 def _latest_runs(runs: Iterable[Any]) -> dict[str, Any]:
     latest: dict[str, Any] = {}
     for run in runs:
+        if getattr(run, "analysis_run_id", None) is not None:
+            continue
         stage = str(run.stage)
         current = latest.get(stage)
         if current is None or (int(run.attempt), int(run.id)) > (
@@ -161,6 +163,8 @@ def stage_lifecycle_logs(runs: Iterable[Any]) -> list[dict[str, Any]]:
     """Expose durable stage transitions as concise operator log entries."""
     entries: list[dict[str, Any]] = []
     for run in runs:
+        if getattr(run, "analysis_run_id", None) is not None:
+            continue
         stage = str(run.stage)
         attempt = int(run.attempt)
         if run.started_at is not None:

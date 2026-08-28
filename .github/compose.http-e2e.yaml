@@ -15,7 +15,7 @@ services:
       DRONEAI_IDENTITY_RATE_LIMIT_BACKEND: database
       DRONEAI_API_KEYS_JSON: >-
         [{"key":"droneai-http-e2e-key-0000000000000000","subject":"http-e2e-admin","role":"admin","organization_id":"http-e2e"}]
-      DRONEAI_STAGE_JOBS_ENABLED: "false"
+      DRONEAI_STAGE_JOBS_ENABLED: "true"
       S3_PUBLIC_ENDPOINT: http://localhost:${DRONEAI_MINIO_API_PORT:-30091}
 
   dashboard-control-worker:
@@ -23,3 +23,5 @@ services:
     profiles: [http-e2e]
     environment:
       DRONEAI_CONTROL_LEADER_ELECTION: "false"
+      # Assert durable queueing without launching Kubernetes compute in this suite.
+      DRONEAI_STAGE_JOBS_ENABLED: "false"

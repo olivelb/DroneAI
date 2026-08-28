@@ -37,14 +37,14 @@ def mission_detail_projection(
     )
     stage_runs = (
         session.query(MissionStageRun)
-        .filter(MissionStageRun.mission_id == mission.id)
+        .filter(MissionStageRun.mission_id == mission.id, MissionStageRun.analysis_run_id.is_(None))
         .order_by(MissionStageRun.attempt, MissionStageRun.id)
         .all()
     )
     artifacts = (
         session.query(MissionArtifact)
         .filter(MissionArtifact.mission_id == mission.id)
-        .order_by(MissionArtifact.created_at)
+        .order_by(MissionArtifact.created_at, MissionArtifact.id)
         .all()
     )
     artifact_ids = [artifact.id for artifact in artifacts]

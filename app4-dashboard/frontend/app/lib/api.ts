@@ -100,9 +100,6 @@ export const deleteMission = (volId: string) =>
 export const deleteDataset = (name: string) =>
   api(`/datasets/${encodeURIComponent(name)}`, parseCommandResponse, { method: "DELETE" });
 
-export const postResume = (volId: string) =>
-  api(`/mission/resume?vol_id=${encodeURIComponent(volId)}`, parseCommandResponse, { method: "POST" });
-
 const encodeS3Key = (s3Key: string) => s3Key.split("/").map(encodeURIComponent).join("/");
 
 export const getFileUrl = (s3Key: string) => `${getApiBaseUrl()}/files/${encodeS3Key(s3Key)}`;
@@ -149,7 +146,7 @@ export const getVectorLayer = (
 ) => api(
   `/maps/${encodeURIComponent(missionId)}/vectors.geojson?${new URLSearchParams({
     bbox: bbox.join(","),
-    sources: (options?.sources ?? ["legacy", "manual"]).join(","),
+    sources: (options?.sources ?? ["pipeline", "manual"]).join(","),
     ...(options?.runIds?.length
       ? { run_ids: options.runIds.join(",") }
       : {}),
@@ -189,6 +186,9 @@ export const cancelAnalysis = (missionId: string, runId: string) =>
     parseAnalysisRun,
     { method: "POST" },
   );
+
+export const getAnalysisVectorsUrl = (missionId: string, runId: string) =>
+  `${getApiBaseUrl()}/maps/${encodeURIComponent(missionId)}/analyses/${encodeURIComponent(runId)}/vectors.geojson?limit=50000`;
 
 export const getAnalysisVectors = (
   missionId: string,
@@ -484,7 +484,7 @@ export const getRasterExportPath = (
 export const getVectorExportPath = (
   missionId: string,
   format: "gpkg" | "geojson",
-  scope: "all" | "manual" | "ai" | "legacy",
+  scope: "all" | "manual" | "ai" | "pipeline",
   runIds: string[] = [],
   crs = "raster",
 ) => {

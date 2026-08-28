@@ -28,7 +28,11 @@ def release_ready_stage_runs(
     artifacts = cast(
         list[MissionArtifact],
         session.query(MissionArtifact)
-        .filter(MissionArtifact.mission_id == mission.id)
+        .join(MissionStageRun, MissionStageRun.id == MissionArtifact.stage_run_id)
+        .filter(
+            MissionArtifact.mission_id == mission.id,
+            MissionStageRun.analysis_run_id.is_(None),
+        )
         .order_by(MissionArtifact.created_at.desc())
         .all(),
     )
@@ -44,6 +48,7 @@ def release_ready_stage_runs(
         .filter(
             MissionStageRun.mission_id == mission.id,
             MissionStageRun.status == "blocked",
+            MissionStageRun.analysis_run_id.is_(None),
         )
         .with_for_update()
         .all(),

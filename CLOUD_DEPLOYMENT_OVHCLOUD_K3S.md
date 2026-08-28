@@ -39,7 +39,6 @@ The entire stack is packaged as a single Helm chart (`charts/drone-ai/`) that wo
 |---------|-------|-----|--------|------|
 | Stage Jobs 1–4 | `drone-colmap:<git-sha>` | 1 when required | resource class; HQ raster/training/filtering use 24 Gi request / 64 Gi limit | Reconstruction, Gaussian training/filtering and Ortho/DEM rasterization |
 | Stage Job 5 | `drone-ia:<git-sha>` | 1 | `gpu-high-memory` class | SAM3/YOLO streaming inference and GeoJSON publication |
-| Compatibility processing worker | `drone-processing:<git-sha>` | — | 4–16 Gi | Used only by the fused Kafka compatibility path |
 | `dashboard-api` | `drone-dashboard-api` | — | 512 Mi–2 Gi | FastAPI control plane, WebSocket status |
 | `dashboard-frontend` | `drone-dashboard-frontend` | — | 128–512 Mi | Next.js web UI |
 
@@ -71,7 +70,7 @@ flowchart LR
 
 PostgreSQL persists append-only attempts and immutable artifact edges. S3
 manifests carry large inter-stage state. Kafka remains deployed for platform
-events and the explicitly selected fused-worker compatibility path.
+control/status events only. All compute runs as bounded Stage Jobs.
 
 ## Recommended node layout
 
@@ -249,26 +248,25 @@ From your development machine, build all images and push to a container registry
 
 ```bash
 REGISTRY="ghcr.io/<your-org>"
-IMAGE_TAG="$(git rev-parse --short=12 HEAD)"
+IMAGE_TAG="$(git rev-parse HEAD)"
 docker login ghcr.io
 
-# Base image (COLMAP + Ceres + portable DroneGS — heavy, build only when its
-# inputs change). The local :latest alias is a Dockerfile build dependency;
-# only the immutable Git tag is published.
+# Base image (COLMAP + Ceres + portable DroneGS). Always evaluate current
+# inputs; Docker caches unchanged layers. The application consumes this
+# exact revision through an explicit build argument.
 docker build \
-  -t drone-colmap-base:latest \
   -t "$REGISTRY/drone-colmap-base:$IMAGE_TAG" \
   -f app1-colmap/Dockerfile.base .
 docker push "$REGISTRY/drone-colmap-base:$IMAGE_TAG"
 
 # Application images
-docker build -t "$REGISTRY/drone-colmap:$IMAGE_TAG" -f app1-colmap/Dockerfile .
+docker build --build-arg "COLMAP_BASE_IMAGE=$REGISTRY/drone-colmap-base:$IMAGE_TAG" \
+  -t "$REGISTRY/drone-colmap:$IMAGE_TAG" -f app1-colmap/Dockerfile .
 docker build -t "$REGISTRY/drone-ia:$IMAGE_TAG" -f app2-ia/Dockerfile .
-docker build -t "$REGISTRY/drone-processing:$IMAGE_TAG" -f app3-processing/Dockerfile .
 docker build -t "$REGISTRY/drone-dashboard-api:$IMAGE_TAG" -f app4-dashboard/api/Dockerfile .
 docker build -t "$REGISTRY/drone-dashboard-frontend:$IMAGE_TAG" -f app4-dashboard/frontend/Dockerfile .
 
-for img in drone-colmap drone-ia drone-processing drone-dashboard-api drone-dashboard-frontend; do
+for img in drone-colmap drone-ia drone-dashboard-api drone-dashboard-frontend; do
   docker push "$REGISTRY/$img:$IMAGE_TAG"
 done
 ```

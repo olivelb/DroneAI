@@ -195,13 +195,11 @@ so the quality gain is not purchased with more splats or compute. This selects
 profile. See the
 [GAJAN qualification](../dronegs/benchmarks/gajan-absgrad-dev57-2026-08-14.md).
 
-The completed native manifests are compared with
-`tools/compare_gaussian_qualification_runs.py`. It fails closed if the
-dataset fingerprint, trainer binary, seed, iteration budget, density target or
-any other controlled parameter differs, and accepts only the versioned
-reference/AbsGrad parameter fields as experimental variables. Raster/DEM
-residuals and edge evidence remain separate product-level gates because they
-operate on the final GeoTIFFs, not on trainer telemetry.
+The reference/AbsGrad comparison tool and experimental optimizers were
+removed during the 2026-08-28 production cleanup. The results above are
+historical evidence, not an executable qualification procedure. Current
+production uses reference-absolute with FastGS; new product evidence must be
+collected against that path.
 
 ## Phase 4 — 2D Gaussian backend evaluation
 

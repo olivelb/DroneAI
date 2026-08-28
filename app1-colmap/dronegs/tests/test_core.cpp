@@ -390,26 +390,7 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         occurrence_count(manifest_text, "\"grow_until_iteration\"") == 1U,
         "manifest must not duplicate grow_until_iteration");
 
-    options.optimizer_profile =
-        "reference-absolute-absgrad025";
-    options.run_manifest = output / "trainer_run_absgrad025.json";
-    dronegs::write_completed_manifest(
-        options, scene, dronegs::dataset_fingerprint(scene), measurements,
-        ply, gaussians.size());
-    std::ifstream absgrad_manifest(options.run_manifest);
-    const std::string absgrad_manifest_text(
-        (std::istreambuf_iterator<char>(absgrad_manifest)),
-        std::istreambuf_iterator<char>());
-    check(
-        absgrad_manifest_text.find("\"absgrad_score_weight\": 0.25") !=
-            std::string::npos,
-        "neutral AbsGrad manifest weight missing");
-    check(
-        absgrad_manifest_text.find(
-            "\"growth_score\": "
-            "\"mrnf_error_edge_times_robust_abs_projected_gradient\"") !=
-            std::string::npos,
-        "neutral AbsGrad manifest growth score missing");
+
 }
 
 void test_optimizer_profile_registry() {
@@ -421,23 +402,15 @@ void test_optimizer_profile_registry() {
             dronegs::OptimizerProfileStatus::validated,
         "production optimizer must be marked validated");
     for (const auto* name : {
+             "dronegs-dev16",
              "reference-absolute-absgrad025",
              "reference-absolute-absgrad050",
+             "dev38-staged-rotation008-absgrad050-fastgs",
          }) {
-        const auto* candidate = dronegs::find_optimizer_profile(name);
-        check(candidate != nullptr, "neutral AbsGrad candidate missing");
         check(
-            candidate->status ==
-                dronegs::OptimizerProfileStatus::experimental,
-            "neutral AbsGrad candidate must remain experimental");
+            !dronegs::optimizer_profile_from_name(name).has_value(),
+            "retired optimizer profile was accepted");
     }
-    const auto* dev38 = dronegs::find_optimizer_profile(
-        "dev38-staged-rotation008-absgrad050-fastgs");
-    check(dev38 != nullptr, "dev38 profile missing");
-    check(
-        dev38->status ==
-            dronegs::OptimizerProfileStatus::experimental,
-        "dev38 must remain explicitly experimental");
 
     const std::string help = dronegs::help_text();
     for (std::size_t index = 0U;
@@ -589,6 +562,27 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     auto arguments = mutable_arguments(values);
     const auto parsed = dronegs::parse_options(
         static_cast<int>(arguments.size()), arguments.data());
+    const std::array<std::array<const char*, 2U>, 5U> retired_choices{{
+        {"--optimizer-profile", "dronegs-dev16"},
+        {"--optimizer-profile", "reference-absolute-absgrad025"},
+        {"--raster-profile", "auto"},
+        {"--raster-profile", "bounded"},
+        {"--pruning-policy", "original"},
+    }};
+    for (const auto& choice : retired_choices) {
+        auto retired_values = values;
+        retired_values.emplace_back(choice[0]);
+        retired_values.emplace_back(choice[1]);
+        auto retired_arguments = mutable_arguments(retired_values);
+        bool rejected = false;
+        try {
+            static_cast<void>(dronegs::parse_options(
+                static_cast<int>(retired_arguments.size()), retired_arguments.data()));
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected, "CLI accepted a retired production choice");
+    }
     check(parsed.seed == 42, "CLI seed mismatch");
     check(parsed.sh_degree == 1, "CLI SH degree mismatch");
     check(!parsed.opacity_sh_enabled, "CLI opacity SH must default off");
@@ -626,13 +620,13 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         parsed.adaptive_growth_target == 0U,
         "CLI adaptive growth default mismatch");
     check(
-        parsed.optimizer_profile == "dronegs-dev16",
+        parsed.optimizer_profile == "reference-absolute",
         "CLI optimizer profile default mismatch");
     check(
-        parsed.pruning_policy == "original",
+        parsed.pruning_policy == "spatial-bounds",
         "CLI pruning policy default mismatch");
     check(
-        parsed.raster_profile == "auto",
+        parsed.raster_profile == "fastgs",
         "CLI raster profile default mismatch");
     check(
         parsed.background_mode == "black" &&
@@ -662,7 +656,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--initial-ply",
         (data.parent_path() / "native-output" / "point_cloud.ply").string(),
         "--optimizer-profile",
-        "dev38-staged-rotation008-absgrad050-fastgs",
+        "reference-absolute",
         "--pruning-policy", "spatial-bounds",
         "--raster-profile", "fastgs",
         "--background-mode", "random",
@@ -713,7 +707,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "CLI SH interval mismatch");
     check(
         tuned.optimizer_profile ==
-            "dev38-staged-rotation008-absgrad050-fastgs",
+            "reference-absolute",
         "CLI optimizer profile mismatch");
     check(
         tuned.pruning_policy == "spatial-bounds",

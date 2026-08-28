@@ -7,7 +7,7 @@ import {
   Route,
   Ruler,
 } from "lucide-react";
-import type { AnalysisCreate } from "../../lib/types";
+import type { AnalysisCreate, MissionProduct } from "../../lib/types";
 import type { MessageKey } from "../../lib/i18n/catalog";
 import type { MapTool } from "../GeospatialMap";
 
@@ -27,6 +27,15 @@ export const retainKnownRunIds = (
 ): string[] => {
   const known = new Set(knownRunIds);
   return visibleRunIds.filter((runId) => known.has(runId));
+};
+
+/** Mission detail returns artifacts in publication order, oldest first. */
+export const rasterProductFiles = (products: MissionProduct[] = []): string[] => {
+  const raster = products
+    .filter((product) => product.kind === "raster_product_workspace" && product.artifact_id)
+    .at(-1);
+  return [raster?.metadata?.ortho_file, raster?.metadata?.height_file]
+    .filter((path): path is string => typeof path === "string" && path.length > 0);
 };
 
 export type WorkspacePanel = "layers" | "gcp" | "analysis" | "search" | "export";

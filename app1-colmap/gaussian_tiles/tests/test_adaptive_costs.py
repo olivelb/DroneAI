@@ -149,7 +149,7 @@ def test_proxy_record_and_error_bytes_are_unchanged(monkeypatch, coincident):
     assert actual.errors.tobytes() == expected.errors.tobytes()
 
 
-@pytest.mark.parametrize("aggregate", [None, 256 * 1024])
+@pytest.mark.parametrize("aggregate", [256 * 1024, 2 * 1024**2])
 @pytest.mark.parametrize("workers", [1, 2])
 def test_complete_bundle_matches_original_costs(monkeypatch, tmp_path, aggregate, workers):
     source = tmp_path / "source.ply"

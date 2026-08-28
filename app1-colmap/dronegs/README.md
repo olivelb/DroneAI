@@ -313,14 +313,10 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
   0.25 edge-guidance factor without extra edge-render passes;
 - preallocates Gaussian/gradient/Adam capacity to `--max-cap` and resets every
   selected parent and appended child's optimizer moments after a split;
-- exposes a versioned optimizer registry: `reference-absolute` is the validated
-  production optimizer, `dronegs-dev16` is the deprecated native CLI default
-  retained for compatibility, the neutral
-  `reference-absolute-absgrad025/050` candidates change only MRNF growth
-  ranking, and the other `reference-*`, calibrated and dev.34–38 profiles
-  remain explicit experiments rather than silent fallbacks;
-- isolates Adam epsilon per parameter family so an ablation changes exactly
-  one family's rate, schedule, spatial normalization, and epsilon;
+- exposes only the validated `reference-absolute` optimizer, also the native
+  CLI default; retired ablations and experimental profiles are rejected;
+- retains the qualified rates, schedules, spatial normalization and Adam
+  epsilon, including directional opacity SH when enabled;
 - samples approximately 4,096 Gaussians deterministically at step 1, every
   fifth of training, and the final step, reporting gradient RMS, actual applied
   update RMS, parameter RMS, and component sample count for all five families;
@@ -587,23 +583,11 @@ that working set is the first lossless performance candidate. Promotion still
 requires an exact same-binary final-PLY comparison; container memory limits
 must include the larger cache plus decoder and orchestration overhead.
 
-`--optimizer-profile dronegs-dev16` is the deprecated compatibility default of
-the standalone CLI. `--optimizer-profile reference-absolute` is the validated
-production optimizer selected explicitly by DroneAI.
-`reference-absolute-absgrad025` and
-`reference-absolute-absgrad050` preserve that optimizer's rates and schedules
-and add only a 0.25 or 0.50 robust absolute projected-gradient contribution to
-MRNF growth ranking. They are qualification-only experimental candidates. The
-`reference-dc-only`, `reference-position-only`, `reference-opacity-only`,
-`reference-scale-only`, and `reference-rotation-only` values change exactly
-one family for reproducible ablation. `reference-dc-opacity` combines only the
-reference DC and opacity behaviors; position, scale, and rotation remain
-exactly dev16.
-`calibrated-dc-0.005-opacity`, `calibrated-dc-0.010-opacity`, and
-`calibrated-dc-0.020-opacity` keep the LichtFeld opacity behavior and use the
-named intermediate DC rate; all other parameter families remain exactly
-dev16. Their historical two-scene results remain benchmark evidence, not the
-current production selection. DroneAI's production pipeline overrides the
-native default with the immutable dev.45-derived V1 recipe.
+`--optimizer-profile reference-absolute` is the sole supported optimizer.
+DroneAI uses it with FastGS and the qualified Fast v2, Normal v3 and HQ v4
+recipes. The former dev16, calibrated, reference ablations and dev.34–38
+profiles have been removed. Directional opacity SH remains available through
+the existing `--opacity-sh` option; this cleanup does not change its math,
+export representation or viewer support.
 
 The output directory must be empty and must not contain the source dataset.

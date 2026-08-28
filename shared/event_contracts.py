@@ -92,42 +92,23 @@ def validate_event(
 ) -> dict[str, Any]:
     if not isinstance(event, dict):
         raise EventValidationError("event must be a JSON object")
-    event_type = event.get("event_type") or expected_type
+    event_type = event.get("event_type")
     if not isinstance(event_type, str) or event_type not in EVENT_TYPES:
         raise EventValidationError(f"unknown or missing event_type: {event_type}")
     if expected_type and event_type != expected_type:
         raise EventValidationError(f"expected event_type={expected_type}, got {event_type}")
-    version = event.get("schema_version", SCHEMA_VERSION)
-    if version != SCHEMA_VERSION:
+    version = event.get("schema_version")
+    if type(version) is not int or version != SCHEMA_VERSION:
         raise EventValidationError(f"unsupported schema_version={version}; expected {SCHEMA_VERSION}")
     if event_type == "status" and event.get("status") not in PIPELINE_STATUSES:
         allowed = ", ".join(sorted(PIPELINE_STATUSES))
         raise EventValidationError(
             f"status event has unsupported status={event.get('status')!r}; expected one of: {allowed}"
         )
-    normalized = dict(event)
-    normalized["schema_version"] = version
-    normalized["event_type"] = event_type
-    if not normalized.get("event_id"):
-        identity = [normalized.get("vol_id"), normalized.get("tile_index"), normalized.get("command")]
-        if normalized.get("organization_id"):
-            identity.insert(0, normalized["organization_id"])
-        normalized["event_id"] = deterministic_event_id(event_type, *identity)
-    organization_id = normalized.get("organization_id")
-    vol_id = normalized.get("vol_id")
-    normalized.setdefault(
-        "correlation_id",
-        f"{organization_id}:{vol_id}"
-        if organization_id and vol_id
-        else vol_id or normalized["event_id"],
-    )
-    normalized.setdefault("causation_id", None)
-    normalized.setdefault("attempt", 0)
-    normalized.setdefault("emitted_at", datetime.now(UTC).isoformat())
-    if not isinstance(normalized["attempt"], int) or normalized["attempt"] < 0:
+    if type(event.get("attempt")) is not int or event["attempt"] < 0:
         raise EventValidationError("attempt must be a non-negative integer")
     try:
-        validated = EVENT_MODELS[event_type].model_validate(normalized)
+        validated = EVENT_MODELS[event_type].model_validate(event)
     except ValidationError as error:
         raise EventValidationError(
             f"invalid {event_type} event: {error}"

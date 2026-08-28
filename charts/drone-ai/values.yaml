@@ -34,28 +34,15 @@ kafka:
   broker: ""
   image: apache/kafka:3.7.0
   clusterId: "droneai-local-cluster-001"
-  workerInbox:
-    # Long handlers renew this DB lease; a replay waits without committing its
-    # Kafka offset until the active claim completes or expires.
-    leaseSeconds: 300
-    busyRetrySeconds: 5
   cancellationPollSeconds: 2
   # Created idempotently after each Helm install/upgrade. Partition counts can
-  # only grow; drain tile work before increasing them because Kafka may remap
-  # existing keys when new partitions are added.
+  # only grow; drain control traffic before increasing them because Kafka may
+  # remap existing keys when new partitions are added.
   topics:
-    - name: vols-bruts
-      partitions: 1
-    - name: images-ortho
-      partitions: 1
     - name: pipeline-status
       partitions: 1
     - name: pipeline-control
       partitions: 1
-    - name: image-tiles
-      partitions: 4
-    - name: tile-detections
-      partitions: 4
     - name: pipeline-dead-letter
       partitions: 1
   persistence:
@@ -139,16 +126,8 @@ storage:
 # COLMAP Worker
 # --------------------------------------------------------------------------
 colmapWorker:
-  enabled: true
-  image: drone-colmap
-  tag: latest
-  gaussianBackend: dronegs
-  resources:
-    limits:
-      nvidia.com/gpu: "1"
-      memory: "80Gi"
-    requests:
-      memory: "80Gi"
+  enabled: false
+  # Workspace configuration for Stage Jobs.
   workVolume:
     sizeLimit: 100Gi
     persistentClaim:
@@ -169,62 +148,6 @@ colmapWorker:
     default: system
 
 # --------------------------------------------------------------------------
-# IA Worker
-# --------------------------------------------------------------------------
-tileResults:
-  # Shared producer/consumer bound for one versioned IA result artifact.
-  maximumBytes: "10485760"
-
-iaWorker:
-  enabled: true
-  replicaCount: 1
-  image: drone-ia
-  tag: latest
-  resources:
-    limits:
-      nvidia.com/gpu: "1"
-      memory: "8Gi"
-    requests:
-      memory: "2Gi"
-  modelCache:
-    # The same PVC stores Hugging Face assets and writable YOLO variants.
-    # The image-baked, checksum-verified default remains under
-    # /opt/modelzoo and is preferred until a cached override exists.
-    hostPath: ""
-    storageClass: ""
-    # Use ReadWriteMany with a compatible storage class before scaling IA
-    # workers across nodes. The default OVH Cinder volume is single-node.
-    accessMode: ReadWriteOnce
-    size: 30Gi
-  sam3:
-    repository: facebook/sam3
-    # Immutable Hugging Face commit; updates must be explicit and reviewed.
-    revision: 3c879f39826c281e95690f02c7821c4de09afae7
-
-# --------------------------------------------------------------------------
-# Processing Worker
-# --------------------------------------------------------------------------
-processingWorker:
-  replicaCount: 1
-  image: drone-processing
-  tag: latest
-  analysis:
-    maximumTileAttempts: "5"
-    finalizationLeaseSeconds: "1800"
-    maximumAggregateResultBytes: "268435456"
-    maximumRawDetections: "100000"
-    maximumFinalDetections: "50000"
-  # Bounds orthomosaic and JPEG tile workspaces even if process cleanup is
-  # interrupted by a container or node failure.
-  temporaryStorage:
-    sizeLimit: "50Gi"
-  resources:
-    limits:
-      memory: "16Gi"
-    requests:
-      memory: "4Gi"
-
-# --------------------------------------------------------------------------
 # Dashboard API
 # --------------------------------------------------------------------------
 dashboardApi:
@@ -233,7 +156,6 @@ dashboardApi:
   tag: latest
   # Expose internal quality-profile candidates in the operator catalog only
   # during a controlled qualification. Public profiles do not need this flag.
-  qualityProfileCandidatesEnabled: false
   # Local development may reuse database-url. Protected environments must use
   # a separate Secret key whose URL authenticates as a non-owner, NOBYPASSRLS
   # PostgreSQL role.
@@ -312,6 +234,10 @@ dashboardApi:
 # Bounded stage Jobs (qualified; explicit immutable-map opt-in per environment)
 # --------------------------------------------------------------------------
 stageJobs:
+  sam3:
+    repository: facebook/sam3
+    # Immutable model revision shared by monolithic and sharded detection Jobs.
+    revision: 3c879f39826c281e95690f02c7821c4de09afae7
   enabled: false
   # Each stage Secret must expose a PostgreSQL URL for a non-owner,
   # NOBYPASSRLS executor role under this key. The generated development Secret
@@ -323,11 +249,9 @@ stageJobs:
   # mandatory when Jobs are enabled in staging or production. Development may
   # omit it and reuse storage.existingSecret for local compatibility only.
   credentialSecrets: {}
-  # Reader-compatible CAS overlay rollout. Keep false until multipart CAS and
-  # the target stage sequence have been qualified with rollback evidence.
-  artifactManifestV2WriteEnabled: false
+  # Stage workspaces always use organization-scoped Artifact Manifest v3.
   # Detection-only canary: materialize its declared orthomosaic instead of the
-  # complete parent overlay. Requires artifactManifestV2WriteEnabled=true.
+  # complete parent overlay.
   artifactSelectiveRestoreEnabled: false
   # Full-raster fan-out/fan-in remains a separate canary. Small rasters stay
   # monolithic; larger plans use an Indexed Job and a distinct finalizer Job.

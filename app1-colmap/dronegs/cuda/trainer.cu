@@ -1479,12 +1479,12 @@ TrainingMetrics train_ordered_mrnf(
         }
         return *profile;
     }();
-    const std::optional<bool> raster_override =
-        options.raster_profile == "fastgs"
-            ? std::optional<bool>(true)
-            : (options.raster_profile == "bounded"
-                   ? std::optional<bool>(false)
-                   : std::nullopt);
+    if (options.raster_profile != "fastgs" ||
+        options.pruning_policy != "spatial-bounds") {
+        throw std::invalid_argument(
+            "production training requires fastgs and spatial-bounds");
+    }
+    const std::optional<bool> raster_override = true;
     OrderedAlphaTrainingContext workspace(
         gaussians, maximum_pixels, options.iterations,
         static_cast<std::size_t>(options.max_cap),
@@ -1891,7 +1891,7 @@ TrainingMetrics train_ordered_mrnf(
                     0.003F,
                     growth_fraction,
                     refinement_seed,
-                    options.pruning_policy == "spatial-bounds",
+                    true,
                     &topology_telemetry);
             const double topology_seconds =
                 std::chrono::duration<double>(

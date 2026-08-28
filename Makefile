@@ -1,9 +1,9 @@
 PYTHON ?= python3
 NPM ?= corepack npm
 CI_PYTHON_PATHS := $(wildcard scripts/ci/*.py)
-PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared alembic tests tools $(CI_PYTHON_PATHS)
-PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared tools $(CI_PYTHON_PATHS)
-COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
+PYTHON_PATHS := app1-colmap app2-ia app4-dashboard/api shared alembic tests tools $(CI_PYTHON_PATHS)
+PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app4-dashboard/api shared tools $(CI_PYTHON_PATHS)
+COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/stage_executor.py
 GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/__init__.py \
 	app1-colmap/gaussian_ortho/camera_footprint.py \
@@ -31,25 +31,14 @@ GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/scene_info.py \
 	app1-colmap/gaussian_ortho/seam_quality.py \
 	app1-colmap/gaussian_ortho/sh_basis.py
-SHARED_FRAMEWORK_TYPED_PATHS := shared/event_schemas.py shared/tile_results.py
+SHARED_FRAMEWORK_TYPED_PATHS := shared/event_schemas.py
 SHARED_TYPED_PATHS := $(filter-out $(SHARED_FRAMEWORK_TYPED_PATHS),$(wildcard shared/*.py))
 APP2_TYPED_PATHS := \
 	app2-ia/detection_core.py \
 	app2-ia/detection_shard_stage.py \
 	app2-ia/detection_stage.py \
 	app2-ia/sam3_backend.py \
-	app2-ia/stage_executor.py \
-	app2-ia/tile_detection_workflow.py \
-	app2-ia/main.py
-APP3_TYPED_PATHS := \
-	app3-processing/processing_core.py \
-	app3-processing/orthomosaic_tiler.py \
-	app3-processing/analysis_publication.py \
-	app3-processing/analysis_recovery.py \
-	app3-processing/analysis_workflow.py \
-	app3-processing/legacy_aggregation.py \
-	app3-processing/processing_dispatcher.py \
-	app3-processing/main.py
+	app2-ia/stage_executor.py
 API_TYPED_PATHS := \
 	app4-dashboard/api/__init__.py \
 	app4-dashboard/api/control_leadership.py \
@@ -115,7 +104,7 @@ API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/operations.py \
 	app4-dashboard/api/routers/organization_saas.py \
 	app4-dashboard/api/routers/platform.py
-SERVICE_CORE_PATHS := $(GAUSSIAN_ORTHO_TYPED_PATHS) $(APP2_TYPED_PATHS) $(APP3_TYPED_PATHS)
+SERVICE_CORE_PATHS := $(GAUSSIAN_ORTHO_TYPED_PATHS) $(APP2_TYPED_PATHS)
 SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/ci/*.sh scripts/deploy/*.sh
 
 .PHONY: check static compile lint worker-lint service-core-lint shared-lint typecheck scripts-check docs-check workflows-check audit test integration-test coverage frontend-check frontend-e2e
@@ -147,7 +136,6 @@ typecheck:
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(SHARED_TYPED_PATHS)
 	$(PYTHON) -m mypy --strict --ignore-missing-imports $(SHARED_FRAMEWORK_TYPED_PATHS)
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(APP2_TYPED_PATHS)
-	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(APP3_TYPED_PATHS)
 	MYPYPATH=app4-dashboard $(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(API_TYPED_PATHS)
 	MYPYPATH=app4-dashboard $(PYTHON) -m mypy --strict --ignore-missing-imports $(API_FRAMEWORK_TYPED_PATHS)
 	MYPYPATH=app4-dashboard $(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(API_DOMAIN_TYPED_PATHS)

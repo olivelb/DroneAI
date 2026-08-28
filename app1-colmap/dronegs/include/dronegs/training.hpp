@@ -50,68 +50,9 @@ struct MrnfLearningRates {
 };
 
 enum class MrnfOptimizerProfile {
-    dronegs_dev16,
-    reference_absolute,
-    reference_absolute_absgrad025,
-    reference_absolute_absgrad050,
-    reference_dc_only,
-    reference_position_only,
-    reference_opacity_only,
-    reference_scale_only,
-    reference_rotation_only,
-    reference_dc_opacity,
-    calibrated_dc_005_opacity,
-    calibrated_dc_010_opacity,
-    calibrated_dc_020_opacity,
-    calibrated_dc_010_opacity_024,
-    calibrated_dc_010_opacity_048,
-    calibrated_dc_010_opacity_096,
-    dev34_opacity096_reference_scale,
-    dev34_opacity096_reference_rotation,
-    dev34_opacity096_reference_scale_rotation,
-    dev35_opacity096_reference_scale_staged_rotation004,
-    dev35_opacity096_reference_scale_staged_rotation008,
-    dev36_staged_rotation008_absgrad025,
-    dev36_staged_rotation008_absgrad050,
-    dev37_staged_rotation008_absgrad050_aa005,
-    dev37_staged_rotation008_absgrad050_aa015,
-    dev37_staged_rotation008_absgrad050_aa030,
-    dev38_staged_rotation008_absgrad050_fastgs,
+    // Keep the current checkpoint identity stable.
+    reference_absolute = 1,
 };
-
-inline constexpr bool uses_reference_absolute_optimizer(
-    MrnfOptimizerProfile profile) {
-    return profile == MrnfOptimizerProfile::reference_absolute ||
-        profile ==
-            MrnfOptimizerProfile::reference_absolute_absgrad025 ||
-        profile ==
-            MrnfOptimizerProfile::reference_absolute_absgrad050;
-}
-
-inline constexpr float mrnf_absgrad_score_weight(
-    MrnfOptimizerProfile profile) {
-    if (profile ==
-            MrnfOptimizerProfile::reference_absolute_absgrad025 ||
-        profile ==
-            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad025) {
-        return 0.25F;
-    }
-    if (profile ==
-            MrnfOptimizerProfile::reference_absolute_absgrad050 ||
-        profile ==
-            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad050 ||
-        profile ==
-            MrnfOptimizerProfile::dev37_staged_rotation008_absgrad050_aa005 ||
-        profile ==
-            MrnfOptimizerProfile::dev37_staged_rotation008_absgrad050_aa015 ||
-        profile ==
-            MrnfOptimizerProfile::dev37_staged_rotation008_absgrad050_aa030 ||
-        profile ==
-            MrnfOptimizerProfile::dev38_staged_rotation008_absgrad050_fastgs) {
-        return 0.50F;
-    }
-    return 0.0F;
-}
 
 struct MrnfParameterTelemetry {
     float gradient_rms = 0.0F;

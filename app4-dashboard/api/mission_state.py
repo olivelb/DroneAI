@@ -1,4 +1,4 @@
-"""Mission persistence, serialization, and resume policy."""
+"""Mission persistence, serialization, and status policy."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import os
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any, NotRequired, Protocol, TypedDict, cast
+from typing import Any, Protocol, TypedDict, cast
 
 from shared.config import SERVICE_ORDER
 from shared.database import Mission, MissionLog, get_or_create_mission, get_session
@@ -60,13 +60,6 @@ class MissionRecord(Protocol):
     updated_at: datetime | None
 
 
-class ColmapResumeState(TypedDict):
-    available: bool
-    state: str
-    reason: str
-    downstream_processing: list[str]
-
-
 class WorkspaceState(TypedDict):
     vol_id: str
     status: str
@@ -86,7 +79,6 @@ class SerializedMission(TypedDict):
     owner_subject: str
     workspace_dir: str
     workspace_state: WorkspaceState
-    colmap_resume: ColmapResumeState
     services: JsonObject
     logs: list[JsonObject]
     updated_at: float
@@ -103,12 +95,6 @@ class StatusSummary(TypedDict):
 class MissionStateResult(TypedDict):
     vol_id: str
     workspace_state: WorkspaceState | None
-
-
-class ResumeResponse(TypedDict):
-    status: str
-    message: str
-    colmap_resume: NotRequired[ColmapResumeState]
 
 
 def apply_mission_state(session: SessionProtocol, payload: JsonObject) -> None:
@@ -254,76 +240,6 @@ def mission_event_age_seconds(mission: MissionRecord) -> float | None:
     return max(0.0, (datetime.now(UTC) - updated_at).total_seconds())
 
 
-def build_colmap_resume_state(mission: MissionRecord) -> ColmapResumeState:
-    services = mission.service_states or {}
-    colmap_service = services.get("COLMAP", {})
-    colmap_status = colmap_service.get("status") if isinstance(colmap_service, dict) else None
-    stale = colmap_status == "processing" and is_mission_stale(mission)
-    downstream = [
-        name
-        for name, service in services.items()
-        if name != "COLMAP" and isinstance(service, dict) and service.get("status") == "processing"
-    ]
-
-    if colmap_status == "processing" and not stale:
-        return {
-            "available": False,
-            "state": "running",
-            "reason": ("COLMAP is currently running. Resume is only relevant after an interruption."),
-            "downstream_processing": downstream,
-        }
-    if stale:
-        has_params = mission.params is not None
-        return {
-            "available": has_params,
-            "state": "checkpointed" if has_params else "stale",
-            "reason": (
-                "The last COLMAP status update is stale. The mission can be resumed."
-                if has_params
-                else "COLMAP is stale and no saved params found."
-            ),
-            "downstream_processing": downstream,
-        }
-    if colmap_status == "success":
-        suffix = " Downstream processing can continue." if downstream else ""
-        return {
-            "available": False,
-            "state": "completed",
-            "reason": f"COLMAP has already completed for this mission.{suffix}",
-            "downstream_processing": downstream,
-        }
-    if colmap_status == "error":
-        has_params = mission.params is not None
-        return {
-            "available": has_params,
-            "state": "resumable" if has_params else "unavailable",
-            "reason": (
-                "COLMAP stopped with an error. A resume action can restart from the last checkpoint."
-                if has_params
-                else "COLMAP errored but no saved mission parameters found."
-            ),
-            "downstream_processing": downstream,
-        }
-    if colmap_status == "cancelled":
-        has_params = mission.params is not None
-        return {
-            "available": has_params,
-            "state": "cancelled" if has_params else "unavailable",
-            "reason": (
-                "COLMAP was cancelled by an operator. The mission can be restarted as a new attempt."
-                if has_params
-                else "COLMAP was cancelled but no saved mission parameters were found."
-            ),
-            "downstream_processing": downstream,
-        }
-    return {
-        "available": False,
-        "state": "unavailable",
-        "reason": "No COLMAP state found yet.",
-        "downstream_processing": downstream,
-    }
-
-
 def serialize_mission(mission: MissionRecord) -> SerializedMission:
     services = mission.service_states or {}
     overall = compute_overall_status(services)
@@ -361,7 +277,6 @@ def serialize_mission(mission: MissionRecord) -> SerializedMission:
             mission.workspace_prefix,
         ).root,
         "workspace_state": workspace_state,
-        "colmap_resume": build_colmap_resume_state(mission),
         "services": services,
         "logs": [],
         "updated_at": (mission.updated_at.timestamp() if mission.updated_at else time.time()),
@@ -421,77 +336,3 @@ def get_mission_state(
             "vol_id": vol_id,
             "workspace_state": serialize_mission(mission)["workspace_state"],
         }
-
-
-def prepare_resume_in_session(
-    session: SessionProtocol,
-    vol_id: str,
-    owner_subject: str,
-    organization_id: str = LEGACY_ORGANIZATION_ID,
-) -> tuple[JsonObject | None, ResumeResponse]:
-    mission = cast(
-        MissionRecord | None,
-        session.query(Mission)
-        .filter(
-            Mission.vol_id == vol_id,
-            Mission.owner_subject == owner_subject,
-            Mission.organization_id == organization_id,
-        )
-        .first(),
-    )
-    if mission is None:
-        return None, {
-            "status": "error",
-            "message": f"Mission {vol_id} not found.",
-        }
-    resume_state = build_colmap_resume_state(mission)
-    if not resume_state["available"]:
-        return None, {
-            "status": "error",
-            "message": resume_state["reason"],
-            "colmap_resume": resume_state,
-        }
-    if not mission.params:
-        return None, {
-            "status": "error",
-            "message": (f"Saved state for {vol_id} does not contain the original mission payload."),
-            "colmap_resume": resume_state,
-        }
-
-    payload = dict(mission.params)
-    payload["vol_id"] = vol_id
-    namespace = MissionObjectNamespace.from_binding(
-        mission.organization_id,
-        mission.vol_id,
-        mission.workspace_prefix,
-    )
-    payload["organization_id"] = namespace.organization_id
-    payload["workspace_prefix"] = namespace.root
-    mission.retry_count = int(mission.retry_count or 0) + 1
-    payload["attempt"] = mission.retry_count
-    mission.status = "processing"
-    mission.current_step = "RESUMING"
-    mission.error_message = None
-    mission.updated_at = datetime.now(UTC)
-    response: ResumeResponse = {
-        "status": "success",
-        "message": f"Resume command queued for {vol_id}.",
-        "colmap_resume": resume_state,
-    }
-    return payload, response
-
-
-def prepare_resume(
-    vol_id: str,
-    owner_subject: str,
-    organization_id: str = LEGACY_ORGANIZATION_ID,
-) -> tuple[JsonObject | None, ResumeResponse]:
-    """Compatibility wrapper using its own transaction."""
-
-    with get_session() as session:
-        return prepare_resume_in_session(
-            session,
-            vol_id,
-            owner_subject,
-            organization_id,
-        )

@@ -11,7 +11,6 @@ if str(APP1_ROOT) not in sys.path:
     sys.path.insert(0, str(APP1_ROOT))
 
 from gaussian_training import DroneGSTuning, TrainingRequest
-from shared.dronegs_profile import effective_raster_profile
 
 generator = importlib.import_module("gaussian_ortho.generate_gaussian_orthophoto")
 
@@ -65,10 +64,7 @@ def _manifest(request):
             "optimizer_profile": tuning.optimizer_profile,
             "pruning_policy": tuning.pruning_policy,
             "raster_profile": tuning.raster_profile,
-            "effective_raster_profile": effective_raster_profile(
-                tuning.raster_profile,
-                tuning.optimizer_profile,
-            ),
+            "effective_raster_profile": tuning.raster_profile,
             "sh_degree_interval": tuning.sh_degree_interval,
             "checkpoint_every": tuning.checkpoint_every,
             "test_every": tuning.test_every,

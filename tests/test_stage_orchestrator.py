@@ -916,31 +916,25 @@ def test_protected_stage_jobs_require_rls_at_the_executor_boundary(monkeypatch):
     assert ("DRONEAI_STAGE_RLS_REQUIRED", "true") in settings.job_environment
 
 
-def test_settings_forward_explicit_v2_writer_rollout_to_stage_jobs(monkeypatch):
+def test_settings_forward_selective_restore_to_stage_jobs(monkeypatch):
     monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "false")
-    monkeypatch.setenv("DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED", "true")
     monkeypatch.setenv("DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED", "true")
 
     settings = orchestrator.settings_from_environment()
 
-    assert (
-        "DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED",
-        "true",
-    ) in settings.job_environment
     assert (
         "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED",
         "true",
     ) in settings.job_environment
 
 
-def test_detection_fanout_settings_fail_closed_without_manifest_v2(monkeypatch):
+def test_detection_fanout_settings_fail_closed_without_selective_restore(monkeypatch):
     monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "false")
     monkeypatch.setenv("DRONEAI_DETECTION_FANOUT_ENABLED", "true")
 
-    with pytest.raises(ValueError, match="Manifest v2 writes and selective restore"):
+    with pytest.raises(ValueError, match="selective restore"):
         orchestrator.settings_from_environment()
 
-    monkeypatch.setenv("DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED", "true")
     monkeypatch.setenv("DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED", "true")
     monkeypatch.setenv("DRONEAI_DETECTION_TILES_PER_SHARD", "64")
     monkeypatch.setenv("DRONEAI_DETECTION_SHARD_PARALLELISM", "3")
@@ -1089,7 +1083,7 @@ def test_completed_detection_shards_queue_a_cpu_finalizer_through_scheduler(
     monkeypatch,
 ):
     run_id = "6" * 32
-    _add_detection_run(stage_sessions, run_id, width=55_000, height=55_000)
+    _add_detection_run(stage_sessions, run_id, width=55_000, height=55_000, organization_id="acme-survey")
     settings = _settings(
         detection_fanout_enabled=True,
         detection_environment=(("SAM3_MODEL_ID", "facebook/sam3"),),
@@ -1119,7 +1113,7 @@ def test_completed_detection_shards_queue_a_cpu_finalizer_through_scheduler(
                     shard_index=shard.shard_index,
                     shard_count=plan.shard_count,
                     tile_count=shard.tile_count,
-                    result_key=content_addressed_blob_key(checksum),
+                    result_key=content_addressed_blob_key(checksum, organization_id="acme-survey"),
                     result_checksum_sha256=checksum,
                     result_size_bytes=100 + shard.shard_index,
                 )

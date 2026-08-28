@@ -2,27 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Annotated, TypedDict, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from shared.cancellation import mark_cancellation_requested
-from shared.config import TOPIC_CONTROL, TOPIC_ORTHO
-from shared.database import (
-    AIAnalysisRun,
-    AIAnalysisTile,
-    MapFeature,
-    get_session,
-)
-from shared.inbox_outbox import enqueue_outbox
-from shared.kafka_partitioning import tenant_mission_key
-from shared.tenancy import MissionObjectNamespace
+from shared.analysis_stages import cancel_analysis_stages
+from shared.database import AIAnalysisRun, MapFeature, get_session
 
 from ..analysis_support import (
-    build_analysis_cancel_event,
-    build_analysis_pipeline_event,
+    latest_analysis_stage,
+    queue_analysis_stage,
     ensure_mission_accepts_new_analysis,
     get_owned_run,
     owned_run_scope,
@@ -30,19 +20,19 @@ from ..analysis_support import (
 from ..map_schemas import AnalysisCreate
 from ..map_support import (
     AnalysisRunRecord,
-    AnalysisTileRecord,
     JsonObject,
     RouteSession,
     apply_spatial_filter,
     feature_collection,
     get_mission,
     map_feature_geojson,
-    object_store_analysis_features as _object_store_features,
+    analysis_artifact_features,
     parse_bbox,
     resolve_raster_product,
     serialize_run,
 )
 from ..security import Principal, require_authenticated, require_operator
+from ..stage_orchestrator import stage_jobs_enabled
 
 router = APIRouter()
 
@@ -80,6 +70,8 @@ def create_analysis(
     principal: Annotated[Principal, Depends(require_operator)],
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
+    if not stage_jobs_enabled():
+        raise HTTPException(status_code=503, detail="Analyses require bounded Stage Jobs")
     run_id = str(uuid4())
     with get_session() as session:
         typed_session = cast(RouteSession, session)
@@ -92,12 +84,12 @@ def create_analysis(
             for_update=True,
         )
         ensure_mission_accepts_new_analysis(mission)
-        key = resolve_raster_product(
+        product = resolve_raster_product(
             typed_session,
             mission,
             vol_id,
             "ortho",
-        ).key
+        )
         run_model = AIAnalysisRun(
             run_id=run_id,
             mission_id=mission.id,
@@ -113,25 +105,14 @@ def create_analysis(
             confidence=request.confidence,
             tile_size=request.tile_size,
             persist_results=request.persist_results,
-            ortho_s3_key=key,
+            ortho_s3_key=product.key,
             created_by=principal.subject,
         )
         run = cast(AnalysisRunRecord, run_model)
         typed_session.add(run_model)
-        event = build_analysis_pipeline_event(
-            run,
-            MissionObjectNamespace.from_binding(
-                mission.organization_id,
-                mission.vol_id,
-                mission.workspace_prefix,
-            ),
-        )
-        enqueue_outbox(
-            typed_session,
-            topic=TOPIC_ORTHO,
-            event=event,
-            key=tenant_mission_key(mission.organization_id, vol_id),
-        )
+        if product.artifact_id is None:
+            raise HTTPException(status_code=404, detail="Analysis requires a raster artifact")
+        queue_analysis_stage(typed_session, mission, run, product.artifact_id)
         typed_session.flush()
         return serialize_run(run)
 
@@ -155,46 +136,18 @@ def retry_analysis(
             action="analysis_retry",
         )
         ensure_mission_accepts_new_analysis(mission)
-        if run.status != "failed":
+        if not stage_jobs_enabled():
+            raise HTTPException(status_code=503, detail="Analyses require bounded Stage Jobs")
+        previous = latest_analysis_stage(typed_session, run)
+        if previous.status != "failed":
             raise HTTPException(
                 status_code=409,
                 detail="Only a failed analysis can be retried",
             )
+        if len(previous.upstream_artifact_ids) != 1:
+            raise HTTPException(status_code=409, detail="Analysis raster binding is invalid")
         run.retry_count += 1
-        run.status = "queued"
-        run.phase = "recovery_queued"
-        run.error_message = None
-        run.heartbeat_at = datetime.now(UTC)
-        (
-            typed_session.query(AIAnalysisTile)
-            .filter(
-                AIAnalysisTile.analysis_run_id == run.id,
-                AIAnalysisTile.status != "completed",
-            )
-            .update(
-                {
-                    AIAnalysisTile.status: "queued",
-                    AIAnalysisTile.attempts: 0,
-                    AIAnalysisTile.last_error: None,
-                },
-                synchronize_session=False,
-            )
-        )
-        event = build_analysis_pipeline_event(
-            run,
-            MissionObjectNamespace.from_binding(
-                mission.organization_id,
-                mission.vol_id,
-                mission.workspace_prefix,
-            ),
-            attempt=run.retry_count,
-        )
-        enqueue_outbox(
-            typed_session,
-            topic=TOPIC_ORTHO,
-            event=event,
-            key=tenant_mission_key(mission.organization_id, vol_id),
-        )
+        queue_analysis_stage(typed_session, mission, run, previous.upstream_artifact_ids[0])
         return serialize_run(run)
 
 
@@ -209,34 +162,9 @@ def cancel_analysis(
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
     with owned_run_scope(vol_id, run_id, principal, owner_subject, "analysis_cancel") as (typed_session, run):
-        if run.status == "completed":
-            raise HTTPException(
-                status_code=409,
-                detail="A completed analysis cannot be cancelled",
-            )
-        if not mark_cancellation_requested(
-            typed_session,
-            vol_id=vol_id,
-            run_id=run_id,
-            attempt=run.retry_count,
-            organization_id=principal.organization_id,
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="Analysis generation changed before cancellation",
-            )
-        event = build_analysis_cancel_event(
-            vol_id,
-            run_id,
-            principal.organization_id,
-            run.retry_count,
-        )
-        enqueue_outbox(
-            typed_session,
-            topic=TOPIC_CONTROL,
-            event=event,
-            key=tenant_mission_key(principal.organization_id, vol_id),
-        )
+        latest_analysis_stage(typed_session, run)
+        if not cancel_analysis_stages(typed_session, run):
+            raise HTTPException(status_code=409, detail="A completed analysis cannot be cancelled")
         return serialize_run(run)
 
 
@@ -276,23 +204,9 @@ def analysis_vectors(
                 run_id=run_id,
                 truncated=len(records) > limit,
             )
-        tiles = cast(
-            list[AnalysisTileRecord],
-            typed_session.query(AIAnalysisTile)
-            .filter(
-                AIAnalysisTile.analysis_run_id == run.id,
-                AIAnalysisTile.status == "completed",
-                AIAnalysisTile.result_s3_key.isnot(None),
-            )
-            .order_by(AIAnalysisTile.tile_index)
-            .all(),
-        )
-        features, truncated = _object_store_features(
-            tiles,
-            bounds,
-            limit,
-            vol_id=run.vol_id,
-            tiling_metadata=run.tiling_metadata or {},
+        mission = get_mission(typed_session, vol_id, principal, owner_subject=owner_subject)
+        features, truncated = analysis_artifact_features(
+            typed_session, mission, run, bounds, limit,
         )
     return feature_collection(
         features,

@@ -2,9 +2,9 @@ import json
 
 import pytest
 
+from shared.event_contracts import make_event
 from shared.kafka_reliability import (
     ConsumerAssignmentWatchdog,
-    MessageDeferredError,
     RetryPolicy,
     publish_json,
     recreate_unassigned_consumer,
@@ -21,7 +21,7 @@ class FakeMessage:
         return self._value
 
     def topic(self):
-        return "image-tiles"
+        return "pipeline-control"
 
     def partition(self):
         return 2
@@ -69,17 +69,16 @@ class FakeProducer:
         return 0
 
 
-def tile_message(*, attempt=0, organization_id=None):
+def control_message(*, attempt=0, organization_id=None):
     payload = {
         "vol_id": "mission-1",
-        "tile_index": 3,
-        "tile_s3_key": "missions/mission-1/tile_3.jpg",
+        "command": "cancel",
         "attempt": attempt,
     }
     if organization_id is not None:
         payload["organization_id"] = organization_id
     return FakeMessage(
-        json.dumps(payload).encode()
+        json.dumps(make_event("control", payload, attempt=attempt)).encode()
     )
 
 
@@ -161,9 +160,9 @@ def test_recreate_unassigned_consumer_closes_and_replaces_stalled_member():
 def test_publish_json_confirms_only_its_delivery_with_poll():
     producer = FakeProducer()
 
-    publish_json(producer, "tile-detections", {"value": 1}, key="tile-1")
+    publish_json(producer, "pipeline-status", {"value": 1}, key="tile-1")
 
-    assert producer.messages == [("tile-detections", "tile-1", {"value": 1})]
+    assert producer.messages == [("pipeline-status", "tile-1", {"value": 1})]
     assert len(producer.polls) == 1
 
 
@@ -171,14 +170,14 @@ def test_publish_json_propagates_delivery_error_and_timeout():
     with pytest.raises(RuntimeError, match="delivery failed"):
         publish_json(
             FakeProducer(delivery_error="broker unavailable"),
-            "tile-detections",
+            "pipeline-status",
             {"value": 1},
         )
 
     with pytest.raises(TimeoutError, match="confirmation timed out"):
         publish_json(
             FakeProducer(deliver=False),
-            "tile-detections",
+            "pipeline-status",
             {"value": 1},
             delivery_timeout_seconds=0,
         )
@@ -198,9 +197,9 @@ def test_process_message_retries_then_commits_after_success():
     result = process_message(
         consumer=consumer,
         producer=producer,
-        message=tile_message(attempt=7),
+        message=control_message(attempt=7),
         consumer_group="ia-workers",
-        expected_type="image_tile",
+        expected_type="control",
         dead_letter_topic="pipeline-dead-letter",
         handler=handler,
         retry_policy=RetryPolicy(3, 0.25, 1),
@@ -222,9 +221,9 @@ def test_process_message_dead_letters_poison_event_then_commits():
     result = process_message(
         consumer=consumer,
         producer=producer,
-        message=tile_message(organization_id="tenant-a"),
+        message=control_message(organization_id="tenant-a"),
         consumer_group="ia-workers",
-        expected_type="image_tile",
+        expected_type="control",
         dead_letter_topic="pipeline-dead-letter",
         handler=lambda _event: (_ for _ in ()).throw(RuntimeError("permanent")),
         retry_policy=RetryPolicy(2, 0, 0),
@@ -245,38 +244,6 @@ def test_process_message_dead_letters_poison_event_then_commits():
     assert "RuntimeError: permanent" in dead_letter["error"]
 
 
-def test_process_message_defers_without_commit_or_dead_letter():
-    consumer = FakeConsumer()
-    producer = FakeProducer()
-    sleeps = []
-
-    result = process_message(
-        consumer=consumer,
-        producer=producer,
-        message=tile_message(),
-        consumer_group="ia-workers",
-        expected_type="image_tile",
-        dead_letter_topic="pipeline-dead-letter",
-        handler=lambda _event: (_ for _ in ()).throw(
-            MessageDeferredError("claim is active", retry_after_seconds=0.25)
-        ),
-        retry_policy=RetryPolicy(3, 0, 0),
-        sleep=sleeps.append,
-    )
-
-    assert result is False
-    assert consumer.commits == []
-    assert producer.messages == []
-    assert sleeps == [0.25]
-    assert len(consumer.seeks) == 1
-    position = consumer.seeks[0]
-    assert (position.topic, position.partition, position.offset) == (
-        "image-tiles",
-        2,
-        42,
-    )
-
-
 def test_dead_letter_delivery_failure_leaves_offset_uncommitted():
     consumer = FakeConsumer()
     producer = FakeProducer(delivery_error="broker unavailable")
@@ -285,9 +252,9 @@ def test_dead_letter_delivery_failure_leaves_offset_uncommitted():
         process_message(
             consumer=consumer,
             producer=producer,
-            message=tile_message(),
+            message=control_message(),
             consumer_group="ia-workers",
-            expected_type="image_tile",
+            expected_type="control",
             dead_letter_topic="pipeline-dead-letter",
             handler=lambda _event: (_ for _ in ()).throw(ValueError("bad")),
             retry_policy=RetryPolicy(1, 0, 0),

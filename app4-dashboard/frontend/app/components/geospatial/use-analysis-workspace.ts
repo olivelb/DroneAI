@@ -5,12 +5,11 @@ import {
   cancelAnalysis,
   createAnalysis,
   fetchAnalyses,
-  fetchBrowse,
   retryAnalysis,
 } from "../../lib/api";
 import { useI18n } from "../../lib/i18n/provider";
-import type { AnalysisCreate, AnalysisRun } from "../../lib/types";
-import { DEFAULT_ANALYSIS, retainKnownRunIds } from "./workspace-config";
+import type { AnalysisCreate, AnalysisRun, MissionProduct } from "../../lib/types";
+import { DEFAULT_ANALYSIS, rasterProductFiles, retainKnownRunIds } from "./workspace-config";
 
 interface AnalysisWorkspaceOptions {
   setNotice: (message: string) => void;
@@ -19,11 +18,11 @@ interface AnalysisWorkspaceOptions {
 
 export function useAnalysisWorkspace(
   missionId: string | null,
-  workspacePrefix: string | null,
+  products: MissionProduct[] | undefined,
   { setNotice, setError }: AnalysisWorkspaceOptions,
 ) {
   const { t } = useI18n();
-  const [availableFiles, setAvailableFiles] = useState<string[]>([]);
+  const availableFiles = useMemo(() => rasterProductFiles(products), [products]);
   const [analyses, setAnalyses] = useState<AnalysisRun[]>([]);
   const [visibleRuns, setVisibleRuns] = useState<string[]>([]);
   const [form, setForm] = useState<AnalysisCreate>(DEFAULT_ANALYSIS);
@@ -31,27 +30,19 @@ export function useAnalysisWorkspace(
   const [submitting, setSubmitting] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (!missionId || !workspacePrefix) return;
+    if (!missionId) return;
     const payload = await fetchAnalyses(missionId);
     setAnalyses(payload.runs);
     setVisibleRuns((current) =>
       retainKnownRunIds(current, payload.runs.map((run) => run.run_id)),
     );
-  }, [missionId, workspacePrefix]);
+  }, [missionId]);
 
   useEffect(() => {
-    if (!missionId || !workspacePrefix) return;
+    if (!missionId) return;
     let cancelled = false;
-    Promise.all([
-      fetchBrowse(`${workspacePrefix}/`).catch(() => []),
-      fetchAnalyses(missionId).catch(() => ({ runs: [] })),
-    ]).then(([files, runs]) => {
+    fetchAnalyses(missionId).catch(() => ({ runs: [] })).then((runs) => {
       if (cancelled) return;
-      setAvailableFiles(
-        files.map(
-          (item) => item.path ?? item.name ?? "",
-        ),
-      );
       setAnalyses(runs.runs);
       setVisibleRuns(
         runs.runs
@@ -66,7 +57,7 @@ export function useAnalysisWorkspace(
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [missionId, refresh, workspacePrefix]);
+  }, [missionId, refresh]);
 
   const visibleAnalyses = useMemo(
     () => analyses.filter(

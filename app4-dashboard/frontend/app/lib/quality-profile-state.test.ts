@@ -3,19 +3,19 @@ import { describe, expect, it } from "vitest";
 import { qualityProfileParameters } from "./quality-profile-state";
 import type { ParameterConfigResponse } from "./types";
 
-const candidateSchema = {
-  pipelines: { modern: {}, legacy: {} },
+const productionSchema = {
+  pipelines: { modern: {} },
   processes: [],
   metadata: {},
   quality_profiles: [
     {
-      id: "normal-v4",
+      id: "high-quality-v4",
       version: 4,
-      name: "Normal candidate",
-      description: "Projected resident candidate",
+      name: "High Quality",
+      description: "Qualified projected resident profile",
       parameters: {
-        gs_iterations: "15000",
-        gs_cap_max: "3000000",
+        gs_iterations: "30000",
+        gs_cap_max: "6000000",
         gs_resident_partitioning: true,
         gs_initial_scale_policy: "projected-knn",
         gs_initial_max_projected_sigma_pixels: "8.0",
@@ -37,13 +37,13 @@ const candidateSchema = {
 } satisfies ParameterConfigResponse;
 
 describe("qualityProfileParameters", () => {
-  it("applies the complete projected Normal candidate envelope", () => {
-    expect(qualityProfileParameters(candidateSchema, "normal-v4")).toEqual(
-      candidateSchema.quality_profiles[0].parameters,
+  it("applies the complete qualified HQ envelope", () => {
+    expect(qualityProfileParameters(productionSchema, "high-quality-v4")).toEqual(
+      productionSchema.quality_profiles[0].parameters,
     );
   });
 
   it("does not partially apply a profile missing from the catalog", () => {
-    expect(qualityProfileParameters(candidateSchema, "high-quality-v4")).toEqual({});
+    expect(qualityProfileParameters(productionSchema, "fast-v2")).toEqual({});
   });
 });

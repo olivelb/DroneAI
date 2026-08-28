@@ -127,9 +127,6 @@ constexpr std::uint32_t fastgs_checkpoint_interval = 32U;
 constexpr std::uint32_t fastgs_backward_warps_per_block = 4U;
 constexpr float fastgs_checkpoint_color_scale = 255.0F / 4.0F;
 constexpr float fastgs_checkpoint_color_inverse_scale = 4.0F / 255.0F;
-constexpr float dev37_antialias_filter_variance_005 = 0.05F;
-constexpr float dev37_antialias_filter_variance_015 = 0.15F;
-constexpr float dev37_antialias_filter_variance_030 = 0.30F;
 constexpr std::uint32_t threads_per_block = 256U;
 static_assert(
     fastgs_backward_warps_per_block * fastgs_checkpoint_interval <=
@@ -148,13 +145,6 @@ constexpr float mrnf_scale_learning_rate_initial = 7.0e-3F;
 constexpr float mrnf_scale_learning_rate_final = 5.0e-3F;
 constexpr float mrnf_rotation_learning_rate = 2.0e-3F;
 constexpr float mrnf_adam_epsilon = 1.0e-15F;
-constexpr float dev16_position_learning_rate_initial = 1.6e-4F;
-constexpr float dev16_position_learning_rate_final = 1.6e-6F;
-constexpr float dev16_dc_learning_rate = 5.0e-2F;
-constexpr float dev16_opacity_learning_rate = 1.0e-2F;
-constexpr float dev16_scale_learning_rate = 5.0e-3F;
-constexpr float dev16_rotation_learning_rate = 1.0e-3F;
-constexpr float dev16_adam_epsilon = 1.0e-8F;
 
 __device__ __forceinline__ std::uint32_t pack_fastgs_checkpoint_color(
     float value) {
@@ -4640,145 +4630,9 @@ static float percentile80_median_size(
     return widths[1U];
 }
 
-static float bounding_box_diagonal(
-    const std::vector<Gaussian>& gaussians) {
-    std::array<float, 3> minimum{
-        std::numeric_limits<float>::max(),
-        std::numeric_limits<float>::max(),
-        std::numeric_limits<float>::max(),
-    };
-    std::array<float, 3> maximum{
-        std::numeric_limits<float>::lowest(),
-        std::numeric_limits<float>::lowest(),
-        std::numeric_limits<float>::lowest(),
-    };
-    for (const auto& gaussian : gaussians) {
-        for (std::size_t axis = 0U; axis < 3U; ++axis) {
-            minimum[axis] = std::min(minimum[axis], gaussian.xyz[axis]);
-            maximum[axis] = std::max(maximum[axis], gaussian.xyz[axis]);
-        }
-    }
-    double squared = 0.0;
-    for (std::size_t axis = 0U; axis < 3U; ++axis) {
-        const double extent =
-            static_cast<double>(maximum[axis]) - minimum[axis];
-        squared += extent * extent;
-    }
-    return static_cast<float>(
-        std::max(std::sqrt(squared), 1.0e-6));
-}
-
 static MrnfLearningRates mrnf_learning_rates(
     std::uint64_t optimizer_step, std::uint64_t maximum_steps,
-    float position_scale, MrnfOptimizerProfile profile) {
-    const bool reference_all = uses_reference_absolute_optimizer(profile);
-    const bool calibrated_dc_opacity =
-        profile == MrnfOptimizerProfile::calibrated_dc_005_opacity ||
-        profile == MrnfOptimizerProfile::calibrated_dc_010_opacity ||
-        profile == MrnfOptimizerProfile::calibrated_dc_020_opacity ||
-        profile == MrnfOptimizerProfile::calibrated_dc_010_opacity_024 ||
-        profile == MrnfOptimizerProfile::calibrated_dc_010_opacity_048 ||
-        profile == MrnfOptimizerProfile::calibrated_dc_010_opacity_096 ||
-        profile == MrnfOptimizerProfile::dev34_opacity096_reference_scale ||
-        profile == MrnfOptimizerProfile::dev34_opacity096_reference_rotation ||
-        profile ==
-            MrnfOptimizerProfile::dev34_opacity096_reference_scale_rotation ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev35_opacity096_reference_scale_staged_rotation004 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev35_opacity096_reference_scale_staged_rotation008 ||
-        profile ==
-            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad025 ||
-        profile ==
-            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad050 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa005 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa015 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa030 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev38_staged_rotation008_absgrad050_fastgs;
-    const bool reference_dc =
-        reference_all ||
-        profile == MrnfOptimizerProfile::reference_dc_only ||
-        profile == MrnfOptimizerProfile::reference_dc_opacity ||
-        calibrated_dc_opacity;
-    const bool reference_position =
-        reference_all ||
-        profile == MrnfOptimizerProfile::reference_position_only;
-    const bool reference_opacity =
-        reference_all ||
-        profile == MrnfOptimizerProfile::reference_opacity_only ||
-        profile == MrnfOptimizerProfile::reference_dc_opacity ||
-        calibrated_dc_opacity;
-    const bool reference_scale =
-        reference_all ||
-        profile == MrnfOptimizerProfile::reference_scale_only ||
-        profile == MrnfOptimizerProfile::dev34_opacity096_reference_scale ||
-        profile ==
-            MrnfOptimizerProfile::dev34_opacity096_reference_scale_rotation ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev35_opacity096_reference_scale_staged_rotation004 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev35_opacity096_reference_scale_staged_rotation008 ||
-        profile ==
-            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad025 ||
-        profile ==
-            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad050 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa005 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa015 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa030 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev38_staged_rotation008_absgrad050_fastgs;
-    const bool staged_rotation004 =
-        profile ==
-        MrnfOptimizerProfile::
-            dev35_opacity096_reference_scale_staged_rotation004;
-    const bool staged_rotation008 =
-        profile ==
-        MrnfOptimizerProfile::
-            dev35_opacity096_reference_scale_staged_rotation008 ||
-        profile ==
-            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad025 ||
-        profile ==
-            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad050 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa005 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa015 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa030 ||
-        profile ==
-            MrnfOptimizerProfile::
-                dev38_staged_rotation008_absgrad050_fastgs;
-    const bool staged_rotation =
-        staged_rotation004 || staged_rotation008;
-    const bool reference_rotation =
-        reference_all ||
-        profile == MrnfOptimizerProfile::reference_rotation_only ||
-        profile == MrnfOptimizerProfile::dev34_opacity096_reference_rotation ||
-        profile ==
-            MrnfOptimizerProfile::dev34_opacity096_reference_scale_rotation ||
-        staged_rotation;
+    float position_scale) {
     const double reference_progress =
         optimizer_step <= 1U || maximum_steps == 0U
             ? 0.0
@@ -4786,13 +4640,6 @@ static MrnfLearningRates mrnf_learning_rates(
                   1.0,
                   static_cast<double>(optimizer_step - 1U) /
                       static_cast<double>(maximum_steps));
-    const double dev16_progress =
-        maximum_steps <= 1U
-            ? 0.0
-            : std::min(
-                  1.0,
-                  static_cast<double>(optimizer_step - 1U) /
-                      static_cast<double>(maximum_steps - 1U));
     const auto exponential = [](
         double progress,
         float initial, float final) {
@@ -4801,123 +4648,24 @@ static MrnfLearningRates mrnf_learning_rates(
                 (1.0 - progress) +
             std::log(static_cast<double>(final)) * progress));
     };
-    float dc_learning_rate = reference_dc
-        ? mrnf_dc_learning_rate
-        : dev16_dc_learning_rate;
-    if (profile ==
-        MrnfOptimizerProfile::calibrated_dc_005_opacity) {
-        dc_learning_rate = 5.0e-3F;
-    } else if (
-        profile ==
-            MrnfOptimizerProfile::calibrated_dc_010_opacity ||
-        profile ==
-            MrnfOptimizerProfile::calibrated_dc_010_opacity_024 ||
-        profile ==
-            MrnfOptimizerProfile::calibrated_dc_010_opacity_048 ||
-        profile ==
-            MrnfOptimizerProfile::calibrated_dc_010_opacity_096 ||
-        profile ==
-            MrnfOptimizerProfile::dev34_opacity096_reference_scale ||
-        profile ==
-            MrnfOptimizerProfile::dev34_opacity096_reference_rotation ||
-        profile ==
-            MrnfOptimizerProfile::dev34_opacity096_reference_scale_rotation ||
-        staged_rotation) {
-        dc_learning_rate = 1.0e-2F;
-    } else if (
-        profile ==
-        MrnfOptimizerProfile::calibrated_dc_020_opacity) {
-        dc_learning_rate = 2.0e-2F;
-    }
-    float opacity_learning_rate = reference_opacity
-        ? mrnf_opacity_learning_rate
-        : dev16_opacity_learning_rate;
-    if (profile ==
-        MrnfOptimizerProfile::calibrated_dc_010_opacity_024) {
-        opacity_learning_rate = 2.4e-2F;
-    } else if (
-        profile ==
-        MrnfOptimizerProfile::calibrated_dc_010_opacity_048) {
-        opacity_learning_rate = 4.8e-2F;
-    } else if (
-        profile ==
-        MrnfOptimizerProfile::calibrated_dc_010_opacity_096) {
-        opacity_learning_rate = 9.6e-2F;
-    } else if (
-        profile == MrnfOptimizerProfile::dev34_opacity096_reference_scale ||
-        profile == MrnfOptimizerProfile::dev34_opacity096_reference_rotation ||
-        profile ==
-            MrnfOptimizerProfile::dev34_opacity096_reference_scale_rotation ||
-        staged_rotation) {
-        opacity_learning_rate = 9.6e-2F;
-    }
-    float rotation_learning_rate = reference_rotation
-        ? mrnf_rotation_learning_rate
-        : dev16_rotation_learning_rate;
-    if (staged_rotation && dev16_progress < 0.4) {
-        rotation_learning_rate = dev16_rotation_learning_rate;
-    } else if (staged_rotation004) {
-        rotation_learning_rate = 4.0e-3F;
-    } else if (staged_rotation008) {
-        rotation_learning_rate = 8.0e-3F;
-    }
     return {
-        .position =
-            position_scale * exponential(
-                reference_position
-                    ? reference_progress
-                    : dev16_progress,
-                reference_position
-                    ? mrnf_position_learning_rate_initial
-                    : dev16_position_learning_rate_initial,
-                reference_position
-                    ? mrnf_position_learning_rate_final
-                    : dev16_position_learning_rate_final),
-        .dc = dc_learning_rate,
-        .opacity = opacity_learning_rate,
-        .scale = reference_scale
-            ? exponential(
-                  reference_progress,
-                  mrnf_scale_learning_rate_initial,
-                  mrnf_scale_learning_rate_final)
-            : dev16_scale_learning_rate,
-        .rotation = rotation_learning_rate,
-        .position_epsilon = reference_position
-            ? mrnf_adam_epsilon
-            : dev16_adam_epsilon,
-        .dc_epsilon = reference_dc
-            ? mrnf_adam_epsilon
-            : dev16_adam_epsilon,
-        .opacity_epsilon = reference_opacity
-            ? mrnf_adam_epsilon
-            : dev16_adam_epsilon,
-        .scale_epsilon = reference_scale
-            ? mrnf_adam_epsilon
-            : dev16_adam_epsilon,
-        .rotation_epsilon = reference_rotation
-            ? mrnf_adam_epsilon
-            : dev16_adam_epsilon,
+        .position = position_scale * exponential(
+            reference_progress,
+            mrnf_position_learning_rate_initial,
+            mrnf_position_learning_rate_final),
+        .dc = mrnf_dc_learning_rate,
+        .opacity = mrnf_opacity_learning_rate,
+        .scale = exponential(
+            reference_progress,
+            mrnf_scale_learning_rate_initial,
+            mrnf_scale_learning_rate_final),
+        .rotation = mrnf_rotation_learning_rate,
+        .position_epsilon = mrnf_adam_epsilon,
+        .dc_epsilon = mrnf_adam_epsilon,
+        .opacity_epsilon = mrnf_adam_epsilon,
+        .scale_epsilon = mrnf_adam_epsilon,
+        .rotation_epsilon = mrnf_adam_epsilon,
     };
-}
-
-static float antialias_filter_variance_for_profile(
-    MrnfOptimizerProfile profile) {
-    if (profile ==
-        MrnfOptimizerProfile::
-            dev37_staged_rotation008_absgrad050_aa005) {
-        return dev37_antialias_filter_variance_005;
-    }
-    if (profile ==
-        MrnfOptimizerProfile::
-            dev37_staged_rotation008_absgrad050_aa015) {
-        return dev37_antialias_filter_variance_015;
-    }
-    if (profile ==
-        MrnfOptimizerProfile::
-            dev37_staged_rotation008_absgrad050_aa030) {
-        return dev37_antialias_filter_variance_030;
-    }
-    return 0.0F;
 }
 
 struct OrderedAlphaTrainingContext::Impl {
@@ -4943,14 +4691,9 @@ struct OrderedAlphaTrainingContext::Impl {
           noise_until_iteration(
               topology_growth_end_iteration(maximum_steps)),
           optimizer_profile(requested_optimizer_profile),
-          antialias_filter_variance(
-              antialias_filter_variance_for_profile(
-                  requested_optimizer_profile)),
+          antialias_filter_variance(0.0F),
           fastgs_compatibility(
-              fastgs_compatibility_override.value_or(
-                  requested_optimizer_profile ==
-                  MrnfOptimizerProfile::
-                      dev38_staged_rotation008_absgrad050_fastgs)),
+              fastgs_compatibility_override.value_or(false)),
           maximum_active_sh_degree(requested_maximum_sh_degree),
           opacity_sh_enabled(requested_opacity_sh_enabled),
           sh_degree_interval(requested_sh_degree_interval),
@@ -5058,14 +4801,9 @@ struct OrderedAlphaTrainingContext::Impl {
             }
         }
         position_learning_rate_scale =
-            uses_reference_absolute_optimizer(optimizer_profile) ||
-                optimizer_profile ==
-                    MrnfOptimizerProfile::reference_position_only
-                ? percentile80_median_size(initial_gaussians)
-                : bounding_box_diagonal(initial_gaussians);
+            percentile80_median_size(initial_gaussians);
         learning_rates = mrnf_learning_rates(
-            1U, maximum_steps, position_learning_rate_scale,
-            optimizer_profile);
+            1U, maximum_steps, position_learning_rate_scale);
         if (!std::isfinite(requested_maximum_scale_growth_factor) ||
             requested_maximum_scale_growth_factor < 1.0F) {
             throw std::invalid_argument(
@@ -5808,8 +5546,7 @@ struct OrderedAlphaTrainingContext::Impl {
                     1.0F / (1.0F - beta_second_power);
                 learning_rates = mrnf_learning_rates(
                     optimizer_steps, maximum_steps,
-                    position_learning_rate_scale,
-                    optimizer_profile);
+                    position_learning_rate_scale);
                 const bool collect_telemetry =
                     optimizer_steps == 1U ||
                     optimizer_steps == maximum_steps ||
@@ -6045,8 +5782,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 "ordered topology refinement parameters are invalid");
         }
         const auto previous_count = gaussian_count;
-        const float absgrad_score_weight =
-            mrnf_absgrad_score_weight(optimizer_profile);
+        constexpr float absgrad_score_weight = 0.0F;
         auto [host_pruning, host_weights, host_visibility, host_edge_weights,
               host_absgrad_sum, host_absgrad_count] = refinement_host.prepare(previous_count);
         timer.finish(&TopologyRefinementTelemetry::host_prepare_seconds);
@@ -6482,7 +6218,7 @@ struct OrderedAlphaTrainingContext::Impl {
     std::uint32_t active_sh_degree = 0U;
     std::uint64_t noise_seed = 0U;
     MrnfOptimizerProfile optimizer_profile =
-        MrnfOptimizerProfile::dronegs_dev16;
+        MrnfOptimizerProfile::reference_absolute;
     float antialias_filter_variance = 0.0F;
     bool fastgs_compatibility = false;
     float position_learning_rate_scale = 1.0F;
@@ -6576,7 +6312,7 @@ struct TrainingCheckpointSnapshot::Impl {
     std::uint32_t sh_degree_interval = 0U;
     std::uint32_t active_sh_degree = 0U;
     MrnfOptimizerProfile optimizer_profile =
-        MrnfOptimizerProfile::dronegs_dev16;
+        MrnfOptimizerProfile::reference_absolute;
     bool fastgs_compatibility = false;
     float position_learning_rate_scale = 1.0F;
     float minimum_log_scale = -16.0F;
@@ -7175,12 +6911,12 @@ OrderedAlphaTrainingContext::load_checkpoint(
     std::uint32_t format_version = 0U;
     read_value(format_version);
     if (magic != expected_magic ||
-        (format_version != 4U && format_version != 5U)) {
+        format_version != 5U) {
         throw std::runtime_error(
             "unsupported DroneGS checkpoint format; opacity-SH training "
-            "requires version 4 or 5");
+            "requires version 5");
     }
-    if (format_version >= 3U) {
+    {
         if (total_bytes <= sizeof(std::uint64_t)) {
             throw std::runtime_error(
                 "checkpoint is too short for its checksum");
@@ -7214,51 +6950,20 @@ OrderedAlphaTrainingContext::load_checkpoint(
     read_value(progress.gaussians_pruned);
     read_value(progress.gaussian_slots_reused);
     read_value(progress.topology_compactions);
-    if (format_version >= 2U) {
-        read_value(progress.initial_loss);
-        bool has_initial_held_out_psnr = false;
-        bool has_initial_held_out_ssim = false;
-        if (format_version >= 3U) {
-            std::uint8_t value = 0U;
-            read_value(value);
-            has_initial_held_out_psnr = value != 0U;
-        } else {
-            read_value(has_initial_held_out_psnr);
-        }
-        if (has_initial_held_out_psnr) {
+    read_value(progress.initial_loss);
+    const auto read_optional_metric = [&](std::optional<float>& metric) {
+        std::uint8_t present = 0U;
+        read_value(present);
+        if (present != 0U) {
             float value = 0.0F;
             read_value(value);
-            progress.initial_held_out_psnr = value;
+            metric = value;
         }
-        if (format_version >= 3U) {
-            std::uint8_t value = 0U;
-            read_value(value);
-            has_initial_held_out_ssim = value != 0U;
-        } else {
-            read_value(has_initial_held_out_ssim);
-        }
-        if (has_initial_held_out_ssim) {
-            float value = 0.0F;
-            read_value(value);
-            progress.initial_held_out_ssim = value;
-        }
-        if (format_version >= 5U) {
-            std::uint8_t has_initial_pixel_weighted_psnr = 0U;
-            read_value(has_initial_pixel_weighted_psnr);
-            if (has_initial_pixel_weighted_psnr != 0U) {
-                float value = 0.0F;
-                read_value(value);
-                progress.initial_pixel_weighted_psnr = value;
-            }
-            std::uint8_t has_initial_pixel_weighted_ssim = 0U;
-            read_value(has_initial_pixel_weighted_ssim);
-            if (has_initial_pixel_weighted_ssim != 0U) {
-                float value = 0.0F;
-                read_value(value);
-                progress.initial_pixel_weighted_ssim = value;
-            }
-        }
-    }
+    };
+    read_optional_metric(progress.initial_held_out_psnr);
+    read_optional_metric(progress.initial_held_out_ssim);
+    read_optional_metric(progress.initial_pixel_weighted_psnr);
+    read_optional_metric(progress.initial_pixel_weighted_ssim);
     std::uint64_t optimizer_steps = 0U;
     std::uint64_t checkpoint_maximum_steps = 0U;
     std::uint64_t checkpoint_noise_seed = 0U;
@@ -7271,7 +6976,7 @@ OrderedAlphaTrainingContext::load_checkpoint(
     read_value(optimizer_steps);
     read_value(checkpoint_maximum_steps);
     read_value(checkpoint_noise_seed);
-    if (format_version >= 3U) {
+    {
         std::uint64_t portable_count = 0U;
         read_value(portable_count);
         if (portable_count >
@@ -7282,19 +6987,15 @@ OrderedAlphaTrainingContext::load_checkpoint(
         }
         checkpoint_count =
             static_cast<std::size_t>(portable_count);
-    } else {
-        read_value(checkpoint_count);
     }
     read_value(checkpoint_maximum_sh);
     read_value(checkpoint_sh_interval);
     read_value(checkpoint_active_sh);
     read_value(checkpoint_profile);
-    if (format_version >= 3U) {
+    {
         std::uint8_t portable_fastgs = 0U;
         read_value(portable_fastgs);
         checkpoint_fastgs = portable_fastgs != 0U;
-    } else {
-        read_value(checkpoint_fastgs);
     }
     if (checkpoint_count == 0U ||
         checkpoint_count > impl_->gaussian_capacity ||
@@ -7345,7 +7046,7 @@ OrderedAlphaTrainingContext::load_checkpoint(
         throw std::runtime_error(
             "checkpoint payload is truncated");
     }
-    if (format_version >= 3U) {
+    {
         const auto consumed = stream.tellg();
         if (consumed < 0 ||
             static_cast<std::uint64_t>(consumed) != payload_bytes) {
@@ -7356,8 +7057,7 @@ OrderedAlphaTrainingContext::load_checkpoint(
     impl_->learning_rates = mrnf_learning_rates(
         std::max<std::uint64_t>(1U, optimizer_steps),
         impl_->maximum_steps,
-        impl_->position_learning_rate_scale,
-        impl_->optimizer_profile);
+        impl_->position_learning_rate_scale);
     impl_->latest_telemetry.reset();
     return progress;
 }

@@ -55,7 +55,7 @@ def run_detection_shard_subtask(
     control: StageExecutionControl,
 ) -> None:
     if not artifact_selective_restore_enabled():
-        raise ValueError("Indexed detection requires selective Manifest v2 restore")
+        raise ValueError("Indexed detection requires selective Manifest v3 restore")
     plan = _durable_plan(context)
     declared_count = int(os.getenv("DRONEAI_DETECTION_SHARD_COUNT", "0"))
     if declared_count != plan.shard_count:
@@ -114,7 +114,7 @@ def run_detection_finalizer(
     control: StageExecutionControl,
 ) -> StageExecutionResult:
     if not artifact_selective_restore_enabled():
-        raise ValueError("Indexed detection finalizer requires Manifest v2 restore")
+        raise ValueError("Indexed detection finalizer requires Manifest v3 restore")
     plan = _durable_plan(context)
     with get_session(organization_id=context.organization_id) as session:
         receipts = complete_detection_shard_receipts(

@@ -9,18 +9,9 @@ from dataclasses import dataclass, field
 from typing import Any
 from collections.abc import Callable
 
-from confluent_kafka import TopicPartition
 
 from shared.event_contracts import decode_event, make_event
 from shared.tenancy import validate_organization_id
-
-
-class MessageDeferredError(RuntimeError):
-    """Ask the consumer to retry the same offset without DLQ or commit."""
-
-    def __init__(self, message: str, *, retry_after_seconds: float = 5.0) -> None:
-        super().__init__(message)
-        self.retry_after_seconds = max(0.0, retry_after_seconds)
 
 
 @dataclass(frozen=True)
@@ -131,16 +122,6 @@ def reliable_consumer_config(
 
 def commit_message(consumer: Any, message: Any) -> None:
     consumer.commit(message=message, asynchronous=False)
-
-
-def seek_message(consumer: Any, message: Any) -> None:
-    consumer.seek(
-        TopicPartition(
-            message.topic(),
-            message.partition(),
-            message.offset(),
-        )
-    )
 
 
 def publish_json(
@@ -281,12 +262,6 @@ def process_message(
             handler(event)
             commit_message(consumer, message)
             return True
-        except MessageDeferredError as error:
-            seek_message(consumer, message)
-            if logger is not None:
-                logger.info("Kafka message deferred without commit: %s", error)
-            sleep(error.retry_after_seconds)
-            return False
         except Exception as error:
             last_error = error
             if logger is not None:

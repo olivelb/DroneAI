@@ -27,7 +27,7 @@ from shared.gcp_bundle import (
     bundle_blob,
 )
 from shared.gcp_import import ImportedGcpSet
-from shared.tenancy import LEGACY_ORGANIZATION_ID, MissionObjectNamespace
+from shared.tenancy import MissionObjectNamespace
 
 from .map_support import JsonObject, RouteSession
 
@@ -385,27 +385,20 @@ def materialize_gcp_bundle(
         for point in cast(list[GcpPoint], gcp_set.points)
     ]
     files = build_gcp_bundle_files(gcp_set.source_crs, points)
-    tenant_organization_id = (
-        organization_id
-        if organization_id != LEGACY_ORGANIZATION_ID
-        else None
-    )
+
 
     def publish(data: bytes) -> JsonObject:
         expected = cast(
             JsonObject,
-            bundle_blob(data, tenant_organization_id),
+            bundle_blob(data, organization_id),
         )
         with tempfile.NamedTemporaryFile() as temporary:
             temporary.write(data)
             temporary.flush()
-            if tenant_organization_id is None:
-                uploaded = storage.publish_content_addressed_file(temporary.name)
-            else:
-                uploaded = storage.publish_content_addressed_file(
-                    temporary.name,
-                    organization_id=tenant_organization_id,
-                )
+            uploaded = storage.publish_content_addressed_file(
+                temporary.name,
+                organization_id=organization_id,
+            )
         if (
             uploaded.key != expected["key"]
             or uploaded.size_bytes != expected["size"]
@@ -415,7 +408,8 @@ def materialize_gcp_bundle(
         return expected
 
     bundle: JsonObject = {
-        "schema_version": 2 if tenant_organization_id else 1,
+        "schema_version": 2,
+        "organization_id": organization_id,
         "set_id": gcp_set.set_id,
         "source_sha256": gcp_set.source_sha256,
         "gcp_list": publish(files.gcp_list),
@@ -429,6 +423,4 @@ def materialize_gcp_bundle(
             ),
         },
     }
-    if tenant_organization_id:
-        bundle["organization_id"] = tenant_organization_id
     return bundle

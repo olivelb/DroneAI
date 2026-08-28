@@ -83,31 +83,9 @@ const char* help_text() {
         "[--adaptive-growth-target 0|1] "
         "[--sh-degree-interval N] "
         "[--profile-id NAME] [--dataset-fingerprint VALUE] "
-        "[--optimizer-profile dronegs-dev16|reference-absolute|"
-        "reference-absolute-absgrad025|"
-        "reference-absolute-absgrad050|"
-        "reference-dc-only|reference-position-only|"
-        "reference-opacity-only|reference-scale-only|"
-        "reference-rotation-only|reference-dc-opacity|"
-        "calibrated-dc-0.005-opacity|"
-        "calibrated-dc-0.010-opacity|"
-        "calibrated-dc-0.020-opacity|"
-        "calibrated-dc-0.010-opacity-0.024|"
-        "calibrated-dc-0.010-opacity-0.048|"
-        "calibrated-dc-0.010-opacity-0.096|"
-        "dev34-opacity096-reference-scale|"
-        "dev34-opacity096-reference-rotation|"
-        "dev34-opacity096-reference-scale-rotation|"
-        "dev35-opacity096-reference-scale-staged-rotation004|"
-        "dev35-opacity096-reference-scale-staged-rotation008|"
-        "dev36-staged-rotation008-absgrad025|"
-        "dev36-staged-rotation008-absgrad050|"
-        "dev37-staged-rotation008-absgrad050-aa005|"
-        "dev37-staged-rotation008-absgrad050-aa015|"
-        "dev37-staged-rotation008-absgrad050-aa030|"
-        "dev38-staged-rotation008-absgrad050-fastgs] "
-        "[--pruning-policy original|spatial-bounds] "
-        "[--raster-profile auto|bounded|fastgs] "
+        "[--optimizer-profile reference-absolute] "
+        "[--pruning-policy spatial-bounds] "
+        "[--raster-profile fastgs] "
         "[--background-mode black|random] "
         "[--loss-pixel-mask active|all] "
         "[--opacity-sh 0|1]\n";
@@ -439,16 +417,11 @@ void validate_options(const Options& options) {
         throw std::invalid_argument(
             "--optimizer-profile is not present in the versioned registry");
     }
-    if (options.pruning_policy != "original" &&
-        options.pruning_policy != "spatial-bounds") {
-        throw std::invalid_argument(
-            "--pruning-policy must be original or spatial-bounds");
+    if (options.pruning_policy != "spatial-bounds") {
+        throw std::invalid_argument("--pruning-policy must be spatial-bounds");
     }
-    if (options.raster_profile != "auto" &&
-        options.raster_profile != "bounded" &&
-        options.raster_profile != "fastgs") {
-        throw std::invalid_argument(
-            "--raster-profile must be auto, bounded, or fastgs");
+    if (options.raster_profile != "fastgs") {
+        throw std::invalid_argument("--raster-profile must be fastgs");
     }
     if (options.background_mode != "black" &&
         options.background_mode != "random") {

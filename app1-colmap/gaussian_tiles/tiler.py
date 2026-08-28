@@ -24,24 +24,17 @@ from shared.gstile_defaults import (
 )
 from shared.gstile_manifest import (
     GSTILE_ADAPTIVE_LOD_PROFILE,
-    GSTILE_LOD_PROFILE,
-    GSTILE_MOMENT_LOD_PROFILE,
-    GSTILE_PROFILE,
     GSTILE_SCHEMA,
-    GSTILE_STRATIFIED_LOD_PROFILE,
     GSTILE_VERSION,
 )
 
 from .format import (
     PACK_HEADER_SIZE,
     PACK_RECORD_SIZE,
-    PreparedPack,
     canonical_manifest_bytes,
     encode_pack,
-    prepare_encoded_pack,
     validate_manifest,
     write_bundle_aggregate_pack_atomic,
-    write_prepared_pack_atomic,
 )
 from .pack_preparation import OrderedPackPreparation
 
@@ -56,13 +49,11 @@ class GsTileBuildOptions:
     crs: str | None = None
     cancellation_check: Callable[[], None] | None = None
     progress_callback: Callable[[dict[str, Any]], None] | None = None
-    lod_proxy_size: int | None = GSTILE_LOD_PROXY_SIZE
-    lod_proxy_strategy: Literal[
-        "adaptive-moment", "moment-matched", "spatial-stratified", "minhash"
-    ] = GSTILE_LOD_PROXY_STRATEGY
+    lod_proxy_size: int = GSTILE_LOD_PROXY_SIZE
+    lod_proxy_strategy: Literal["adaptive-moment"] = GSTILE_LOD_PROXY_STRATEGY
     invisible_gaussian_scale_threshold: float | None = None
     visibility_opacity_threshold: float = 0.05
-    pack_target_bytes: int | None = GSTILE_PACK_TARGET_BYTES
+    pack_target_bytes: int = GSTILE_PACK_TARGET_BYTES
     pack_workers: int = GSTILE_PACK_WORKERS
     pack_pending_bytes: int = GSTILE_PACK_PENDING_BYTES
 
@@ -77,18 +68,10 @@ class GsTileBuildOptions:
             raise ValueError("GSTile chunk_records must be between 1,024 and 1,048,576")
         if not 1 <= self.maximum_depth <= 64:
             raise ValueError("GSTile maximum_depth must be between 1 and 64")
-        if self.lod_proxy_size is not None and not (1_024 <= self.lod_proxy_size <= self.leaf_size):
+        if type(self.lod_proxy_size) is not int or not 1_024 <= self.lod_proxy_size <= self.leaf_size:
             raise ValueError("GSTile lod_proxy_size must be between 1,024 and leaf_size")
-        if self.lod_proxy_strategy not in {
-            "adaptive-moment",
-            "moment-matched",
-            "spatial-stratified",
-            "minhash",
-        }:
-            raise ValueError(
-                "GSTile lod_proxy_strategy must be adaptive-moment, moment-matched, "
-                "spatial-stratified or minhash"
-            )
+        if self.lod_proxy_strategy != "adaptive-moment":
+            raise ValueError("GSTile only supports the production adaptive-moment V4 strategy")
         if self.invisible_gaussian_scale_threshold is not None and (
             not np.isfinite(self.invisible_gaussian_scale_threshold)
             or self.invisible_gaussian_scale_threshold <= 0.0
@@ -103,8 +86,8 @@ class GsTileBuildOptions:
             raise ValueError(
                 "GSTile visibility_opacity_threshold must be strictly between 0 and 1"
             )
-        if self.pack_target_bytes is not None and (
-            isinstance(self.pack_target_bytes, bool)
+        if (
+            type(self.pack_target_bytes) is not int
             or not PACK_HEADER_SIZE + PACK_RECORD_SIZE
             <= self.pack_target_bytes
             <= 1024**3
@@ -158,12 +141,11 @@ class _PreparedTile:
     content: bytes
     quantization: dict[str, Any]
     errors: dict[str, float]
-    pack: PreparedPack | None
 
 
-def _prepare_tile(records: np.ndarray, source_ids: np.ndarray, node_id: str, standalone: bool) -> _PreparedTile:
+def _prepare_tile(records: np.ndarray, source_ids: np.ndarray, node_id: str) -> _PreparedTile:
     content, quantization, errors = encode_pack(records, source_ids, node_id=node_id)
-    return _PreparedTile(content, quantization, errors, prepare_encoded_pack(content) if standalone else None)
+    return _PreparedTile(content, quantization, errors)
 
 
 def _emit_progress(
@@ -231,17 +213,6 @@ def _copy_record_prefix(source: np.ndarray, destination: np.ndarray) -> None:
     destination_bytes[:, :prefix_bytes] = source_bytes[:, :prefix_bytes]
 
 
-def _minhash_keys(source_ids: np.ndarray) -> np.ndarray:
-    """Return deterministic SplitMix64 keys without changing source records."""
-
-    values = np.asarray(source_ids, dtype=np.uint64).copy()
-    with np.errstate(over="ignore"):
-        values += np.uint64(0x9E3779B97F4A7C15)
-        values = (values ^ (values >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
-        values = (values ^ (values >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
-    return values ^ (values >> np.uint64(31))
-
-
 def _morton_codes(records: np.ndarray) -> np.ndarray:
     """Return deterministic 63-bit Morton codes in the population bounds."""
 
@@ -265,29 +236,6 @@ def _morton_codes(records: np.ndarray) -> np.ndarray:
         codes |= ((quantized[:, 2] >> np.uint64(bit)) & np.uint64(1)) << np.uint64(3 * bit + 2)
     return codes
 
-
-def _select_lod_proxy(
-    records: np.ndarray,
-    limit: int,
-    strategy: Literal["spatial-stratified", "minhash"],
-) -> np.ndarray:
-    """Select a deterministic replacement proxy without changing source records."""
-
-    if records.shape[0] <= limit:
-        return records.copy()
-    if strategy == "minhash":
-        keys = _minhash_keys(records["source_id"])
-        selected = np.argpartition(keys, limit - 1)[:limit]
-        order = np.lexsort((records["source_id"][selected], keys[selected]))
-        return records[selected[order]].copy()
-
-    codes = _morton_codes(records)
-    order = np.lexsort((records["source_id"], codes))
-    stratum_centres = (
-        (np.arange(limit, dtype=np.int64) * 2 + 1) * records.shape[0]
-        // (2 * limit)
-    ).astype(np.intp)
-    return records[order[stratum_centres]].copy()
 
 _ELLIPSOID_AREA_POWER = 1.6075
 
@@ -598,27 +546,6 @@ def _moment_match_ordered_groups(
     return _LodProxy(output, errors)
 
 
-def _moment_matched_lod_proxy(
-    records: np.ndarray,
-    input_errors: np.ndarray,
-    limit: int,
-) -> _LodProxy:
-    """Merge uniform Morton strata while conserving mass and first two moments."""
-
-    if records.shape[0] != input_errors.shape[0]:
-        raise ValueError("GSTile proxy records and errors must have matching lengths")
-    if records.shape[0] <= limit:
-        return _LodProxy(records.copy(), input_errors.astype(np.float64, copy=True))
-
-    order = np.lexsort((records["source_id"], _morton_codes(records)))
-    ordered = records[order]
-    ordered_errors = input_errors[order].astype(np.float64, copy=False)
-    count = ordered.shape[0]
-    starts = (np.arange(limit, dtype=np.int64) * count // limit).astype(np.intp)
-    ends = (np.arange(1, limit + 1, dtype=np.int64) * count // limit).astype(np.intp)
-    return _moment_match_ordered_groups(ordered, ordered_errors, starts, ends)
-
-
 def _robust_cost_scale(values: np.ndarray) -> float:
     finite = values[np.isfinite(values) & (values > 0.0)]
     return max(float(np.median(finite)) if finite.size else 1.0, 1e-12)
@@ -830,26 +757,6 @@ def _proxy_support_error(records: np.ndarray) -> float:
     return float(np.max(np.exp(np.clip(log_scales, -30.0, 30.0)), initial=0.0))
 
 
-def _replacement_lod_proxy(
-    records: np.ndarray,
-    input_errors: np.ndarray,
-    limit: int,
-    strategy: Literal["spatial-stratified", "minhash"],
-    item: _WorkFile,
-) -> _LodProxy:
-    if records.shape[0] <= limit:
-        return _LodProxy(records.copy(), input_errors.astype(np.float64, copy=True))
-    selected = _select_lod_proxy(records, limit, strategy)
-    error = float(np.max(input_errors, initial=0.0)) + _geometric_error(item, selected.shape[0])
-    return _LodProxy(selected, np.full(selected.shape[0], error, dtype=np.float64))
-
-
-
-def _geometric_error(item: _WorkFile, proxy_count: int) -> float:
-    diagonal = float(np.linalg.norm(np.asarray(item.bounds_max) - np.asarray(item.bounds_min)))
-    return diagonal / max(float(proxy_count) ** (1.0 / 3.0), 1.0)
-
-
 def _create_root_work_file(
     source: Path,
     layout: BinaryPlyLayout,
@@ -1033,10 +940,6 @@ class _GsTileTreeBuilder:
         self.options = options
         self.bundle_tmp = bundle_tmp
         self.work_dtype = _work_dtype(layout)
-        self.adaptive_v4 = (
-            options.lod_proxy_size is not None
-            and options.lod_proxy_strategy == "adaptive-moment"
-        )
         self.nodes: list[dict[str, Any]] = []
         self.packs: list[dict[str, Any]] = []
         self.maximum_errors: dict[str, float] = {}
@@ -1062,7 +965,6 @@ class _GsTileTreeBuilder:
         self,
         records: np.ndarray,
         *,
-        pack_id: str,
         node_id: str,
         kind: Literal["exact", "proxy"],
         depth: int,
@@ -1080,72 +982,44 @@ class _GsTileTreeBuilder:
         tile: dict[str, Any] = {}
         self.preparation.submit(
             reserved_bytes,
-            partial(_prepare_tile, ply_records, source_ids, node_id, self.options.pack_target_bytes is None),
-            lambda prepared: self._accept_tile(prepared, tile, pack_id=pack_id, kind=kind, depth=depth),
+            partial(_prepare_tile, ply_records, source_ids, node_id),
+            lambda prepared: self._accept_tile(prepared, tile, kind=kind, depth=depth),
         )
         return tile
 
     def _accept_tile(
         self, prepared: _PreparedTile, tile: dict[str, Any], *,
-        pack_id: str, kind: Literal["exact", "proxy"], depth: int,
+        kind: Literal["exact", "proxy"], depth: int,
     ) -> None:
         content, quantization, errors = prepared.content, prepared.quantization, prepared.errors
         record_count = (len(content) - PACK_HEADER_SIZE) // PACK_RECORD_SIZE
-        if self.options.pack_target_bytes is not None:
-            payload = memoryview(content)[PACK_HEADER_SIZE:]
-            key = (kind, depth)
+        payload = memoryview(content)[PACK_HEADER_SIZE:]
+        key = (kind, depth)
+        pending = self.pending_tiles.setdefault(key, [])
+        self.pending_payload_bytes.setdefault(key, 0)
+        target_payload_bytes = self.options.pack_target_bytes - PACK_HEADER_SIZE
+        if (
+            pending
+            and self.pending_payload_bytes[key] + len(payload)
+            > target_payload_bytes
+        ):
+            self._flush_aggregate(key)
             pending = self.pending_tiles.setdefault(key, [])
-            self.pending_payload_bytes.setdefault(key, 0)
-            target_payload_bytes = self.options.pack_target_bytes - PACK_HEADER_SIZE
-            if (
-                pending
-                and self.pending_payload_bytes[key] + len(payload)
-                > target_payload_bytes
-            ):
-                self._flush_aggregate(key)
-                pending = self.pending_tiles.setdefault(key, [])
-            tile.update({
-                "pack": "",
-                "byteOffset": 0,
-                "byteLength": len(payload),
-                "recordCount": record_count,
-                "sha256": "",
-                "quantization": quantization,
-            })
-            pending.append(
-                _PendingEncodedTile(payload=payload, tile=tile, errors=errors)
-            )
-            self.pending_payload_bytes[key] += len(payload)
-            if self.pending_payload_bytes[key] >= target_payload_bytes:
-                self._flush_aggregate(key)
-            self._enforce_aggregate_memory_bound()
-            return
-
-        relative = Path("packs") / f"{pack_id}.gst"
-        if prepared.pack is None:
-            raise RuntimeError("GSTile standalone pack preparation is missing")
-        pack = write_prepared_pack_atomic(self.bundle_tmp / relative, prepared.pack)
-        pack["id"] = pack_id
-        pack["path"] = relative.as_posix()
-        if zstd_encoding := pack.get("encodings", {}).get("zstd"):
-            zstd_encoding["path"] = relative.with_suffix(
-                relative.suffix + ".zst"
-            ).as_posix()
-        pack["byteOffset"] = PACK_HEADER_SIZE
-        self.packs.append(pack)
         tile.update({
-            "pack": pack_id,
-            "byteOffset": PACK_HEADER_SIZE,
-            "byteLength": pack["byteLength"] - PACK_HEADER_SIZE,
+            "pack": "",
+            "byteOffset": 0,
+            "byteLength": len(payload),
             "recordCount": record_count,
-            "sha256": pack["sha256"],
+            "sha256": "",
             "quantization": quantization,
         })
-        self._record_errors(errors)
-        if kind == "exact":
-            self.exact_pack_bytes += pack["byteLength"]
-        else:
-            self.proxy_pack_bytes += pack["byteLength"]
+        pending.append(
+            _PendingEncodedTile(payload=payload, tile=tile, errors=errors)
+        )
+        self.pending_payload_bytes[key] += len(payload)
+        if self.pending_payload_bytes[key] >= target_payload_bytes:
+            self._flush_aggregate(key)
+        self._enforce_aggregate_memory_bound()
 
     def _record_errors(self, errors: dict[str, float]) -> None:
         for key, value in errors.items():
@@ -1218,22 +1092,8 @@ class _GsTileTreeBuilder:
         self,
         records: np.ndarray,
         errors: np.ndarray,
-        item: _WorkFile,
     ) -> _LodProxy:
-        limit = self.options.lod_proxy_size
-        if limit is None:
-            raise RuntimeError("GSTile LOD proxy requested without a configured size")
-        if self.options.lod_proxy_strategy == "adaptive-moment":
-            return _adaptive_moment_lod_proxy(records, errors, limit)
-        if self.options.lod_proxy_strategy == "moment-matched":
-            return _moment_matched_lod_proxy(records, errors, limit)
-        return _replacement_lod_proxy(
-            records,
-            errors,
-            limit,
-            self.options.lod_proxy_strategy,
-            item,
-        )
+        return _adaptive_moment_lod_proxy(records, errors, self.options.lod_proxy_size)
 
     @staticmethod
     def _combined_render_bounds(
@@ -1275,28 +1135,23 @@ class _GsTileTreeBuilder:
         node: dict[str, Any],
         node_id: str,
         depth: int,
-    ) -> _LodProxy | None:
+    ) -> _LodProxy:
         records = np.fromfile(item.path, dtype=self.work_dtype, count=item.count)
         if records.shape[0] != item.count:
             raise RuntimeError("GSTile leaf payload is incomplete")
-        render_bounds_min: tuple[float, float, float] | None = None
-        render_bounds_max: tuple[float, float, float] | None = None
-        if self.adaptive_v4:
-            render_bounds_min, render_bounds_max = _gaussian_render_bounds(records)
-            node["renderBounds"] = {
-                "min": list(render_bounds_min),
-                "max": list(render_bounds_max),
-            }
+        render_bounds_min, render_bounds_max = _gaussian_render_bounds(records)
+        node["renderBounds"] = {
+            "min": list(render_bounds_min),
+            "max": list(render_bounds_max),
+        }
         node["tile"] = self.pack_tile(
             records,
-            pack_id=node_id,
             node_id=node_id,
             kind="exact",
             depth=depth,
         )
         self.leaf_count += 1
-        if self.options.lod_proxy_size is not None:
-            node["geometricError"] = 0.0
+        node["geometricError"] = 0.0
         item.path.unlink()
         _emit_progress(
             self.options.progress_callback,
@@ -1306,9 +1161,7 @@ class _GsTileTreeBuilder:
             gaussianCount=item.count,
             leafCount=self.leaf_count,
         )
-        if self.options.lod_proxy_size is None:
-            return None
-        proxy = self._lod_proxy(records, np.zeros(records.shape[0], dtype=np.float64), item)
+        proxy = self._lod_proxy(records, np.zeros(records.shape[0], dtype=np.float64))
         return _LodProxy(
             proxy.records,
             proxy.errors,
@@ -1322,7 +1175,7 @@ class _GsTileTreeBuilder:
         node: dict[str, Any],
         node_id: str,
         depth: int,
-    ) -> _LodProxy | None:
+    ) -> _LodProxy:
         if depth >= self.options.maximum_depth:
             raise RuntimeError("GSTile partition exceeded maximum depth")
         _emit_progress(
@@ -1342,10 +1195,6 @@ class _GsTileTreeBuilder:
         node["children"] = [node_id + "0", node_id + "1"]
         left_proxy = self.visit(left, node_id + "0", depth + 1)
         right_proxy = self.visit(right, node_id + "1", depth + 1)
-        if self.options.lod_proxy_size is None:
-            return None
-        if left_proxy is None or right_proxy is None:
-            raise RuntimeError("GSTile LOD child proxy is missing")
         return self._write_branch_proxy(item, node, node_id, depth, left_proxy, right_proxy)
 
     def _write_branch_proxy(
@@ -1357,28 +1206,23 @@ class _GsTileTreeBuilder:
         left_proxy: _LodProxy,
         right_proxy: _LodProxy,
     ) -> _LodProxy:
-        render_bounds_min: tuple[float, float, float] | None = None
-        render_bounds_max: tuple[float, float, float] | None = None
-        if self.adaptive_v4:
-            render_bounds_min, render_bounds_max = self._combined_render_bounds(
-                left_proxy, right_proxy
-            )
+        render_bounds_min, render_bounds_max = self._combined_render_bounds(
+            left_proxy, right_proxy
+        )
         combined_records = np.concatenate((left_proxy.records, right_proxy.records))
         combined_errors = np.concatenate((left_proxy.errors, right_proxy.errors))
-        proxy = self._lod_proxy(combined_records, combined_errors, item)
-        if self.adaptive_v4:
-            if render_bounds_min is None or render_bounds_max is None:
-                raise RuntimeError("GSTile adaptive render bounds are missing")
-            render_bounds_min, render_bounds_max = self._expanded_render_bounds(
-                render_bounds_min, render_bounds_max, proxy
-            )
-            node["renderBounds"] = {
-                "min": list(render_bounds_min),
-                "max": list(render_bounds_max),
-            }
+        proxy = self._lod_proxy(combined_records, combined_errors)
+        if render_bounds_min is None or render_bounds_max is None:
+            raise RuntimeError("GSTile adaptive render bounds are missing")
+        render_bounds_min, render_bounds_max = self._expanded_render_bounds(
+            render_bounds_min, render_bounds_max, proxy
+        )
+        node["renderBounds"] = {
+            "min": list(render_bounds_min),
+            "max": list(render_bounds_max),
+        }
         node["lodTile"] = self.pack_tile(
             proxy.records,
-            pack_id=f"lod-{node_id}",
             node_id=f"lod-{node_id}",
             kind="proxy",
             depth=depth,
@@ -1403,7 +1247,7 @@ class _GsTileTreeBuilder:
             render_bounds_max,
         )
 
-    def visit(self, item: _WorkFile, node_id: str, depth: int) -> _LodProxy | None:
+    def visit(self, item: _WorkFile, node_id: str, depth: int) -> _LodProxy:
         if self.options.cancellation_check is not None:
             self.options.cancellation_check()
         node: dict[str, Any] = {
@@ -1514,22 +1358,12 @@ def build_gstile_bundle(
             tree.preparation.close()
         if options.cancellation_check is not None:
             options.cancellation_check()
-        if options.lod_proxy_strategy == "adaptive-moment":
-            lod_profile = GSTILE_ADAPTIVE_LOD_PROFILE
-            lod_statistic = "deterministic-adaptive-cost-moment-opacity-refit-v4"
-        elif options.lod_proxy_strategy == "moment-matched":
-            lod_profile = GSTILE_MOMENT_LOD_PROFILE
-            lod_statistic = "deterministic-morton-moment-matched-v3"
-        elif options.lod_proxy_strategy == "spatial-stratified":
-            lod_profile = GSTILE_STRATIFIED_LOD_PROFILE
-            lod_statistic = "deterministic-morton-stratified-replacement-v2"
-        else:
-            lod_profile = GSTILE_LOD_PROFILE
-            lod_statistic = "deterministic-minhash-replacement-v1"
+        lod_profile = GSTILE_ADAPTIVE_LOD_PROFILE
+        lod_statistic = "deterministic-adaptive-cost-moment-opacity-refit-v4"
         manifest: dict[str, Any] = {
             "schema": GSTILE_SCHEMA,
             "version": GSTILE_VERSION,
-            "profile": (lod_profile if options.lod_proxy_size is not None else GSTILE_PROFILE),
+            "profile": lod_profile,
             "bundleId": "sha256:" + "0" * 64,
             "source": {
                 "sha256": source_sha256,
@@ -1552,14 +1386,8 @@ def build_gstile_bundle(
                 "packCount": len(tree.packs),
                 "representationCount": tree.leaf_count
                 + sum(1 for node in tree.nodes if "lodTile" in node),
-                **(
-                    {
-                        "packTargetBytes": options.pack_target_bytes,
-                        "packGrouping": "depth-spatial-v1",
-                    }
-                    if options.pack_target_bytes is not None
-                    else {}
-                ),
+                "packTargetBytes": options.pack_target_bytes,
+                "packGrouping": "depth-spatial-v1",
                 "packBytes": sum(pack["byteLength"] for pack in tree.packs),
                 "bytesPerGaussian": sum(pack["byteLength"] for pack in tree.packs)
                 / root_work.count,
@@ -1569,17 +1397,11 @@ def build_gstile_bundle(
                     "opacityThreshold": options.visibility_opacity_threshold,
                 },
                 "maximumQuantizationError": tree.maximum_errors,
-                "lod": (lod_statistic if options.lod_proxy_size is not None else "leaf-only"),
-                **(
-                    {
-                        "exactPackBytes": tree.exact_pack_bytes,
-                        "proxyCount": sum(1 for node in tree.nodes if "lodTile" in node),
-                        "proxyRecords": tree.proxy_records,
-                        "proxyPackBytes": tree.proxy_pack_bytes,
-                    }
-                    if options.lod_proxy_size is not None
-                    else {}
-                ),
+                "lod": lod_statistic,
+                "exactPackBytes": tree.exact_pack_bytes,
+                "proxyCount": sum(1 for node in tree.nodes if "lodTile" in node),
+                "proxyRecords": tree.proxy_records,
+                "proxyPackBytes": tree.proxy_pack_bytes,
             },
         }
         validate_manifest(manifest)

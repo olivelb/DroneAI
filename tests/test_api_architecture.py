@@ -65,6 +65,7 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
     paths = set(main.app.openapi()["paths"])
     direct_paths = {route.path for route in main.app.routes if hasattr(route, "path")}
 
+    assert "/mission/resume" not in paths
     assert len(source_lines) < 125
     assert "shared import storage" not in inspect.getsource(main)
     assert {
@@ -72,7 +73,6 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
         "/status/summary",
         "/mission",
         "/mission/cancel",
-        "/mission/resume",
         "/mission/state",
         "/mission/parameters",
         "/missions",
@@ -159,36 +159,16 @@ def test_importing_the_api_does_not_create_a_kafka_producer():
     assert messaging._producer is None
 
 
-def test_resume_events_are_unique_per_mission_attempt():
-    first = messaging.build_resume_event({"vol_id": "mission-1", "attempt": 1})
-    second = messaging.build_resume_event({"vol_id": "mission-1", "attempt": 2})
-
-    assert first["attempt"] == 1
-    assert second["attempt"] == 2
-    assert first["event_id"] != second["event_id"]
-
-
-def test_new_mission_event_is_deterministic_for_one_mission_id():
-    payload = {
-        "vol_id": "mission-1",
-        "input_dataset": "datasets/mission-1",
-    }
-
-    first = messaging.build_new_mission_event(payload)
-    second = messaging.build_new_mission_event(payload)
-
-    assert first["event_id"] == second["event_id"]
-
-
-def test_mission_event_identity_is_isolated_by_organization():
-    first = messaging.build_new_mission_event({"vol_id": "mission-1", "organization_id": "tenant-a"})
-    second = messaging.build_new_mission_event({"vol_id": "mission-1", "organization_id": "tenant-b"})
+def test_cancel_event_identity_is_isolated_by_organization():
+    first = messaging.build_cancel_event("mission-1", organization_id="tenant-a")
+    second = messaging.build_cancel_event("mission-1", organization_id="tenant-b")
 
     assert first["event_id"] != second["event_id"]
     assert first["correlation_id"] == "tenant-a:mission-1"
 
 
 def test_start_mission_rejects_an_existing_id(monkeypatch):
+    monkeypatch.setattr(mission_routes, "stage_jobs_enabled", lambda: True)
     existing = SimpleNamespace(vol_id="mission-1")
 
     class Query:
@@ -230,6 +210,7 @@ def test_start_mission_rejects_an_existing_id(monkeypatch):
 
 
 def test_start_mission_persists_profile_overrides_and_model_identity(monkeypatch):
+    monkeypatch.setattr(mission_routes, "stage_jobs_enabled", lambda: True)
     engine = create_engine("sqlite+pysqlite:///:memory:")
     DatasetUploadSession.__table__.create(engine)
     Dataset.__table__.create(engine)
@@ -277,7 +258,8 @@ def test_start_mission_persists_profile_overrides_and_model_identity(monkeypatch
 
     with session_scope() as session:
         mission = session.query(Mission).one()
-        outbox = session.query(OutboxEvent).one()
+        assert session.query(OutboxEvent).count() == 0
+        assert session.query(MissionStageRun).filter_by(stage="reconstruction", status="queued").count() == 1
         assert mission.params["quality_profile"] == "normal-v3"
         assert mission.owner_subject == "test-operator"
         assert mission.params["quality_profile_version"] == 3
@@ -285,13 +267,13 @@ def test_start_mission_persists_profile_overrides_and_model_identity(monkeypatch
         assert mission.params["colmap_params"]["gs_cap_max"] == "8000000"
         assert mission.params["colmap_params"]["gs_iterations"] == "35000"
         assert mission.params["ai_model_manifest"]["id"] == "yolo26n"
-        assert outbox.payload["ai_model_manifest"]["artifact_sha256"]
+        assert mission.params["ai_model_manifest"]["artifact_sha256"]
 
 
 def test_start_mission_rejects_qualification_override_without_candidate_gate(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.delenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", raising=False)
+    monkeypatch.setattr(mission_routes, "stage_jobs_enabled", lambda: True)
     params = mission_routes.MissionParams(
         vol_id="profile-override-guard",
         input_dataset="datasets/profile-override-guard",
@@ -303,19 +285,19 @@ def test_start_mission_rejects_qualification_override_without_candidate_gate(
         mission_routes._start_mission(params, TEST_PRINCIPAL)
 
     assert error.value.status_code == 422
-    assert "qualification overrides require" in error.value.detail
+    assert "qualified profile initialization cannot be overridden" in error.value.detail
 
 
 def test_parameter_catalog_exposes_profiles_and_model_capabilities(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.delenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", raising=False)
     response = mission_routes.mission_parameters()
 
     assert response["quality_profile_default"] == "normal-v3"
     assert [profile["id"] for profile in response["quality_profiles"]] == [
-        "fast-v1",
+        "fast-v2",
         "normal-v3",
+        "high-quality-v4",
     ]
     assert len(response["yolo_models"]) == 8
     assert all(model["selectable_classes"] for model in response["yolo_models"])
@@ -329,18 +311,15 @@ def test_parameter_catalog_exposes_profiles_and_model_capabilities(
     }
 
 
-def test_parameter_catalog_can_expose_hq_v4_for_controlled_qualification(
+def test_parameter_catalog_exposes_qualified_hq_v4(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "true")
 
     response = mission_routes.mission_parameters()
 
     assert [profile["id"] for profile in response["quality_profiles"]] == [
-        "fast-v1",
-        "normal-v3",
         "fast-v2",
-        "normal-v4",
+        "normal-v3",
         "high-quality-v4",
     ]
     candidate = next(profile for profile in response["quality_profiles"] if profile["id"] == "high-quality-v4")
@@ -348,18 +327,6 @@ def test_parameter_catalog_can_expose_hq_v4_for_controlled_qualification(
     assert candidate["parameters"]["gs_cap_max"] == "6000000"
     assert candidate["parameters"]["gs_target_gaussian_spacing_pixels"] == "3.6"
     assert candidate["parameters"]["gs_initial_scale_policy"] == "projected-knn"
-
-
-def test_parameter_catalog_rejects_ambiguous_candidate_flag(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "yes")
-
-    with pytest.raises(
-        RuntimeError,
-        match="DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED",
-    ):
-        mission_routes.mission_parameters()
 
 
 def test_sam3_mission_payload_does_not_persist_an_irrelevant_yolo_model():
@@ -421,7 +388,6 @@ def test_cancel_mission_persists_state_and_outbox_atomically(monkeypatch):
 
 def test_sync_io_handlers_are_threadpool_eligible():
     assert not inspect.iscoroutinefunction(mission_routes.start_mission)
-    assert not inspect.iscoroutinefunction(mission_routes.resume_mission)
     assert not inspect.iscoroutinefunction(mission_routes.cancel_mission)
     assert not inspect.iscoroutinefunction(dataset_routes.upload_dataset_batch)
     assert not inspect.iscoroutinefunction(analysis_routes.create_analysis)
@@ -443,7 +409,7 @@ def test_manual_feature_update_rejects_a_stale_version(monkeypatch):
         def filter(self, *_criteria):
             return self
 
-        def with_for_update(self):
+        def with_for_update(self, **_kwargs):
             return self
 
         def first(self):
@@ -504,90 +470,12 @@ def test_raster_export_stream_closes_its_object_body():
     assert body.closed
 
 
-def test_object_store_analysis_vectors_apply_bounds_and_limit(monkeypatch):
-    inside = {
-        "type": "Feature",
-        "geometry": {"type": "Point", "coordinates": [0.5, 0.5]},
-        "properties": {},
-    }
-    second_inside = {
-        "type": "Feature",
-        "geometry": {"type": "Point", "coordinates": [0.75, 0.75]},
-        "properties": {},
-    }
-    skipped_tile = SimpleNamespace(
-        result_s3_key="outside.json",
-        bounds_wgs84=[10.0, 10.0, 11.0, 11.0],
-    )
-    selected_tile = SimpleNamespace(
-        result_s3_key="inside.json",
-        bounds_wgs84=[0.0, 0.0, 1.0, 1.0],
-    )
-    loaded = []
-
-    def load_payload(key):
-        loaded.append(key)
-        return {"features": [inside, second_inside]}
-
-    monkeypatch.setattr(map_support, "load_json_object", load_payload)
-
-    features, truncated = analysis_routes._object_store_features(
-        [skipped_tile, selected_tile],
-        (0.0, 0.0, 1.0, 1.0),
-        1,
-        vol_id="mission-1",
-        tiling_metadata={},
-    )
-
-    assert features == [inside]
-    assert truncated is True
-    assert loaded == ["inside.json"]
-
-
-def test_object_store_analysis_vectors_read_versioned_tile_artifacts(monkeypatch):
-    tile = SimpleNamespace(
-        result_s3_key="tile-result.json",
-        bounds_wgs84=None,
-    )
-    monkeypatch.setattr(
-        map_support,
-        "load_json_object",
-        lambda _key: {
-            "schema_version": 1,
-            "raw_detections": [
-                {
-                    "geo_lon": 2.25,
-                    "geo_lat": 48.75,
-                    "class_name": "truck",
-                    "confidence": 0.9,
-                    "tile_index": 4,
-                }
-            ],
-        },
-    )
-
-    features, truncated = analysis_routes._object_store_features(
-        [tile],
-        None,
-        10,
-        vol_id="mission-1",
-        tiling_metadata={},
-    )
-
-    assert truncated is False
-    assert features[0]["geometry"] == {
-        "type": "Point",
-        "coordinates": [2.25, 48.75],
-    }
-    assert features[0]["properties"]["tile_index"] == 4
-
-
 def test_dead_outbox_replay_is_tenant_scoped_and_resets_delivery_state(monkeypatch):
     record = SimpleNamespace(
         id=17,
         event_id="event-17",
-        event_type="mission",
-        topic="vols-bruts",
+        event_type="control",
+        topic="pipeline-control",
         attempts=5,
         last_error="broker unavailable",
         status="dead",
@@ -613,7 +501,7 @@ def test_dead_outbox_replay_is_tenant_scoped_and_resets_delivery_state(monkeypat
         def all(self):
             return [record]
 
-        def with_for_update(self):
+        def with_for_update(self, **_kwargs):
             return self
 
         def first(self):
@@ -725,39 +613,6 @@ def test_frontend_uses_direct_presigned_multipart_upload():
     assert 'formData.append("files"' not in upload_source
 
 
-def test_prepare_resume_increments_mission_attempt():
-    mission = SimpleNamespace(
-        vol_id="mission-1",
-        organization_id="legacy-unassigned",
-        workspace_prefix="missions/mission-1",
-        service_states={"COLMAP": {"status": "error"}},
-        params={"vol_id": "mission-1", "pipeline": "modern"},
-        retry_count=4,
-        status="error",
-        current_step="ERROR",
-        error_message="interrupted",
-        updated_at=None,
-    )
-
-    class Query:
-        def filter(self, *_args):
-            return self
-
-        def first(self):
-            return mission
-
-    session = SimpleNamespace(query=lambda _model: Query())
-    payload, response = mission_state.prepare_resume_in_session(
-        session,
-        "mission-1",
-        "test-operator",
-    )
-
-    assert response["status"] == "success"
-    assert payload["attempt"] == 5
-    assert mission.retry_count == 5
-
-
 def test_mission_status_policy_is_independent_from_http_and_kafka():
     assert mission_state.compute_overall_status({}) == "idle"
     assert mission_state.compute_overall_status({"COLMAP": {"status": "success"}}) == "processing"
@@ -809,22 +664,6 @@ def test_mission_status_policy_is_independent_from_http_and_kafka():
         )
         == "success"
     )
-
-    mission = SimpleNamespace(
-        service_states={"COLMAP": {"status": "error"}},
-        params={"vol_id": "mission-1"},
-    )
-    resume = mission_state.build_colmap_resume_state(mission)
-    assert resume["available"] is True
-    assert resume["state"] == "resumable"
-
-    cancelled_mission = SimpleNamespace(
-        service_states={"COLMAP": {"status": "cancelled"}},
-        params={"vol_id": "mission-1"},
-    )
-    cancelled_resume = mission_state.build_colmap_resume_state(cancelled_mission)
-    assert cancelled_resume["available"] is True
-    assert cancelled_resume["state"] == "cancelled"
 
 
 def test_terminal_success_clears_an_earlier_transient_error(monkeypatch):
@@ -997,20 +836,15 @@ def test_image_preview_rejects_pixel_bomb_before_copy(monkeypatch):
 
 def test_messaging_gateway_adds_contract_metadata():
     producer = FakeProducer()
-    event = messaging.publish_new_mission(
-        {
-            "vol_id": "mission-1",
-            "input_dataset": "datasets/mission-1",
-        },
-        kafka_producer=producer,
-    )
+    messaging.publish_cancel("mission-1", attempt=3, kafka_producer=producer)
 
     topic, key, published = producer.messages[0]
-    assert topic == "vols-bruts"
+    assert topic == messaging.TOPIC_CONTROL
     assert key == "legacy-unassigned:mission-1"
-    assert published == event
+    assert published["event_id"] == messaging.build_cancel_event("mission-1", attempt=3)["event_id"]
     assert published["schema_version"] == 1
-    assert published["event_type"] == "mission"
+    assert published["event_type"] == "control"
+    assert published["attempt"] == 3
     assert published["organization_id"] == "legacy-unassigned"
     assert published["correlation_id"] == "legacy-unassigned:mission-1"
 
@@ -1056,3 +890,29 @@ def test_stored_vector_payload_must_be_a_json_object(monkeypatch):
 
     assert error.value.status_code == 422
     assert stream.closed
+
+
+def test_start_mission_requires_stage_jobs_before_mutating_storage(monkeypatch):
+    monkeypatch.setattr(mission_routes, "stage_jobs_enabled", lambda: False)
+    monkeypatch.setattr(
+        mission_routes, "get_session",
+        lambda: pytest.fail("disabled compute must not mutate storage"),
+    )
+    params = mission_routes.MissionParams(
+        vol_id="disabled-compute",
+        input_dataset="datasets/disabled-compute",
+        quality_profile="normal-v3",
+    )
+    with pytest.raises(HTTPException, match="Mission execution requires Stage Jobs") as error:
+        mission_routes._start_mission(params, TEST_PRINCIPAL)
+    assert error.value.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    ["nan,0,1,1", "0,nan,1,1", "0,0,nan,1", "0,0,1,nan", "-inf,0,1,1", "0,0,inf,1"],
+)
+def test_map_bounds_reject_non_finite_coordinates(bounds):
+    with pytest.raises(HTTPException) as error:
+        map_support.parse_bbox(bounds)
+    assert error.value.status_code == 400

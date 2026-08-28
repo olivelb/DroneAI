@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const runGsTileQualification = Boolean(
-  process.env.GSTILE_BUNDLE_ROOT || process.env.GSTILE_EXACT_BUNDLE_ROOT,
+  process.env.GSTILE_BUNDLE_ROOT,
 );
 
 export default defineConfig({
@@ -21,7 +21,17 @@ export default defineConfig({
     {
       name: "chromium",
       testIgnore: /gstile-qualification\.spec\.ts/,
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        ...(process.env.GSTILE_CHROME_EXECUTABLE
+          ? {
+              launchOptions: {
+                executablePath: process.env.GSTILE_CHROME_EXECUTABLE,
+                args: ["--disable-software-rasterizer", "--force_high_performance_gpu"],
+              },
+            }
+          : {}),
+      },
     },
     ...(runGsTileQualification
       ? [
@@ -32,10 +42,12 @@ export default defineConfig({
               ...devices["Desktop Chrome"],
               viewport: { width: 1600, height: 900 },
               launchOptions: {
+                executablePath: process.env.GSTILE_CHROME_EXECUTABLE,
                 args: [
-                  "--enable-unsafe-webgpu",
-                  "--enable-features=Vulkan",
-                  "--use-angle=vulkan",
+                  "--disable-software-rasterizer",
+                  ...(process.platform === "win32"
+                    ? ["--force_high_performance_gpu"]
+                    : ["--enable-features=Vulkan", "--use-angle=vulkan"]),
                 ],
               },
             },
@@ -43,7 +55,7 @@ export default defineConfig({
         ]
       : []),
   ],
-  webServer: {
+  webServer: process.env.GSTILE_EXTERNAL_SERVER === "1" ? undefined : {
     command: "corepack npm run start -- --hostname 127.0.0.1 --port 3000",
     url: "http://127.0.0.1:3000",
     reuseExistingServer: !process.env.CI,

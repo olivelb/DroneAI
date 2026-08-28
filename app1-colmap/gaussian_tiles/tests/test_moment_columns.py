@@ -143,14 +143,13 @@ def test_nonfinite_proxy_failure_is_preserved(monkeypatch, field):
             tiler._moment_match_ordered_groups(records, np.zeros(17), starts, np.array([8, 17]))
 
 
-@pytest.mark.parametrize("strategy", ["moment-matched", "adaptive-moment"])
-@pytest.mark.parametrize("aggregate", [None, 256 * 1024])
+@pytest.mark.parametrize("aggregate", [256 * 1024, 2 * 1024**2])
 @pytest.mark.parametrize("workers", [1, 2])
-def test_full_bundle_bytes_match_original(monkeypatch, tmp_path, strategy, aggregate, workers):
+def test_full_bundle_bytes_match_original(monkeypatch, tmp_path, aggregate, workers):
     source = tmp_path / "source.ply"
     _write_ply(source, _records(8193))
     options = GsTileBuildOptions(leaf_size=2048, chunk_records=2048, lod_proxy_size=1024,
-                               lod_proxy_strategy=strategy, pack_target_bytes=aggregate, pack_workers=workers)
+                               lod_proxy_strategy="adaptive-moment", pack_target_bytes=aggregate, pack_workers=workers)
     fast, reference = tmp_path / "fast", tmp_path / "reference"
     actual = build_gstile_bundle(source, fast, options=options)
     monkeypatch.setattr(tiler, "_average_group_attributes", reference_average)

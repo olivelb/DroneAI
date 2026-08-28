@@ -6,8 +6,6 @@ dashboardApi.controlWorker.enabled is true.
 {{- define "drone-ai.controlEnv" -}}
 - name: DRONEAI_STAGE_JOBS_ENABLED
   value: {{ .Values.stageJobs.enabled | quote }}
-- name: DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED
-  value: {{ .Values.stageJobs.artifactManifestV2WriteEnabled | quote }}
 - name: DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED
   value: {{ .Values.stageJobs.artifactSelectiveRestoreEnabled | quote }}
 - name: DRONEAI_DETECTION_FANOUT_ENABLED
@@ -51,9 +49,9 @@ dashboardApi.controlWorker.enabled is true.
 - name: DRONEAI_STAGE_HF_TOKEN_SECRET_KEY
   value: {{ .Values.hfToken.secretKey | quote }}
 - name: DRONEAI_STAGE_SAM3_MODEL_ID
-  value: {{ .Values.iaWorker.sam3.repository | quote }}
+  value: {{ .Values.stageJobs.sam3.repository | quote }}
 - name: DRONEAI_STAGE_SAM3_MODEL_REVISION
-  value: {{ .Values.iaWorker.sam3.revision | quote }}
+  value: {{ .Values.stageJobs.sam3.revision | quote }}
 - name: DRONEAI_STAGE_STORAGE_SECRET_NAME
   value: {{ include "drone-ai.storageSecretName" . | quote }}
 - name: DRONEAI_STAGE_DATABASE_URL_SECRET_KEY

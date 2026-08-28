@@ -58,16 +58,16 @@ export default function ResultsViewer() {
     },
     [setActiveMissionId],
   );
-  const mission = activeMission;
-  const missionId = mission?.vol_id ?? sortedMissions[0]?.vol_id ?? null;
-  const workspacePrefix = mission?.workspace_dir ?? sortedMissions[0]?.workspace_dir ?? null;
+  const mission = activeMission ?? sortedMissions[0];
+  const missionId = mission?.vol_id ?? null;
+  const workspacePrefix = mission?.workspace_dir ?? null;
 
   const [expanded, setExpanded] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [activePanel, setActivePanel] = useState<WorkspacePanel>("layers");
   const [activeLayer, setActiveLayer] = useState<ViewerLayer>("ortho");
-  const [showLegacy, setShowLegacy] = useState(true);
+  const [showPipeline, setShowPipeline] = useState(true);
   const [showManual, setShowManual] = useState(true);
   const [showGcps, setShowGcps] = useState(true);
   const [tool, setTool] = useState<MapTool>("select");
@@ -142,7 +142,7 @@ export default function ResultsViewer() {
     refreshCandidates: refreshGcpCandidates,
     finishPhoto: finishPhotoObservation,
   } = gcp;
-  const analysis = useAnalysisWorkspace(missionId, workspacePrefix, { setNotice, setError });
+  const analysis = useAnalysisWorkspace(missionId, mission?.products, { setNotice, setError });
   const {
     availableFiles,
     analyses,
@@ -386,7 +386,7 @@ export default function ResultsViewer() {
                 savedRasterStyles: rasterStyles.savedStyles,
                 rasterStyleName: rasterStyles.styleName,
                 savingRasterStyle: rasterStyles.saving,
-                showLegacy,
+                showPipeline,
                 showManual,
                 analyses,
                 visibleRuns,
@@ -395,7 +395,7 @@ export default function ResultsViewer() {
                 onRasterStyleNameChange: rasterStyles.setStyleName,
                 onSavedRasterStyleApply: rasterStyles.applySavedStyle,
                 onRasterStyleSave: () => void rasterStyles.save(),
-                onLegacyChange: setShowLegacy,
+                onPipelineChange: setShowPipeline,
                 onManualChange: setShowManual,
                 onRunVisibilityChange: (runId, visible) =>
                   setVisibleRuns((current) =>
@@ -475,7 +475,7 @@ export default function ResultsViewer() {
               missionId={missionId}
               layer={activeLayer}
               rasterStyle={rasterStyles.recipe}
-              showLegacy={showLegacy}
+              showPipeline={showPipeline}
               showManual={showManual}
               showGcps={showGcps}
               gcpCollection={gcpCollection}

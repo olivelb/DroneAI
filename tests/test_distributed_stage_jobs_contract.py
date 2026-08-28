@@ -16,14 +16,12 @@ def test_distributed_stage_job_mode_is_explicit_immutable_and_bounded() -> None:
 
     assert "--stage-jobs GIT_SHA" in entrypoint
     assert "^[0-9a-f]{7,40}$" in entrypoint
-    assert "STAGE_JOB_SERVICE_IMAGES" in common
+    assert "SERVICE_IMAGES" in common
     assert "drone-processing" not in common.split(
-        "readonly STAGE_JOB_SERVICE_IMAGES=(", 1
+        "readonly SERVICE_IMAGES=(", 1
     )[1].split(")", 1)[0]
     assert "global.requireImmutableImages=true" in distributed
     assert "colmapWorker.enabled=false" in distributed
-    assert "iaWorker.enabled=false" in distributed
-    assert "processingWorker.replicaCount=0" in distributed
     assert distributed.count("gpu_architecture=ampere") == 5
     assert distributed.count("stageJobs.executors.") == 22
     assert "stageJobs.executors.gaussian_viewer.command" in distributed
@@ -62,3 +60,37 @@ def test_nvidia_plugin_exposes_one_physical_gpu_without_time_slicing() -> None:
     assert "runtimeClassName: nvidia" in values
     assert "timeSlicing" not in values
     assert "replicas:" not in values
+
+def test_retired_or_unversioned_deployments_fail_before_host_setup() -> None:
+    for arguments in (["local"], ["distributed"], ["distributed", "--stage-jobs", "latest"]):
+        completed = subprocess.run(
+            ["bash", "deploy.sh", *arguments], cwd=ROOT, capture_output=True, text=True,
+        )
+        assert completed.returncode == 2
+        assert "Installing" not in completed.stdout
+
+
+def test_colmap_build_consumes_the_base_from_the_same_revision():
+    command = """
+set -eu
+source scripts/deploy/common.sh
+STAGE_JOBS_IMAGE_TAG=0123456789012345678901234567890123456789
+REPO_ROOT=$PWD
+REBUILD_BASE=false
+fake_docker() { printf '%s\n' "$*"; }
+info() { :; }
+validate_service_images() { :; }
+DOCKER=(fake_docker)
+build_all_images
+"""
+    completed = subprocess.run(
+        ["bash", "-c", command], cwd=ROOT, check=True, capture_output=True, text=True,
+    )
+    builds = completed.stdout.splitlines()
+    base = "drone-colmap-base:0123456789012345678901234567890123456789"
+    assert len(builds) == 5
+    assert f"--tag {base}" in builds[0]
+    assert f"--build-arg COLMAP_BASE_IMAGE={base}" in builds[1]
+    dockerfile = _read("app1-colmap/Dockerfile")
+    assert "FROM ${COLMAP_BASE_IMAGE}" in dockerfile
+    assert ":latest" not in dockerfile

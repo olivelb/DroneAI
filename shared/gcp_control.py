@@ -111,7 +111,6 @@ def prepare_immutable_gcp_bundle(
     descriptors = validate_gcp_bundle(
         bundle,
         expected_organization_id=expected_organization_id,
-        allow_legacy_global=True,
     )
     workspace = Path(workspace_root) / "gcp"
     workspace.mkdir(parents=True, exist_ok=True)

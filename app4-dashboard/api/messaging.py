@@ -1,4 +1,4 @@
-"""Kafka publisher gateway for API commands and mission submissions."""
+"""Kafka publisher gateway for cancellation and durable control events."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from confluent_kafka import Producer
 from shared.config import (
     KAFKA_BROKER,
     TOPIC_CONTROL,
-    TOPIC_MISSION,
 )
 from shared.event_contracts import (
     deterministic_tenant_event_id,
@@ -49,14 +48,6 @@ def get_producer() -> ProducerProtocol:
     return _producer
 
 
-def _tenant_payload(payload: JsonObject) -> tuple[JsonObject, str, str]:
-    organization_id = validate_organization_id(
-        str(payload.get("organization_id") or LEGACY_ORGANIZATION_ID)
-    )
-    vol_id = str(payload["vol_id"])
-    return {**payload, "organization_id": organization_id}, organization_id, vol_id
-
-
 def build_cancel_event(
     vol_id: str,
     *,
@@ -77,67 +68,6 @@ def build_cancel_event(
                 "control", organization_id, vol_id, "cancel", attempt
             ),
             correlation_id=tenant_correlation_id(organization_id, vol_id),
-            attempt=attempt,
-        ),
-    )
-
-
-def build_new_mission_event(payload: JsonObject) -> JsonObject:
-    payload, organization_id, vol_id = _tenant_payload(payload)
-    attempt = int(payload.get("attempt", 0))
-    return cast(
-        JsonObject,
-        make_event(
-            "mission",
-            payload,
-            event_id=deterministic_tenant_event_id(
-                "mission", organization_id, vol_id, "start"
-            ),
-            correlation_id=tenant_correlation_id(organization_id, vol_id),
-            attempt=attempt,
-        ),
-    )
-
-
-def build_resume_event(payload: JsonObject) -> JsonObject:
-    payload, organization_id, vol_id = _tenant_payload(payload)
-    attempt = int(payload.get("attempt", 0))
-    return cast(
-        JsonObject,
-        make_event(
-            "mission",
-            payload,
-            event_id=deterministic_tenant_event_id(
-                "mission",
-                organization_id,
-                vol_id,
-                "resume",
-                attempt,
-            ),
-            correlation_id=tenant_correlation_id(organization_id, vol_id),
-            attempt=attempt,
-        ),
-    )
-
-
-def build_stage_mission_event(payload: JsonObject) -> JsonObject:
-    payload, organization_id, vol_id = _tenant_payload(payload)
-    stage_run_id = str(payload["stage_run_id"])
-    attempt = int(payload.get("attempt", 0))
-    return cast(
-        JsonObject,
-        make_event(
-            "mission",
-            payload,
-            event_id=deterministic_tenant_event_id(
-                "mission",
-                organization_id,
-                vol_id,
-                "stage",
-                stage_run_id,
-                attempt,
-            ),
-            correlation_id=tenant_correlation_id(organization_id, stage_run_id),
             attempt=attempt,
         ),
     )
@@ -171,37 +101,3 @@ def publish_cancel(
         event,
         key=tenant_mission_key(organization_id, vol_id),
     )
-
-
-def publish_new_mission(
-    payload: JsonObject,
-    *,
-    kafka_producer: Any | None = None,
-) -> JsonObject:
-    if kafka_producer is None:
-        kafka_producer = get_producer()
-    event = build_new_mission_event(payload)
-    publish_json(
-        kafka_producer,
-        TOPIC_MISSION,
-        event,
-        key=tenant_mission_key(event["organization_id"], event["vol_id"]),
-    )
-    return event
-
-
-def publish_resume(
-    payload: JsonObject,
-    *,
-    kafka_producer: Any | None = None,
-) -> JsonObject:
-    if kafka_producer is None:
-        kafka_producer = get_producer()
-    event = build_resume_event(payload)
-    publish_json(
-        kafka_producer,
-        TOPIC_MISSION,
-        event,
-        key=tenant_mission_key(event["organization_id"], event["vol_id"]),
-    )
-    return event

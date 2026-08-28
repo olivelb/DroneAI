@@ -40,7 +40,7 @@ def test_overwrite_probe_requires_conditional_conflict(monkeypatch):
     client = _ConditionalClient(reject=True)
     monkeypatch.setattr(storage, "_get_client", lambda: client)
 
-    assert qualification._conditional_overwrite_probe("blobs/probe") == (
+    assert qualification._conditional_overwrite_probe("organizations/acme/blobs/probe") == (
         "PreconditionFailed"
     )
     assert len(client.aborted) == 1
@@ -51,7 +51,7 @@ def test_overwrite_probe_rejects_provider_that_ignores_condition(monkeypatch):
     monkeypatch.setattr(storage, "_get_client", lambda: client)
 
     with pytest.raises(RuntimeError, match="ignored If-None-Match"):
-        qualification._conditional_overwrite_probe("blobs/probe")
+        qualification._conditional_overwrite_probe("organizations/acme/blobs/probe")
 
     assert client.aborted == []
 
@@ -62,10 +62,11 @@ def test_qualification_reuses_and_cleans_random_probe(tmp_path, monkeypatch):
     calls = []
     deleted = []
 
-    def publish(path: Path, *, force_multipart: bool):
+    def publish(path: Path, *, force_multipart: bool, organization_id: str):
+        assert organization_id == "acme"
         calls.append((Path(path), force_multipart))
         return storage.ContentAddressedUpload(
-            key="blobs/probe",
+            key="organizations/acme/blobs/probe",
             size_bytes=probe.stat().st_size,
             checksum_sha256="a" * 64,
             reused=len(calls) == 2,
@@ -83,7 +84,7 @@ def test_qualification_reuses_and_cleans_random_probe(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "delete_object", deleted.append)
     monkeypatch.setattr(storage, "file_exists", lambda _key: False)
 
-    result = qualification.qualify(probe)
+    result = qualification.qualify(probe, organization_id="acme")
 
     assert result["status"] == "passed"
     assert result["cleanup_verified"] is True

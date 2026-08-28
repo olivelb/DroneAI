@@ -1,69 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  completeLodTargetPlan,
   configurePlayCanvasGsplatArenaResource,
   configureHighQualityGsplatRendering,
   coordinateFrameCameraPosition,
   fitOrbitDistance,
   fitOrbitDistanceInFrame,
-  gstileGpuAssembly,
-  gstileOpacityMode,
-  gstileSortMode,
   gstileLodSelectionKey,
   gstileLodUpdateDelayMilliseconds,
-  gstileTransformPrecision,
   gstileVerticalFovDegrees,
-  lodTransitionCounts,
-  lodProxyCoverage,
   orbitCameraBasis,
-  planLodTransitions,
-  prioritizeLodLoads,
   releasePlayCanvasTextureCpuSources,
   resetPlayCanvasGsplatManagers,
   panOrbitTarget,
 } from "./playcanvas-backend";
 import type { GaussianViewFrame } from "./backend";
-import type { GsTileManifest, GsTileNode } from "./contracts";
-
-describe("GSTile transform precision", () => {
-  it("uses PlayCanvas' validated native packing unless float32 is explicit", () => {
-    expect(gstileTransformPrecision(null)).toBe("packed");
-    expect(gstileTransformPrecision("packed")).toBe("packed");
-    expect(gstileTransformPrecision("float32")).toBe("float32");
-  });
-});
-
-describe("GSTile GPU assembly", () => {
-  it("keeps the exact monolithic path as the default", () => {
-    expect(gstileGpuAssembly(null)).toBe("merged");
-    expect(gstileGpuAssembly("merged")).toBe("merged");
-    expect(gstileGpuAssembly("unknown")).toBe("merged");
-  });
-
-  it("allows the two diagnostic multi-resource modes only explicitly", () => {
-    expect(gstileGpuAssembly("tiled")).toBe("tiled");
-    expect(gstileGpuAssembly("incremental")).toBe("incremental");
-  });
-});
-
-describe("GSTile opacity mode", () => {
-  it("keeps directional opacity by default and exposes exact diagnostics", () => {
-    expect(gstileOpacityMode(null)).toBe("directional");
-    expect(gstileOpacityMode("unknown")).toBe("directional");
-    expect(gstileOpacityMode("base")).toBe("base");
-    expect(gstileOpacityMode("directional-no-reveal")).toBe(
-      "directional-no-reveal",
-    );
-  });
-});
-
-describe("GSTile sort mode", () => {
-  it("keeps GPU sorting by default and allows an explicit CPU diagnostic", () => {
-    expect(gstileSortMode(null)).toBe("gpu");
-    expect(gstileSortMode("unknown")).toBe("gpu");
-    expect(gstileSortMode("cpu")).toBe("cpu");
-  });
-});
 
 describe("GSTile LOD selection identity", () => {
   it("does not rebuild a cut when camera priority only reorders the same nodes", () => {
@@ -293,47 +243,6 @@ describe("PlayCanvas orbit camera helpers", () => {
   });
 });
 
-describe("GSTile proxy coverage", () => {
-  const proxyNode: GsTileNode = {
-    id: "r",
-    bounds: { min: [0, 0, 0], max: [8, 4, 0.25] },
-    gaussianCount: 800_000,
-    lodTile: {
-      pack: "lod-r",
-      byteOffset: 32,
-      byteLength: 96_000,
-      recordCount: 1_000,
-      sha256: "a".repeat(64),
-      quantization: {} as NonNullable<GsTileNode["lodTile"]>["quantization"],
-    },
-  };
-
-  it("expands a sparse proxy up to its bounded surface spacing", () => {
-    const coverage = lodProxyCoverage(proxyNode);
-    expect(coverage.multiplier).toBe(800);
-    expect(coverage.maximumScale).toBeCloseTo(
-      Math.hypot(8, 4, 0.25) / Math.sqrt(1_000),
-    );
-  });
-
-  it("does not inflate moment-matched proxies a second time", () => {
-    expect(lodProxyCoverage(proxyNode, false)).toEqual({
-      multiplier: 1,
-      maximumScale: Number.MAX_VALUE,
-    });
-  });
-
-  it("keeps exact leaf representations unchanged", () => {
-    const exact = {
-      ...proxyNode,
-      tile: proxyNode.lodTile,
-    } satisfies GsTileNode;
-    expect(lodProxyCoverage(exact)).toEqual({
-      multiplier: 1,
-      maximumScale: Number.MAX_VALUE,
-    });
-  });
-});
 describe("PlayCanvas high-quality Gaussian rendering", () => {
   it("evaluates directional opacity in the same absolute frame as splat centers", () => {
     expect(
@@ -370,114 +279,5 @@ describe("PlayCanvas high-quality Gaussian rendering", () => {
       radialSorting: false,
       renderer: 2,
     });
-  });
-});
-
-describe("GSTile progressive LOD transitions", () => {
-  const manifest = {
-    root: "r",
-    nodes: [
-      { id: "r", children: ["a", "b"] },
-      { id: "a", children: ["a0", "a1"] },
-      { id: "b" },
-      { id: "a0" },
-      { id: "a1" },
-    ],
-  } as GsTileManifest;
-
-  it("groups refinement and coarsening into atomic subtree swaps", () => {
-    expect(planLodTransitions(manifest, ["r"], ["a", "b"])).toEqual([
-      {
-        addNodeIds: ["a", "b"],
-        removeNodeIds: ["r"],
-      },
-    ]);
-    expect(planLodTransitions(manifest, ["a", "b"], ["a0", "a1", "b"])).toEqual(
-      [
-        {
-          addNodeIds: ["a0", "a1"],
-          removeNodeIds: ["a"],
-        },
-      ],
-    );
-    expect(planLodTransitions(manifest, ["a0", "a1", "b"], ["a", "b"])).toEqual(
-      [
-        {
-          addNodeIds: ["a"],
-          removeNodeIds: ["a0", "a1"],
-        },
-      ],
-    );
-  });
-
-  it("reveals initial target nodes independently as they become ready", () => {
-    expect(planLodTransitions(manifest, [], ["a", "b"])).toEqual([
-      { addNodeIds: ["a"], removeNodeIds: [] },
-      { addNodeIds: ["b"], removeNodeIds: [] },
-    ]);
-  });
-
-  it("loads every sibling of the highest-impact replacement before the next branch", () => {
-    const transitions = [
-      { addNodeIds: ["b0", "b1"], removeNodeIds: ["b"] },
-      { addNodeIds: ["a0", "a1"], removeNodeIds: ["a"] },
-    ];
-    expect(
-      prioritizeLodLoads(
-        transitions,
-        ["a0", "b0", "a1", "b1", "stable"],
-        ["a", "b", "stable"],
-      ),
-    ).toEqual(["a0", "a1", "b0", "b1"]);
-  });
-
-  it("does not count an already resident target twice during an atomic swap", () => {
-    const resident = new Map([
-      ["r", 1_000],
-      ["a", 4_000],
-    ]);
-    const staged = new Map([["b", 4_000]]);
-
-    expect(
-      lodTransitionCounts(
-        { addNodeIds: ["a", "b"], removeNodeIds: ["r"] },
-        (nodeId) => resident.get(nodeId),
-        (nodeId) => staged.get(nodeId),
-      ),
-    ).toEqual({ add: 4_000, remove: 1_000 });
-  });
-
-  it("falls back to one complete target commit when local swaps cannot fit", () => {
-    const resident = new Map([
-      ["r", 1_000],
-      ["a", 4_000],
-    ]);
-    const staged = new Map([["b", 4_000]]);
-
-    expect(
-      completeLodTargetPlan(
-        resident.keys(),
-        ["a", "b"],
-        (nodeId) => resident.get(nodeId),
-        (nodeId) => staged.get(nodeId),
-      ),
-    ).toEqual({
-      complete: true,
-      gaussianCount: 8_000,
-      addNodeIds: ["b"],
-      removeNodeIds: ["r"],
-    });
-  });
-
-  it("refuses an incomplete final LOD target", () => {
-    const resident = new Map([["a", 4_000]]);
-    expect(
-      completeLodTargetPlan(
-        resident.keys(),
-        ["a", "b"],
-        (nodeId) => resident.get(nodeId),
-        () => undefined,
-      ),
-    ).toMatchObject({ complete: false });
   });
 });

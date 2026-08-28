@@ -4,7 +4,7 @@
 
 This document explains the runtime architecture, event flow, state machines, file layout, and algorithmic behavior of the DroneAI pipeline as it is implemented in this repository.
 
-It is intentionally more detailed than the installation guide. The goal is to document how the system behaves once deployed, how missions move through Kafka and Kubernetes, and how the orthomosaic and final annotated outputs are produced.
+It is intentionally more detailed than the installation guide. The goal is to document how the system behaves once deployed, how missions move through PostgreSQL and Kubernetes, and how the orthomosaic and final annotated outputs are produced.
 
 For upstream COLMAP theory, command semantics, and reconstruction internals, refer to the official COLMAP documentation:
 
@@ -23,17 +23,16 @@ Mavic 3E field validation is recorded in
 
 ## System overview
 
-The pipeline is a local event-driven photogrammetry and detection system composed of five services:
+The pipeline is a local event-driven photogrammetry and detection system with four application components:
 
 1. `app4-dashboard/frontend`
 2. `app4-dashboard/api`
 3. `app1-colmap`
-4. `app3-processing`
-5. `app2-ia`
+4. `app2-ia`
 
 The qualified Kubernetes data path is:
 
-1. Images are uploaded below an S3 prefix such as `datasets/site-a/`.
+1. Images are uploaded below an organization-scoped dataset prefix.
 2. The API persists the owned mission and dependency-closed stage rows in
    PostgreSQL.
 3. The bounded scheduler reserves the oldest eligible run and creates one
@@ -57,67 +56,19 @@ reconciler converge the durable state if a Job disappears. A retry is a new
 attempt bound to exact parent artifact UUIDs, never a replay or overwrite of a
 successful ancestor.
 
-The original Kafka fused-worker path remains implemented for local
-compatibility and existing missions. It uses the `vols-bruts`, `images-ortho`,
-`image-tiles`, `tile-detections`, `pipeline-status` and `pipeline-control`
-topics described later in this document. It is not the bounded stage-Job path.
+The current deployment uses only bounded Stage Jobs. Independent map analyses
+also use detection Jobs with exact raster-artifact bindings. All Kafka compute
+workers and global mission replay have been removed. The supported profiles
+are Fast v2, Normal v3, HQ v4 and facade DRONEGS_FACADE_HD_V3. Opacity SH remains
+available through training, publication and rendering.
 
 ## Deployment topology
 
-`deploy.sh` exposes the complete system through two orchestrators:
-
-- `local` uses `compose.local.yaml`;
-- `distributed` uses the Helm chart under `charts/drone-ai/`.
-
-Both topologies build the same five application images and expose the same
-dashboard API contract. Local mode uses the compatibility workers. Distributed
-mode uses those workers when `STAGE_JOBS_IMAGE_TAG` is absent and activates the
-qualified five-Job DAG when the variable supplies a traceable local Git-SHA
-tag. Staging and production executor maps require promoted OCI digests.
-Kafka, MinIO and PostgreSQL/PostGIS remain deployed in either mode.
-
-Main runtime objects:
-
-- namespace: `drone-ai` by default (`global.namespace`)
-- Kafka broker service: `my-kafka.drone-ai.svc.cluster.local:9092`
-- MinIO services: `minio`, `minio-api`, and `minio-console`
-- PostgreSQL service: `postgres`
-- bounded executor Jobs: one deterministic `droneai-<run-id>-<hash>` Job per
-  active stage when `stageJobs.enabled=true`
-- stage Job service account: `stage-job-sa`
-- compatibility deployments: `colmap-worker`, `ia-worker` and
-  `processing-worker` when bounded Jobs are not active
-- dashboard API deployment: `dashboard-api`
-- dashboard frontend deployment: `dashboard-frontend`
-
-Operational notes:
-
-- Mission inputs and durable outputs live in S3-compatible object storage.
-- Stage Job disks are disposable; exact inter-stage state lives in verified S3
-  manifests and immutable PostgreSQL artifact edges.
-- GPU stage Jobs use the `nvidia` RuntimeClass and their persisted resource
-  class. Per-resource, mission, owner and global concurrency limits prevent
-  accidental GPU overlap.
-- Detection reads `HF_TOKEN` from the Kubernetes secret `hf-token` for approved
-  access to the gated `facebook/sam3` distribution and mounts the model cache
-  at `/cache/huggingface`.
-- Compatibility workers keep their existing `/work` mounts and Kafka contracts
-  only when that mode is deliberately selected.
-- Kafka is deployed in-cluster. There is no separate host Kafka service.
-- The dashboard API deployment runs as service account `dashboard-api-sa`.
-  Its namespaced Job RBAC is rendered only while bounded Job mode is enabled;
-  pod reads remain available for the operator status view.
-- `deploy.sh distributed` runs `helm upgrade --install`; the legacy
-  `build_and_deploy.sh` and `setup.sh` entry points delegate to it.
-- The chart's revisioned migration job executes `alembic upgrade head`;
-  database-dependent pods wait for the head revision in an init container and
-  CI verifies an upgrade/downgrade/re-upgrade round-trip.
-- Migration `0007` adds named, reversible SQL `CHECK` constraints for mission,
-  aggregation, analysis, tile, map-feature, pipeline-log, inbox and outbox
-  states. Existing unexpected values deliberately block the upgrade instead of
-  being silently rewritten.
-- Migration `0008` adds renewable inbox leases for long-running worker
-  handlers.
+See [Deployment](DEPLOYMENT.md) for the supported K3s entrypoint and protected
+Helm overlays. Compose is retained only as `compose.test.yaml` for isolated
+integration dependencies. All three Kafka compute Deployments are absent.
+The control worker schedules bounded Jobs, and the API serves requests using
+its separate RLS database role.
 
 ## Shared Python package
 
@@ -128,7 +79,7 @@ Key responsibilities are grouped rather than duplicated in workers:
 - configuration, storage and persistence: `config.py`, `storage.py`,
   `database.py`;
 - reliable events: `event_schemas.py`, `event_contracts.py`, `inbox_outbox.py`,
-  `worker_inbox.py`, `kafka_reliability.py`, `worker_messaging.py`;
+  `kafka_reliability.py`;
 - product configuration: `pipeline_params.py`, `dronegs_profile.py`,
   `facade_process.py`, `validation.py`;
 - geometry and controls: `geo_alignment.py`, `projected_crs.py`,
@@ -143,7 +94,7 @@ Current responsibilities:
   select an explicitly mounted work drive
 - define the map service completion order (`COLMAP`, `TILER`, `IA`); a COLMAP
   status carrying `details.terminal=true` completes a facade mission
-- define the `modern` and `legacy` COLMAP parameter presets exposed to the dashboard
+- define the current `modern` COLMAP preset and qualified quality profiles
 - define parameter metadata used by the frontend to render editable controls
 - provide helper functions that merge mission overrides with the selected pipeline preset
 - persist missions, logs, and detections through SQLAlchemy
@@ -159,19 +110,11 @@ Current responsibilities:
 - provide broker-independent retry, dead-letter, and manual-commit primitives
 - provide transactional inbox claims, durable outbox enqueueing and the API
   dispatcher
-- provide one shared progress publisher and control-consumer loop for workers
 - normalize the selected IA backend through one shared policy
 
-As implemented today:
-
-- `app1-colmap` imports configuration, parameter, database, storage, validation,
-  event, reliability, messaging, and geo-alignment helpers
-- `app2-ia` imports shared topic, event, messaging, reliability, validation,
-  and S3 storage helpers
-- `app3-processing` imports shared topic, event, messaging, reliability, S3
-  storage, and database helpers
-- `app4-dashboard/api` imports configuration, pipeline defaults, validation,
-  database, storage, reliability, event, and inbox/outbox helpers
+Bounded executors share storage, validation, geometry and stage-execution
+helpers. The dashboard control plane owns event validation, inbox/outbox and
+Kafka delivery. Compute does not depend on Kafka messages.
 
 DJI metadata, projected-CRS selection, RTK pose-prior injection, the immutable
 DroneGS production profile and the qualified facade process are centralized in
@@ -180,12 +123,12 @@ DroneGS production profile and the qualified facade process are centralized in
 `shared/facade_process.py` respectively.
 
 The worker-specific `app2-ia/detection_core.py` and
-`app3-processing/processing_core.py` modules contain reusable detection,
-tiling, deduplication, rendering, and GIS-export logic. The Kafka loops and the
-infrastructure-free local runner call the same core functions.
+`shared/detection_products.py` modules contain reusable detection,
+tiling, deduplication, rendering, and GIS-export logic. The bounded executors and the
+infrastructure-free local runner share these core functions.
 
-Worker modules are safe to import: their Kafka poll loops and control threads
-start only from `worker_main()` under a `__main__` guard.
+Bounded CLI entry points import scientific executors only after parsing their
+explicit stage selection. Imports do not start consumers or compute.
 
 ## Services and responsibilities
 
@@ -214,7 +157,7 @@ Its progressive strict-typing boundary covers the package itself,
 RBAC/session security, Kafka/outbox publication, the transactional status
 consumer and WebSocket hub, Kubernetes status records and infrastructure-free
 image preview helpers. Mission and map Pydantic schemas are checked against
-the real framework types; raster rate limiting, mission state/resume policy
+the real framework types; raster rate limiting, mission status policy
 and geospatial query/storage helpers expose explicit local protocols and typed
 JSON contracts. Browser authentication, dataset browsing and batch upload,
 mission lifecycle/status and administrative outbox recovery are strictly typed
@@ -239,7 +182,6 @@ Primary endpoints:
   verified recovery/import path)
 - `GET /status/summary` (compatibility missions)
 - `GET /mission/parameters`
-- `POST /mission/resume`
 - `DELETE /mission/{vol_id}`
 - `POST /datasets/upload` (development-only compatibility endpoint)
 - `POST /datasets/upload-sessions`
@@ -275,8 +217,8 @@ Primary responsibilities:
   atomically; admin recovery publication revalidates the canonical S3 manifest
 - expose owner-scoped mission summaries, exact stage attempts, products,
   checksums, quality metrics and durable lifecycle logs
-- retain Kafka mission/control/status publication, compatibility completion
-  (`COLMAP -> TILER -> IA`) and bounded WebSocket replay for legacy missions
+- retain transactional cancellation events, status delivery and bounded
+  WebSocket replay; bounded Job progress comes from durable stage records
 - keep Kubernetes Pod inventory outside the tenant HTTP boundary; tenant
   progress is derived from durable mission and stage-run state
 - expose pipeline defaults, the map/facade process catalog and parameter
@@ -303,7 +245,7 @@ The API package is split by responsibility:
 | Module | Responsibility |
 |---|---|
 | `main.py` | application factory, middleware, router composition, lifespan |
-| `mission_state.py` | mission persistence, status policy, serialization, resume policy |
+| `mission_state.py` | mission persistence, status policy and serialization |
 | `messaging.py` | mission/control event construction and outbox publisher gateway |
 | `realtime.py` | status consumer, bounded history, WebSocket fan-out |
 | `image_preview.py` | framework-independent image conversion |
@@ -325,671 +267,97 @@ The API package is split by responsibility:
 HTTP routes do not own Kafka polling, image conversion, Kubernetes parsing, or
 mission-state policy. `main.py` is intentionally only the composition root.
 
-### COLMAP worker (`app1-colmap`)
+### COLMAP stage Jobs (`app1-colmap`)
 
-The COLMAP worker is the photogrammetry and raster-product service.
-
-Its responsibilities are:
-
-- receive raw mission metadata from `vols-bruts`
-- download the selected S3 dataset into the chosen `/work` scratch drive
-- select the aerial-map or HD-facade product contract, then the compatible
-  photogrammetry profile
-- for maps, extract EXIF/MRK positions and uncertainties, distinguish
-  ellipsoidal height, and select one audited projected CRS for the footprint;
-  for facades, use positions only to propose pairs and recover relative scale
-- run bounded COLMAP feature extraction, matching, global mapping, optional
-  RTK pose-prior refinement, and undistortion
-- generate either a georeferenced orthomosaic/DSM or a local HD-facade
-  orthophoto/depth product using 3D Gaussian Splatting
-- record drone altitude metadata and, when configured, anchor the relative
-  height map without changing or inventing its vertical datum
-- upload durable mission artifacts below `missions/<vol_id>/` and clean local
-  scratch data
-- publish map products to `images-ortho`, or a terminal COLMAP status carrying
-  `details.process=facade` and `details.terminal=true`
-- publish detailed progress and log events to `pipeline-status`
-- honor cancellation commands from `pipeline-control`
-
-This is the most stateful and operationally complex service in the pipeline.
-
-Its implementation is split by responsibility under
-`app1-colmap/colmap_worker/`:
+The image runs one explicit stage through `app1-colmap/stage_executor.py`.
+There is no long-running Kafka worker or combined mission runner.
 
 | Module | Responsibility |
 |---|---|
-| `main.py` | small compatibility entry point; re-exports the supported worker API and calls `worker_main()` only when executed |
-| `worker.py` | Kafka producer/consumer lifecycle, control thread and mission envelope |
-| `runtime.py` | explicitly configured producer/reporter, cancellation state and progress tracking; no broker connection at import time |
-| `mission_runner.py` | ordered application flow and guaranteed workspace cleanup |
-| `contracts.py` | immutable typed states passed between stages |
-| `stages/preparation.py` | profile resolution, download, selection, clean copy and cache invalidation |
-| `stages/reconstruction.py` | projected-reference bootstrap, feature extraction and bounded matching |
-| `sparse_mapping.py` | mapping-engine selection, shared timeout budget, fallback and sparse-quality promotion gate |
-| `stages/rtk.py` | optional covariance-aware RTK refinement and promotion gate |
-| `stages/alignment.py` | image undistortion, stale-GCP invalidation and isolated GCP, GNSS or local-facade alignment strategies |
-| `dronegs_config.py` | immutable DroneGS run configuration plus named-profile and qualification identity checks |
-| `stages/gaussian.py` | checkpoint recovery/synchronization, training, qualification and raster rendering |
-| `stages/publication.py` | preflight verification of all required assets, manifest creation, durable publication, optional recovery assets and completion |
-| `artifacts.py` | focused filesystem predicates and cache invalidation helpers |
-
-`PipelinePreparation`, `PipelineReconstruction`, `PipelineRtkState`,
-`PipelineAlignmentState`, `PipelineGaussianState` and
-`PipelinePublicationState` form the explicit data flow. Stages do not import
-the entry point, create Kafka clients or start threads. Architecture tests cap
-the composition root and focused-module sizes, while CI applies modern Ruff
-rules, a McCabe ceiling of 15 across the worker and strict progressive typing
-across the complete worker package.
-
-### Processing worker (`app3-processing`)
-
-The processing worker combines two runtime roles behind explicit services:
-
-1. `OrthomosaicTiler`, which owns raster windows, tile uploads and the durable
-   tile journal;
-2. `AnalysisWorkflow`, which owns AI receipts, recovery, deduplication and
-   final publication;
-3. the compatibility aggregator for the initial mission pipeline.
-
-It consumes two topics simultaneously:
-
-- `images-ortho`
-- `tile-detections`
-
-In practice it does the following:
-
-- open the produced orthomosaic GeoTIFF
-- slice it into overlapping JPEG tiles
-- publish tile jobs to `image-tiles`
-- journal per-mission and per-campaign state in PostgreSQL
-- collect detections from all returned tiles
-- merge overlap duplicates before final vector publication
-- transform pixel polygons through the orthomosaic affine/CRS into WGS84
-- publish verified GeoJSON to object storage
-- optionally rebuild the indexed PostGIS feature set transactionally
-
-`main.py` is the Kafka composition root only. Raster mechanics live in
-`orthomosaic_tiler.py`; rerunnable campaign mechanics live in
-`analysis_workflow.py`; `processing_dispatcher.py` routes validated events;
-and `legacy_aggregation.py` owns the initial mission compatibility journal and
-recovery path. CI applies Ruff cyclomatic-complexity budgets to these modules.
-The complete app2 and app3 workers pass the modern Bugbear, simplification,
-upgrade, Ruff-specific and async rule set as a progressive quality ratchet,
-plus strict mypy checks. Tensor-to-NumPy conversion, raster access, detection
-records, tiling plans, durable campaign state and recovery events therefore
-remain typed at the reusable local/Kafka boundary. Small protocols describe
-the Kafka, raster and callback integrations while ORM and validated JSON data
-stay isolated at explicit dynamic boundaries.
-Architecture tests cap the composition roots and
-dashboard containers so responsibilities cannot silently collapse back into
-monoliths.
-
-This service owns the transition from one georeferenced orthomosaic to many
-detector tiles, then back to one deduplicated vector product.
-
-### IA worker (`app2-ia`)
-
-The IA worker is a tile-level dual-backend detection service. It supports Ultralytics YOLO OBB and Meta SAM 3 prompt-based segmentation. For SAM 3, treat the upstream source repository and the gated Hugging Face model distribution as separate license/compliance items.
-
-Its Kafka entrypoint follows the same composition-root rule as app1. SAM3
-model lifecycle and immutable provenance live in `sam3_backend.py`; per-tile
-download, inference routing, coordinate conversion, result publication and
-progress state live in `tile_detection_workflow.py`. Heavy Torch,
-Transformers and Hugging Face imports remain lazy, so the reusable geometry
-and workflow boundary stays testable in the lightweight CPU environment.
-
-Its runtime responsibilities are:
-
-- consume tile jobs from `image-tiles`
-- load a local aerial OBB checkpoint, currently `yolo26l-obb.pt` by default, with UI-selectable YOLO11/YOLO26 `l`/`m`/`s`/`n` variants per mission
-- lazily load the gated Hugging Face `facebook/sam3` model at the immutable
-  `SAM3_MODEL_REVISION` commit when the mission requests the SAM 3 backend and
-  the supplied token has model access
-- run the selected detector on each tile
-- run prompt-based instance segmentation for SAM 3 tile jobs
-- convert tile-local detections into orthomosaic-global pixel coordinates
-- preserve each oriented detection polygon in the `segment` field expected by app3
-- optionally transform projected coordinates into latitude and longitude
-- publish per-tile detection results to `tile-detections`
-- attach a bounded provenance manifest to every tile result: repository,
-  immutable revision or release, artifact SHA-256, inference parameters,
-  runtime device and library versions
-- publish status and throughput updates to `pipeline-status`
-
-The processing worker records the first manifest in `AIAnalysisRun` and rejects
-subsequent tiles whose manifest differs. The API and final GeoJSON expose this
-record, so a run cannot silently combine results from different weights,
-library versions, parameters or CPU/GPU runtimes.
-
-## Kafka topics and event contracts
-
-### Common event envelope
-
-All newly produced events use schema version 1. Consumers still accept the
-pre-envelope payloads from older deployments and normalize them at the edge.
-Every event contains:
-
-```json
-{
-  "schema_version": 1,
-  "event_type": "image_tile",
-  "event_id": "image_tile:8c5d...",
-  "correlation_id": "mission_001",
-  "causation_id": "orthomosaic:4a71...",
-  "attempt": 0,
-  "emitted_at": "2026-07-23T12:00:00+00:00"
-}
-```
-
-`image-tiles`, `tile-detections`, and orthomosaic hand-off events use
-deterministic identifiers derived from their mission and logical item. This
-makes duplicates observable. The API inbox/outbox already uses stable event
-IDs for mission, control, and status boundaries; worker hand-offs use the same
-ID discipline but are not yet backed by durable worker outboxes.
-
-Pydantic models in `shared/event_schemas.py` validate the envelope and the
-domain fields of all seven event families: mission, orthomosaic, image tile,
-tile detection, status, control, and dead letter. They reject malformed known
-fields but retain unknown additive fields so producers and consumers can be
-rolled out independently within schema version 1. The discriminated,
-machine-readable contract is committed at
-[`docs/contracts/kafka-events-v1.schema.json`](docs/contracts/kafka-events-v1.schema.json)
-and `make static` rejects schema drift.
-
-### Partitioning and horizontal workers
-
-The ordered control topics remain single-partition by default. The independent
-work topics are partitioned for horizontal execution:
-
-| Topic | Default partitions | Kafka key and ordering scope |
-| --- | ---: | --- |
-| `vols-bruts`, `images-ortho` | 1 | mission |
-| `pipeline-status`, `pipeline-control` | 1 | mission |
-| `image-tiles`, `tile-detections` | 4 | mission + analysis run + tile |
-| `pipeline-dead-letter` | 1 | source event |
-
-Both tile stages call `shared.kafka_partitioning.tile_work_key()`. Different
-tiles can therefore be assigned to different replicas, while the first
-delivery and every recovery delivery for one logical tile retain the same key.
-The retry `attempt` is deliberately not part of that key so retries keep their
-per-tile ordering.
-
-`kafka.topics` in the Helm values declares each desired partition count. The
-post-install/post-upgrade job creates absent topics and only increases an
-existing count; it never attempts a destructive reduction. Adding Kafka
-partitions can remap a key, so drain `image-tiles` and `tile-detections` before
-raising either count. Compose uses four work partitions by default and accepts
-`KAFKA_WORK_TOPIC_PARTITIONS` for an isolated local deployment.
-
-`iaWorker.replicaCount` and `processingWorker.replicaCount` remain `1` by
-default and can be raised up to the useful work-partition concurrency. An IA
-deployment spread across nodes also needs a model-cache storage class that
-supports `ReadWriteMany`, selected through
-`iaWorker.modelCache.accessMode`; the OVH Cinder preproduction default is
-`ReadWriteOnce` and therefore remains a single-node/single-replica baseline.
-
-### Delivery and failure semantics
-
-The COLMAP, IA, processing, and dashboard-status consumers disable Kafka
-automatic offset commits. A message offset is committed synchronously only
-after its handler succeeds and required output publication is flushed.
-
-Handler failures use a bounded exponential retry policy:
-
-- `KAFKA_RETRY_MAX_ATTEMPTS`, default `3`
-- `KAFKA_RETRY_BASE_DELAY_SECONDS`, default `1`
-- `KAFKA_RETRY_MAX_DELAY_SECONDS`, default `30`
-
-After the last failure, the original message, source topic/partition/offset,
-consumer group, expected contract, attempt count, and sanitized error are
-published to `pipeline-dead-letter`. The poison-message offset is committed
-only after that publication is confirmed. If dead-letter delivery itself
-fails, the source offset remains uncommitted.
-
-These guarantees are **at-least-once**, not exactly-once. A crash between an
-external side effect and the Kafka commit can still replay that side effect.
-Deterministic event IDs and leased durable worker inbox receipts reduce the
-impact, but cross-system exactly-once processing for worker side effects would
-require coordinating database, object-store and Kafka writes.
-
-The contract and retry machinery is covered with broker-free fakes, so its
-state transitions are testable without Kafka, Postgres, MinIO, or Kubernetes.
-An event whose durable inbox claim is still active is repositioned at the same
-Kafka offset and retried without commit or dead-letter publication.
-
-### Transactional inbox/outbox
-
-Migration `0002_inbox_outbox.py` adds:
-
-- `inbox_events`, unique on `(consumer_group, event_id)`
-- `outbox_events`, unique on `event_id`
-
-Migration `0003_geospatial_aggregation.py` adds durable legacy tile receipts.
-Migration `0004_geospatial_workspace.py` adds:
-
-- `ai_analysis_runs`, the campaign lifecycle, style, inference configuration,
-  progress, error and object-store result reference;
-- `ai_analysis_tiles`, unique on `(analysis_run_id, tile_index)`, including
-  offsets, WGS84 bounds and verified result keys for recovery;
-- `map_features`, a generic EPSG:4326 PostGIS geometry table with GiST index,
-  provenance, names, descriptions, colors, tags and optimistic versions.
-
-Migration `0005_analysis_recovery_leases.py` adds bounded retry and exclusive
-finalization state for analysis campaigns: generation-aware attempts, dead
-tiles, lease owner/expiry and explicit replay-safe recovery fields.
-
-See
-[`docs/GEOSPATIAL_WORKSPACE.md`](docs/GEOSPATIAL_WORKSPACE.md)
-for the rerun, viewport and recovery contract.
-
-The first integration boundary covers the dashboard control plane:
-
-- creating a mission and enqueuing its `vols-bruts` event share one database
-  transaction
-- transitioning a mission to resume and enqueuing the resume event share one
-  transaction
-- cancellation state and its command are committed atomically before the API
-  returns success
-- consuming `pipeline-status`, updating mission state, writing the mission log,
-  and completing the inbox receipt share one transaction
-
-The API lifespan runs an outbox dispatcher. It selects pending or retryable
-rows with `FOR UPDATE SKIP LOCKED`, publishes their already-versioned payload,
-and marks them published. Multiple API replicas can therefore dispatch without
-claiming the same row concurrently.
-
-Publication remains at-least-once: a process can publish successfully and die
-before committing `published`. The row will then be retried with the same
-deterministic `event_id`, and the consumer inbox suppresses the duplicate
-domain mutation.
-
-The dispatcher uses the same bounded exponential retry policy as direct Kafka
-handling. Failed rows keep the error, attempt count, and next `available_at`.
-The state machine and shared-transaction rollback are tested with SQLite and
-publisher doubles; no broker or PostgreSQL server is required for those tests.
-
-For a manually managed database, apply the schema migration before deploying
-this code:
-
-```bash
-alembic upgrade head
-```
-
-Alembic is the authoritative schema path. The revisioned Helm migration Job
-runs `alembic upgrade head`, and database-dependent pods wait for that exact
-head before starting. SQLAlchemy metadata creation is limited to isolated test
-fixtures and is not a deployment migration strategy.
-
-Mission/control/status events use the transactional API inbox/outbox. Migration
-`0008_worker_inbox_leases.py` extends durable inbox deduplication to the COLMAP,
-IA, and processing work consumers without holding a database transaction open
-during COLMAP, inference, raster processing, or S3 I/O:
-
-- a short transaction claims `(consumer_group, event_id)` and records the
-  Kafka location;
-- a background heartbeat renews `locked_at` while the handler runs;
-- success or failure is recorded in another short transaction;
-- a completed receipt suppresses replay, a failed or expired receipt can be
-  reclaimed, and an active receipt defers the Kafka offset without committing
-  or sending it to the DLQ.
-
-`INBOX_LEASE_SECONDS` defaults to `300`; `INBOX_BUSY_RETRY_SECONDS` defaults to
-`5`. Heavy worker publications still use deterministic IDs plus manual Kafka
-commits. They are not globally exactly-once because GPU/S3/Kafka side effects
-cannot share the inbox database transaction; extending the outbox to those
-publications remains a separate boundary decision.
-
-### `vols-bruts`
-
-Produced by:
-
-- dashboard API
-
-Consumed by:
-
-- COLMAP worker
-
-Semantic meaning:
-
-- mission submission event
-
-Expected payload shape:
-
-```json
-{
-  "vol_id": "mission_001",
-  "input_dataset": "datasets/site-a",
-  "pipeline": "modern",
-  "tile_size": 1024,
-  "ai_confidence": 0.5,
-  "ai_backend": "sam3",
-  "sam_prompt": "car",
-  "classes": ["car"],
-  "colmap_params": {},
-  "work_drive": "local"
-}
-```
-
-Notes:
-
-- `input_dataset` must be a normalized S3 prefix below `datasets/`.
-- `work_drive` must be one of the drives advertised by
-  `GET /mission/parameters`.
-- `pipeline` selects the parameter profile.
-- `ai_model_variant` is accepted and persisted only when `ai_backend` is
-  `yolo`; SAM3 never inherits a stale YOLO choice.
-- YOLO accepts only `airplane`, `bicycle`, `boat`, `bus`, `car`, `motorcycle`,
-  and `truck`; unsupported classes are rejected instead of silently selecting
-  vehicle labels. SAM3 prompts remain free-form.
-- The common schema-version/event-ID envelope surrounds these domain fields.
-
-### `pipeline-control`
-
-Produced by:
-
-- dashboard API
-
-Consumed by:
-
-- COLMAP worker control thread
-- IA worker control thread
-- processing worker control thread
-
-Semantic meaning:
-
-- mission control command
-
-Expected payload shape:
-
-```json
-{
-  "vol_id": "mission_001",
-  "command": "cancel"
-}
-```
-
-Notes:
-
-- Cancellation is cooperative rather than pre-emptive.
-- Cancellation is scoped by `vol_id`, optional analysis `run_id`, and
-  `attempt`; a stale command cannot cancel a later retry.
-- PostgreSQL is the durable cross-replica source of truth. Kafka remains the
-  low-latency notification path and each process retains a positive local
-  cache.
-- Each worker stops at the cancellation checks implemented around its current
-  long-running or per-item work.
-
-### `pipeline-status`
-
-Produced by:
-
-- COLMAP worker
-- processing worker
-- IA worker
-
-Consumed by:
-
-- dashboard API
-
-Semantic meaning:
-
-- live mission progress and logs
-
-Canonical payload shape:
-
-```json
-{
-  "vol_id": "mission_001",
-  "step": "GAUSS",
-  "progress": 75,
-  "status": "processing",
-  "service": "COLMAP",
-  "log": "Training Gaussian Splatting model"
-}
-```
-
-Important details:
-
-- `service` can be `COLMAP`, `TILER`, or `IA`.
-- `status` is one of `processing`, `success`, `error`, or `cancelled`; producers
-  and consumers reject other values at the shared event-contract boundary.
-- `step` is service-defined and reused by the dashboard as the public progress vocabulary.
-- The API persists mission state and one `MissionLog` row per unique status
-  event in the inbox transaction.
-- The WebSocket hub separately keeps the latest 300 messages in memory for
-  replay to newly connected clients.
-- A COLMAP success is terminal only when both `details.process="facade"` and
-  `details.terminal=true` are present. A map status cannot shorten the normal
-  `COLMAP -> TILER -> IA` completion contract.
-- Operator cancellation is a terminal `cancelled` state, distinct from an
-  unexpected `error`. A cancelled COLMAP attempt can be restarted when its
-  saved mission parameters are available.
-
-### `images-ortho`
-
-Produced by:
-
-- COLMAP worker
-
-Consumed by:
-
-- processing worker
-
-Semantic meaning:
-
-- orthomosaic ready for tiling
-
-Payload shape:
-
-```json
-{
-  "vol_id": "mission_001",
-  "ortho_s3_key": "missions/mission_001/orthomosaic.tif",
-  "classes": ["car"],
-  "ai_confidence": 0.3
-}
-```
-
-Notes:
-
-- `ortho_s3_key` points to the GeoTIFF uploaded by app1.
-- The processing worker downloads it into its own temporary workspace.
-
-### `image-tiles`
-
-Produced by:
-
-- processing worker
-
-Consumed by:
-
-- IA worker
-
-Semantic meaning:
-
-- tile job for detection
-
-Payload shape:
-
-```json
-{
-  "vol_id": "mission_001",
-  "tile_index": 12,
-  "tile_s3_key": "missions/mission_001/tiles/tile_12.jpg",
-  "offset_x": 2048,
-  "offset_y": 1024,
-  "ai_backend": "sam3",
-  "sam_prompt": "car",
-  "classes": ["car"],
-  "ai_confidence": 0.3,
-  "total_tiles": 180,
-  "ortho_transform": [c, a, b, f, d, e],
-  "ortho_crs": "EPSG:32631"
-}
-```
-
-Important details:
-
-- `tile_s3_key` points to the JPEG uploaded by the processing worker.
-- Kafka uses the stable mission/run/tile key, so different tiles can execute on
-  different IA replicas without allowing retries of one tile to overtake each
-  other under a fixed partition count.
-- Tile output is mission-scoped below `missions/<vol_id>/tiles/`.
-- `offset_x` and `offset_y` anchor the tile within the full orthomosaic.
-- `ai_backend` selects the detector backend in app2.
-- `sam_prompt` carries the text concept for SAM 3 missions.
-- `total_tiles` is set before publication to avoid a race where detections arrive before the aggregator knows the mission tile count.
-- `ortho_transform` and `ortho_crs` are carried forward so the IA worker can compute geographic coordinates directly.
-
-### `tile-detections`
-
-Produced by:
-
-- IA worker
-
-Consumed by:
-
-- processing worker
-
-Semantic meaning:
-
-- detection results for one tile
-
-The result reuses the input tile's stable mission/run/tile partition key. This
-allows multiple processing replicas to journal results concurrently; durable
-tile uniqueness and the aggregation lease remain the correctness boundary.
-
-Payload shape:
-
-```json
-{
-  "vol_id": "mission_001",
-  "tile_index": 12,
-  "detections": [
-    {
-      "vol_id": "mission_001",
-      "global_pixel_x": 2121.4,
-      "global_pixel_y": 1170.8,
-      "geo_lon": 3.129123,
-      "geo_lat": 42.481234,
-      "confidence": 0.88,
-      "class_id": 2,
-      "segment": [[2110.0, 1162.0], [2132.0, 1164.0], [2140.0, 1182.0]]
-    }
-  ]
-}
-```
-
-Important details:
-
-- `global_pixel_x` and `global_pixel_y` are already offset back into orthomosaic coordinates by app2.
-- `segment` points are also returned in global orthomosaic coordinates.
-- `geo_lat` and `geo_lon` may be present directly, but app3 can recompute them from the orthomosaic transform if needed.
-
-### `pipeline-dead-letter`
-
-Produced by any consumer whose bounded retries are exhausted. It is intended
-for diagnosis and explicit replay; no automatic DLQ replayer is provided.
+| `stage_executor.py` (CLI) | select one bounded stage |
+| `colmap_worker/stage_executor.py` | restore exact inputs, invoke scientific boundaries, publish a versioned workspace and clean scratch data |
+| `colmap_worker/stage_state.py` | typed reconstruction-state serialization |
+| `colmap_worker/runtime.py` | durable cancellation checks and diagnostic logging |
+| `colmap_worker/contracts.py` | immutable typed scientific states |
+| `stages/preparation.py` | profile resolution, download, image selection and cache validation |
+| `stages/reconstruction.py` | references, feature extraction and bounded matching |
+| `sparse_mapping.py` | mapping, shared timeout and sparse-quality promotion gate |
+| `stages/rtk.py` | covariance-aware RTK refinement and promotion gate |
+| `stages/alignment.py` | undistortion and GCP, GNSS or local-facade alignment |
+| `dronegs_config.py` | immutable run configuration and qualification identity checks |
+| `stages/gaussian.py` | training/checkpoint helpers, qualification and rendering |
+| `artifacts.py` | filesystem predicates and cache invalidation |
+
+`shared/stage_execution.py` owns the durable run, heartbeat, cancellation and
+transactional artifact boundary. Scientific modules do not create Kafka
+clients. Coverage, qualification and opacity-SH behavior remain in their
+current scientific implementations.
+
+### Detection Jobs (`app2-ia`)
+
+`stage_executor.py` dispatches the monolithic detector, indexed shard executor
+or finalizer. `detection_stage.py` reads the pinned raster, streams bounded
+windows, deduplicates results, converts polygons to WGS84 and publishes a
+versioned detection workspace. SAM 3 and YOLO retain immutable model provenance.
+
+An independent analysis is linked by `MissionStageRun.analysis_run_id`.
+The existing scheduler, quota/resource policy, cancellation and job cleanup
+apply. Its artifact is excluded from the pipeline stage projection and DAG.
+PostGIS indexing and artifact registration commit together; non-indexed
+analyses read the final immutable GeoJSON through their tenant-scoped API.
+See [the editing contract](docs/contracts/explorer-editing-styles-v1.md).
+
+## Control-plane events
+
+Kafka no longer transports mission execution, orthomosaics, tiles or
+detections. Those contracts are rejected, their worker utilities are removed,
+and Helm/Compose no longer provision their topics.
+
+The current schema includes `control`, `status` and `dead_letter` only.
+Every event requires its version-one envelope, ID, correlation, attempt and
+timestamp. Unversioned events are rejected. Tenant-scoped identities prevent
+cross-organization collisions. The generated contract is
+[`kafka-events-v1.schema.json`](docs/contracts/kafka-events-v1.schema.json);
+`make static` verifies it.
+
+| Topic | Default partitions | Purpose |
+|---|---:|---|
+| `pipeline-control` | 1 | durable cancellation notifications |
+| `pipeline-status` | 1 | control-plane status delivery |
+| `pipeline-dead-letter` | 1 | failed deliveries and sanitized diagnostics |
+
+Cancellation state and its outbox event commit together. The dispatcher
+claims rows with `FOR UPDATE SKIP LOCKED`, publishes the versioned event and
+marks delivery. Publication is at least once: a crash after publishing and
+before committing can repeat the same event ID. Transactional inbox receipts
+deduplicate domain mutations. Delivery retries are bounded; dead-letter
+publication must succeed before committing a poison-message offset. Failed
+outbox rows remain inspectable and require an explicit administrator replay
+after exhausting their budget.
+
+Mission creation instead commits the mission and initial stage rows together.
+Stage retries create a new attempt with exact parent artifact IDs; neither
+operation emits Kafka work. Both require Stage Jobs to be enabled.
 
 ## Mission workspace layout
 
-For `vol_id=mission_001`, the COLMAP worker uses temporary scratch space:
+New missions use organization-scoped Artifact Manifest v3. See
+[the manifest contract](docs/contracts/artifact-manifest-v3.md) and
+[the stage DAG contract](docs/contracts/versioned-stage-dag-v1.md).
+
+Each run publishes its manifest under its bound mission namespace:
 
 ```text
-/work/<selected-drive>/mission_001/
-  raw_images/
-  clean_images/
-  database.db
-  geo_data.txt
-  geo_data.txt.crs
-  sparse/
-    0/
-  sparse_geo/
-  dense/
-    sparse/
-    images/
-  alignment_transform.json
-  gaussian_checkpoints/
-    final.ply
-  orthomosaic.tif
-  orthomosaic.tif.cog.json
-  orthomosaic.preview.webp
-  orthomosaic.height.tif
-  facade_orthophoto.tif
-  facade_orthophoto.height.tif
-  facade_frame.json
-  facade_selection_report.json
-  product_manifest.json
+organizations/<organization>/missions/<mission>/
+  stage-runs/<run-uuid>/<stage>-workspace/manifest.json
 ```
 
-The orthomosaic and facade filenames above are alternatives selected by the
-product contract; one mission does not publish both sets.
-
-After upload, app1 removes this local mission directory. Durable objects use
-the S3 layout:
-
-```text
-datasets/<dataset-name>/...
-missions/mission_001/
-  orthomosaic.tif
-  orthomosaic.height.tif
-  facade_orthophoto.tif
-  facade_orthophoto.height.tif
-  facade_frame.json
-  facade_selection_report.json
-  product_manifest.json
-  alignment_transform.json
-  rtk_prior_report.json
-  imu_gravity_report.json
-  gcp_alignment_report.json
-  geo_data.txt
-  geo_data.txt.crs
-  colmap/
-    database.db
-    sparse/...
-    sparse_geo/...
-  gaussian/
-    final.ply
-    full/trainer_run.json
-    full/canary_result.json
-  gaussian-checkpoints/...
-  tiles/
-    tile_0.jpg
-    tile_1.jpg
-    ...
-  detections.geojson
-  analyses/
-    <run-id>/
-      tiles/...
-      results/tile_<index>.geojson
-      detections.geojson
-```
-
-Map-only alignment, tile, detection and analysis objects are absent from an HD
-facade prefix. The facade raster/report entries are absent from a map prefix.
-
-Important mission artifacts include:
-
-- `geo_data.txt`: image-to-projected-coordinate reference file used for alignment
-- `geo_data.txt.crs`: persisted projected CRS selected during GPS extraction
-- `database.db`: COLMAP feature and match database
-- `alignment_transform.json`: Sim3 transform from COLMAP coordinates to projected coordinates
-- `gaussian/final.ply`: required, hash-verified filtered Gaussian model
-- `gaussian/*/trainer_run.json` and `canary_result.json`: required training
-  provenance and qualification decision
-- `gaussian-checkpoints/`: recoverable in-progress training state
-- `orthomosaic.tif`: tiled COG RGB with internal overview levels
-- `orthomosaic.height.tif`: companion tiled COG height map (DSM)
-- `facade_orthophoto.tif` and `facade_orthophoto.height.tif`: CRS-free local
-  RGB/depth COGs for the HD-facade product
-- `facade_frame.json` and `facade_selection_report.json`: local-frame and
-  source-image-selection audit reports
-- `product_manifest.json`: hash-linked sparse/RTK/GCP/DroneGS/render/COG/DSM
-  provenance and effective training/qualification identities
-- `*.cog.json`: native/WGS84 bounds, zoom range and raster metadata
-- `*.preview.webp`: bounded preview that never decodes the full COG
-- `detections.geojson`: deduplicated WGS84 AI polygons/points; the API also
-  serves a viewport-filtered layer backed by the PostGIS spatial index
+Manifest entries identify checksum-addressed objects and exact parent
+manifests. Restore verifies the expected organization, manifest checksum and
+every downloaded asset. A new attempt publishes a new run namespace; it never
+overwrites a successful parent's artifact. Local stage workspaces are
+disposable scratch directories keyed by run UUID. Raw legacy mission paths
+and old artifact formats are not a supported input contract.
 
 ## End-to-end event sequence
 
@@ -1037,8 +405,8 @@ sequenceDiagram
     API->>UI: stage graph + products + durable logs
 ```
 
-The Kafka topic sequence is retained as a compatibility contract in the event
-sections below; it must not be used to infer the state of a bounded Job mission.
+The scheduler runs in the dashboard control worker. HTTP requests only persist
+work; the durable stage projection is authoritative for progress and results.
 
 ## Global mission state model
 
@@ -1080,66 +448,39 @@ stateDiagram-v2
 Each named stage contains append-only attempts with `blocked`, `queued`,
 `running`, `succeeded`, `failed` or `cancelled` state. A mission summary is a
 projection of the latest attempt per selected stage; old attempts remain
-visible as retry evidence. The detailed worker sections below also document the
-fused Kafka compatibility implementation because it remains supported.
+visible as retry evidence. No combined Kafka execution path remains.
 
-## COLMAP worker detailed behavior
+## COLMAP stage behavior
 
-### Input normalization
+### Input binding and cancellation
 
-When a mission is received, the worker:
+The executor loads a reserved run from PostgreSQL and validates its
+organization, mission, owner, workspace, stage and attempt binding. It restores
+only the exact upstream artifact IDs stored on that run. Scratch paths stay
+below the configured stage work root; user-supplied S3 prefixes are not host
+paths.
 
-1. reads the JSON mission event
-2. validates `vol_id` and the `datasets/...` S3 prefix
-3. binds cancellation checks to the mission's current `attempt`
-4. refuses to start work when that attempt is already cancelled durably
-5. validates the requested work-drive name against `WORK_DRIVES`
-6. resolves the scratch directory below `/work/<drive>/<vol_id>`
-7. falls back to `/work/system/<vol_id>` if the configured drive is not
-   mounted
-
-The API and frontend exchange S3 prefixes, not host paths. Host paths are an
-operator-level Helm concern used only to back optional `/work/<drive>`
-mounts.
-
-### Cancellation model
-
-Cancellation combines a dedicated Kafka control consumer thread with durable,
-attempt-scoped PostgreSQL state shared by every worker replica.
-
-Mechanism:
-
-- the control thread subscribes to `pipeline-control`
-- on a matching cancel event, it persists the cancellation and updates the
-  process-local positive cache
-- long-running subprocess loops use non-blocking reads from child stdout and
-  query the shared registry frequently
-- absent cancellations are rechecked in PostgreSQL at most once every
-  `CANCELLATION_POLL_SECONDS` (two seconds by default), while Kafka can still
-  make the local signal immediate
-- a retry increments `attempt`; durable state is never cleared in place and a
-  stale cancellation cannot poison the new generation
-- if cancellation is requested, the subprocess is killed and the worker raises `PipelineCancelledError`
-- the worker attempts final workspace cleanup before publishing the terminal
-  `cancelled` status and records `details.workspace_cleanup_succeeded`
-
-This design avoids waiting indefinitely on silent subprocesses and prevents a
-cleanup progress message from overwriting the terminal mission state.
+Cancellation is persisted before the API returns. The scheduler reconciles
+the affected Jobs, while cooperative checks and the heartbeat observe durable
+cancellation. COLMAP subprocess checks retain `DurableCancellationRegistry`
+and `PipelineCancelledError`. There is no Kafka control thread in the executor.
 
 ### Workspace cleanup
 
-Mission workspaces are scratch data and are removed after success, failure or
-cancellation. Cleanup no longer suppresses filesystem errors: it returns a
-verified boolean result and emits a structured `workspace_cleanup_succeeded`
-or `workspace_cleanup_failed` event for non-terminal cleanup passes. During the
-final pass it writes structured worker logs so that the terminal status remains
-the last mission event. A cleanup failure is observable but does not replace an
-already determined mission outcome; operators can remove the reported path
-later.
+All COLMAP stage adapters call their workspace cleanup in a `finally` block.
+Cleanup clears process-local cancellation state and removes stage scratch
+data. Immutable published inputs and outputs are not deleted by this cleanup.
+Mission retention separately waits for compute to stop; its safety checks are
+unchanged by the worker retirement.
 
 ### Pipeline profiles
 
-The worker supports two profile families.
+Only the modern reconstruction path remains. The selectable quality profiles
+are Fast v2, Normal v3 and HQ v4; facade processing uses its qualified v3
+contract. Checkpoint and opacity-SH settings remain part of the current
+scientific path.
+
+#### Modern profile
 
 #### Modern profile
 
@@ -1193,28 +534,15 @@ The image includes ONNX Runtime GPU and checksum-verified embedded models, but
 they are not the large-scene default: on the 8 GiB RTX 4070 Laptop they were
 slower and close to the VRAM limit on ALBAGNAC.
 
-#### Legacy profile
 
-Characteristics:
 
-- feature type: SIFT
-- matcher type: SIFT-compatible spatial matching
-- mapper command: `mapper`
-- no view graph calibration
-- OPENCV camera model and Ceres incremental BA
-- 4,000 px feature/undistortion ceiling, two BA passes and retriangulation
-- Gaussian Splatting orthomosaic enabled (same as modern)
-
-This exists for compatibility and slower reference comparisons. It changes
-SfM defaults, not the orthomosaic mode.
-
-### Smart resume and compatibility checks
+### Reconstruction cache validation
 
 Before reconstruction, the worker checks whether existing COLMAP artifacts are
 compatible with the requested reconstruction recipe. A versioned SHA-256
 fingerprint covers feature resolution/count/octave, matching, camera/mapping,
 RTK refinement iterations and robust-loss scale, and undistortion parameters.
-A changed or missing legacy fingerprint invalidates the dependent artifacts
+A changed or missing fingerprint invalidates the dependent artifacts
 once instead of silently reusing stale features or poses.
 
 The logic infers descriptor type by inspecting descriptor blob size:
@@ -1236,7 +564,8 @@ The Gaussian Splatting path treats the workspace as reusable when:
 - `dense/sparse/points3D.bin` exists
 - undistorted images exist in `dense/images/`
 
-This readiness is checked at startup and refreshed again after `image_undistorter`. If undistorted images and the sparse model are present, the worker jumps directly to the `GAUSS` stage.
+The Gaussian stage checks its restored reconstruction workspace before training;
+this does not bypass the durable DAG or replay a whole mission.
 
 A completed Gaussian training result is reusable according to its immutable
 training contract, not according to the current PSNR/SSIM acceptance
@@ -1325,50 +654,20 @@ stops publication. A mission without checkpoints remains supported for
 backwards compatibility but is labelled `accepted-unverified`; survey policy
 can require checkpoints with `gcp_require_checkpoints=true`.
 
-## COLMAP worker state diagram
+## COLMAP stage sequence
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> MissionLoaded: vols-bruts event
-    MissionLoaded --> Preparing
-    Preparing --> CopyingImages
-    CopyingImages --> GPS
-    GPS --> ProfileCheck
-    ProfileCheck --> Features
-    Features --> Matching
-    Matching --> Calibrating
-    Matching --> Mapping: legacy path
-    Calibrating --> Mapping
-    Mapping --> Undistort
-    Undistort --> GaussianSplatting
-    GaussianSplatting --> PublishMap: aerial map
-    GaussianSplatting --> PublishFacade: HD facade
-    PublishMap --> Completed: images-ortho hand-off
-    PublishFacade --> Completed: terminal COLMAP status
-
-    Preparing --> Cancelled
-    CopyingImages --> Cancelled
-    GPS --> Cancelled
-    Features --> Cancelled
-    Matching --> Cancelled
-    Calibrating --> Cancelled
-    Mapping --> Cancelled
-    Undistort --> Cancelled
-    GaussianSplatting --> Cancelled
-    PublishMap --> Cancelled
-    PublishFacade --> Cancelled
-
-    Preparing --> Error
-    GPS --> Error
-    Features --> Error
-    Matching --> Error
-    Mapping --> Error
-    Undistort --> Error
-    GaussianSplatting --> Error
-    PublishMap --> Error
-    PublishFacade --> Error
+flowchart LR
+    R[Reconstruction] --> GT[Gaussian training]
+    GT --> GF[Gaussian filtering]
+    GF --> RA[Rasterization]
+    GF --> GV[Gaussian viewer]
+    RA --> D[Optional aerial detection]
 ```
+
+Every edge represents an immutable artifact dependency. Facade products do not
+enter aerial detection. Cancellation, retry and failure apply to individual
+durable attempts as described above.
 
 ## Orthomosaic construction
 
@@ -1688,9 +987,8 @@ The table's `Default` column is the low-level validated DroneGS recipe used
 before an end-to-end quality envelope is applied. New Mission Studio missions
 default to `normal-v3`. Fast remains a fixed 1.5 M preview; Normal derives its
 effective capacity from robust scene area, requested GSD and detected VRAM up
-to its 8 M legacy operator ceiling. The projected HQ-v4 candidate uses a 5 M
-floor and a 6 M hard resident ceiling. The former 12 M HQ-v2 identity remains
-available only for exact mission replay. The
+to its 8 M operator ceiling. Qualified HQ v4 uses a 5 M floor and a 6 M
+hard resident ceiling. Historical profile replay is no longer supported. The
 complete immutable envelopes and the memory formula are in
 [`docs/contracts/quality-profiles-v3.md`](docs/contracts/quality-profiles-v3.md).
 
@@ -1818,7 +1116,7 @@ flowchart LR
   P1B --> P2[GeoTIFF affine transform<br/>from_origin min_x max_y res]
   P2 --> P[orthomosaic.tif + orthomosaic.height.tif<br/>with projected CRS]
 
-  P --> Q[app2/app3 use affine + CRS]
+  P --> Q[detection uses affine + CRS]
   Q --> R[projected coordinates from global pixels]
   R --> S[EPSG:4326 lat lon labels]
 ```
@@ -1834,231 +1132,9 @@ Read it in this order:
    the float64 Sim3 Z translation, or the GPS/EXIF-derived PCA origin.
 7. The final GeoTIFF affine transform and CRS let downstream services convert orthomosaic pixels back into latitude and longitude.
 
-## Processing worker detailed behavior
+## Detection stage behavior
 
-The processing worker is the most important post-COLMAP service, so this section is deliberately precise.
-
-### Dual-topic design
-
-The service subscribes to both:
-
-- `images-ortho`
-- `tile-detections`
-
-This allows one process to own both halves of the post-processing lifecycle:
-
-1. initial orthomosaic slicing
-2. final detection aggregation and annotation
-
-The in-memory mission registry coordinates tiling completion and final
-rendering inside one processing-worker lifetime. Individual detections and
-tile counts are also persisted in PostgreSQL, but automatic reconstruction of
-an interrupted registry after a processing-worker restart remains future
-hardening work.
-
-### Per-mission state structure
-
-When an orthomosaic arrives, the worker stores a mission record like:
-
-```json
-{
-  "ortho_path": ".../orthomosaic.tif",
-  "transform": [c, a, b, f, d, e],
-  "crs": "EPSG:32631",
-  "tiles_count": 0,
-  "detections": [],
-  "received_tiles": [],
-  "total_tiles": 180
-}
-```
-
-Operationally, that state contains:
-
-- the source orthomosaic path
-- the orthomosaic affine transform serialized for later use
-- the CRS string
-- the list of accumulated detections
-- the set of tile indices already received
-- the expected total number of tiles
-
-The mission state is deleted once the final annotated image is produced.
-
-### Tile generation algorithm
-
-The tiler uses overlapping windows, not a simple butt-jointed grid.
-
-Key helper:
-
-- `build_tile_starts(full_size, tile_size, overlap)`
-
-Behavior:
-
-- when the image is smaller than one tile, start at `0`
-- otherwise, advance with stride `tile_size - overlap`
-- always append the final start position so the last tile reaches the image boundary exactly
-
-Implications:
-
-- the rightmost and bottommost image regions are always covered
-- tile coverage is stable even when image dimensions are not multiples of tile size
-- overlap mitigates border truncation for detectors
-
-### Path normalization and tile location
-
-The processing worker downloads the mission-scoped orthomosaic key from S3
-into `/tmp/processing/<vol_id>/<run-id>/`. Tile files remain in that isolated
-temporary workspace while their durable journal and object-store artifacts
-are published.
-
-Before new tiles are written, stale `tile_*.jpg` files are removed only from that mission directory.
-
-### GeoTIFF metadata capture
-
-When slicing begins, app3 opens the orthomosaic with Rasterio and records:
-
-- image width
-- image height
-- the affine transform in GDAL tuple order
-- the CRS string
-
-This metadata is stored in mission state and copied into each tile job so app2 can geolocate detections without reopening the full orthomosaic.
-
-### Tiling output format
-
-Tiles are written as JPEG with simple band normalization:
-
-- if the orthomosaic has more than 3 bands, only the first 3 are kept
-- if the orthomosaic has 1 band, it is replicated into 3 bands for JPEG compatibility
-
-Each tile preserves its own local Rasterio window transform, but the tile event also carries the full orthomosaic transform because app2 computes global projected coordinates using full-image pixel coordinates.
-
-### Race-condition prevention
-
-Before producing any tile messages, app3 stores `total_tiles` in mission state.
-
-This avoids a race where detections come back before the aggregator knows how many tiles belong to the mission.
-
-
-### Processing worker state diagram
-
-This state machine applies only to aerial maps. HD-facade missions never emit
-`images-ortho` and therefore never enter app3.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Waiting
-    Waiting --> RegisterMission: images-ortho event
-    RegisterMission --> Tiling
-    Tiling --> PublishingTiles
-    PublishingTiles --> AwaitingDetections
-    AwaitingDetections --> AccumulatingDetections: tile-detections event
-    AccumulatingDetections --> AwaitingDetections: not all tiles returned
-    AccumulatingDetections --> Aggregating: all tile indices received
-    Aggregating --> FinalRendering
-    FinalRendering --> Cleanup
-    Cleanup --> Waiting
-
-    RegisterMission --> Error
-    Tiling --> Error
-    Aggregating --> Error
-    FinalRendering --> Error
-```
-
-### Detection aggregation model
-
-When a `tile-detections` message arrives:
-
-1. app3 finds the corresponding mission state
-2. appends the message detections into the mission-level `detections` list
-3. records the returned `tile_index` in the `received_tiles` set
-4. compares `len(received_tiles)` against `total_tiles`
-5. if all tiles are present, it triggers final rendering
-
-Before final rendering, app3 deduplicates overlapping detections from adjacent tiles. The current merge rule sorts by polygon area first, then merges a smaller candidate when any of the following is true:
-
-- the candidate polygon centroid falls inside a larger kept polygon
-- any candidate polygon vertex falls inside a larger kept polygon
-- the detections are still near each other and their bounding boxes overlap above the configured IoU threshold
-
-The processing deployment currently sets:
-
-- `UNTILER_DEDUPE_CENTER_THRESHOLD=40`
-- `UNTILER_DEDUPE_IOU_THRESHOLD=0.05`
-
-Completion is keyed on returned tile identities, not on detection counts. An empty detection result still counts as a completed tile because the tile index is recorded either way.
-
-### GPS resolution logic
-
-The processing worker supports two ways to produce GPS labels.
-
-Preferred path:
-
-- use `geo_lat` and `geo_lon` already provided by app2
-
-Fallback path:
-
-1. read the global pixel center from the detection
-2. apply the orthomosaic affine transform to convert the pixel center into projected coordinates
-3. reproject from the orthomosaic CRS to `EPSG:4326`
-
-This fallback is what allows labels to remain correct even when app2 does not populate valid geographic coordinates.
-
-The correctness of this fallback depends completely on the orthomosaic carrying the right projected CRS metadata.
-
-### Final orthomosaic annotation
-
-The final rendering path is straightforward:
-
-1. opens the orthomosaic GeoTIFF
-2. converts the first three bands to OpenCV RGB layout
-3. iterates over deduplicated detections
-4. draws the polygon fill, contour, center point, and GPS label
-5. writes the result to `*_annotated.tif`
-
-Rendering characteristics:
-
-- masks are rendered in RGB red
-- center points are rendered in green
-- text is cyan with a dark outline for readability
-- labels prefer positions that stay within image bounds
-
-### Kafka compatibility processing sequence
-
-This sequence applies only to the retained Kafka compatibility workers and to
-explicit asynchronous re-analysis campaigns. The qualified five-Job path uses
-the bounded Detection Job shown in the primary end-to-end diagram and does not
-depend on this topic exchange. Both paths are intentionally absent for HD
-facades.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as app1-colmap
-    participant P as app3-processing
-    participant K as Kafka
-    participant IA as app2-ia
-
-    C->>K: publish images-ortho
-    P->>K: consume images-ortho
-    P->>P: create mission state
-    P->>P: compute overlapping tile grid
-    loop every tile
-        P->>K: publish image-tiles
-        IA->>K: consume image-tiles
-        IA->>IA: detect OBB polygons and compute global coordinates
-        IA->>K: publish tile-detections
-        P->>K: consume tile-detections
-        P->>P: append detections and mark tile index received
-    end
-    P->>P: all tile indices received
-    P->>P: render final annotated orthomosaic
-    P->>K: publish DONE
-    P->>P: delete mission state
-```
-
-## IA worker detailed behavior
-
-Although the user-facing focus of this document is on app3 and orthomosaic construction, app2 is part of that chain and its behavior affects both.
+The bounded detector shares the following inference mechanics with the local diagnostic runner.
 
 ### Model loading
 
@@ -2155,18 +1231,13 @@ If too few common image centers exist between sparse-local and sparse-geo recons
 
 If the Gaussian Splatting training or rendering raises an exception, app1 emits an error status and the mission stops.
 
-### Processing worker missing orthomosaic
+### Missing or inconsistent detection input
 
-If app3 cannot download or open the orthomosaic object, it emits an error
-status and stops processing that mission.
-
-### Partial tile-return problem
-
-The processing worker journals every expected tile and receipt. Periodic
-recovery re-finalizes complete stale campaigns, republishes bounded batches of
-missing tiles and reclaims stale finalization leases. Failed outbox events
-enter a visible dead state after their retry budget and require an explicit
-administrator replay.
+Detection rejects a missing, corrupt or foreign-organization upstream
+workspace. Indexed execution journals receipts against the exact shard-plan
+checksum; the finalizer accepts only the complete current plan. Independent
+analysis retries keep their exact raster input and use generation checks to
+reject late publication. Failed stages retain durable error evidence.
 
 ## Important invariants
 
@@ -2232,30 +1303,16 @@ From app2:
 
 ## Recommended reading order for developers
 
-If you are changing the pipeline, read the implementation in this order:
+1. `app4-dashboard/api/routers/missions.py` and `mission_stages.py`
+2. `app4-dashboard/api/stage_orchestrator.py` and `shared/stage_scheduler.py`
+3. `shared/stage_execution.py`, `stage_workspace.py` and `artifact_manifest.py`
+4. `app1-colmap/stage_executor.py`, `colmap_worker/stage_executor.py` and scientific stage modules
+5. `app2-ia/stage_executor.py`, `detection_stage.py` and `shared/detection_products.py`
+6. `shared/analysis_stages.py` and the map-analysis API
+7. Helm templates and protected overlays
 
-1. `app4-dashboard/api/main.py`
-2. `app4-dashboard/api/routers/`, `messaging.py`, `mission_state.py`, and
-   `realtime.py`
-3. `shared/event_contracts.py`, `shared/kafka_reliability.py`, and
-   `shared/inbox_outbox.py`
-4. `app1-colmap/colmap_worker/mission_runner.py`, `contracts.py`, then the
-   modules below `stages/`; read `worker.py` and `worker_support.py` for the
-   Kafka lifecycle
-5. `app3-processing/main.py` and `app3-processing/processing_core.py`
-6. `app2-ia/main.py` and `app2-ia/detection_core.py`
-7. `charts/drone-ai/templates/` and `charts/drone-ai/values.yaml`
-
-Reason:
-
-- the API routers and gateways define the mission/control contract
-- shared modules define the event and delivery semantics
-- app1's typed stages define the workspace, reconstruction and product
-  contracts; its worker module owns only the Kafka lifecycle
-- app3 defines the tile and final annotated-image contract
-- app2 fills the detection contract
-- the Helm chart defines the runtime storage, broker, database, filesystem and
-  RBAC topology
+Transport retirement does not change the COLMAP, DroneGS, renderer or
+opacity-SH algorithms.
 
 ## Scope boundaries
 
@@ -2274,14 +1331,13 @@ Use this document for:
 - file layout
 - geo-alignment strategy
 - orthomosaic generation logic
-- processing worker behavior
+- bounded detection and finalization
 - failure handling and invariants
 
 The remaining distributed limitations are deliberate and explicit:
 
 - inbox/outbox currently covers the API control plane, not every worker output
 - no transaction can span Postgres, S3, GPU work, and Kafka
-- processing aggregation still has in-memory state for zero-detection tiles
 - no automated dead-letter replay policy
 - no multi-replica or broker-failover integration test in CI
 

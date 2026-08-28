@@ -54,7 +54,7 @@ export default function SearchPanel({
           className="input-control text-xs"
         >
           <option value="">{t("search.allSources")}</option>
-          <option value="legacy">{t("search.initialPipeline")}</option>
+          <option value="pipeline">{t("search.initialPipeline")}</option>
           <option value="manual">{t("search.manual")}</option>
           <option value="ai">{t("search.persistedAi")}</option>
         </select>

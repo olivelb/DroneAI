@@ -20,6 +20,7 @@ from shared.database import (
     Organization,
     get_session,
 )
+from shared.analysis_stages import sync_analysis_stage
 from shared.deployment_mode import bounded_stage_jobs_enabled
 from shared.detection_shard_receipts import complete_detection_shard_receipts
 from shared.detection_sharding import (
@@ -340,15 +341,12 @@ def settings_from_environment() -> StageOrchestratorSettings:
     deployment_environment = os.getenv("DRONEAI_ENV", "development").strip().lower()
     protected_environment = deployment_environment in {"staging", "production"}
     detection_fanout_enabled = _strict_bool("DRONEAI_DETECTION_FANOUT_ENABLED")
-    manifest_v2_enabled = _strict_bool("DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED")
     selective_restore_enabled = _strict_bool(
         "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED"
     )
-    if detection_fanout_enabled and not (
-        manifest_v2_enabled and selective_restore_enabled
-    ):
+    if detection_fanout_enabled and not selective_restore_enabled:
         raise ValueError(
-            "Detection fan-out requires Manifest v2 writes and selective restore"
+            "Detection fan-out requires selective restore"
         )
     resource_limits_raw = json.loads(
         os.getenv("DRONEAI_STAGE_RESOURCE_CONCURRENCY_JSON", "{}")
@@ -372,7 +370,6 @@ def settings_from_environment() -> StageOrchestratorSettings:
             "S3_BUCKET",
             "S3_REGION",
             "S3_PUBLIC_ENDPOINT",
-            "DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED",
             "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED",
         )
         if name in os.environ
@@ -874,6 +871,7 @@ def reserve_ready_jobs(
             run.status = "failed"
             run.error_message = f"Invalid detection fan-out plan: {error}"
             run.completed_at = now
+            sync_analysis_stage(session, run)
             continue
         prepared_candidate_rows.append((run, mission))
     candidate_rows = prepared_candidate_rows
@@ -982,6 +980,8 @@ def reserve_ready_jobs(
             },
         )
         reserved.append(reserved_job)
+    for run, _mission in candidate_rows:
+        sync_analysis_stage(session, run)
     return reserved
 
 
@@ -1003,6 +1003,7 @@ def _record_dispatch_error(
         else:
             run.executor = None
             run.scheduled_at = None
+        sync_analysis_stage(session, run)
 
 
 def _create_job(client: KubernetesJobClient, reserved: ReservedStageJob) -> None:
@@ -1173,6 +1174,9 @@ def reconcile_stage_jobs(
                     "Stage Job exited without publishing its immutable artifact"
                 )
                 run.completed_at = now
+
+        for run, _mission in rows:
+            sync_analysis_stage(session, run)
 
 
 def orchestrator_tick(

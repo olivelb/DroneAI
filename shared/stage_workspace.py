@@ -3,36 +3,31 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any
 
 from shared import storage
 from shared.artifact_manifest import (
     ARTIFACT_MANIFEST_VERSION,
     ROLE_PATTERN,
-    TENANT_ARTIFACT_MANIFEST_VERSION,
     ArtifactManifest,
     ManifestBlob,
     ManifestFile,
     ManifestParent,
-    canonical_v2_bytes,
     canonical_v3_bytes,
     parse_artifact_manifest,
+    validate_cas_organization,
 )
 from shared.checksums import sha256_file
 from shared.config import S3_BUCKET
-from shared.tenancy import LEGACY_ORGANIZATION_ID, validate_organization_id
 
-WORKSPACE_MANIFEST_VERSION = 1
 MAX_OVERLAY_MANIFESTS = 64
 MAX_MATERIALIZED_FILES = 100_000
-ARTIFACT_MANIFEST_V2_WRITE_ENV = "DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED"
 ARTIFACT_SELECTIVE_RESTORE_ENV = "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED"
 
 
@@ -45,29 +40,9 @@ def _strict_boolean_environment(name: str) -> bool:
     raise ValueError(f"{name} must be an explicit boolean, not {raw!r}")
 
 
-def artifact_manifest_v2_write_enabled() -> bool:
-    """Return the strict, disabled-by-default v2 writer rollout switch."""
-
-    return _strict_boolean_environment(ARTIFACT_MANIFEST_V2_WRITE_ENV)
-
-
 def artifact_selective_restore_enabled() -> bool:
-    """Return the selective-restore canary switch and enforce its dependency."""
-
-    enabled = _strict_boolean_environment(ARTIFACT_SELECTIVE_RESTORE_ENV)
-    if enabled and not artifact_manifest_v2_write_enabled():
-        raise ValueError(
-            f"{ARTIFACT_SELECTIVE_RESTORE_ENV} requires "
-            f"{ARTIFACT_MANIFEST_V2_WRITE_ENV}=true"
-        )
-    return enabled
-
-
-def _tenant_cas_organization_id(organization_id: str | None) -> str | None:
-    if organization_id is None:
-        return None
-    validated = validate_organization_id(organization_id)
-    return None if validated == LEGACY_ORGANIZATION_ID else validated
+    """Return the strict detection-only selective-restore switch."""
+    return _strict_boolean_environment(ARTIFACT_SELECTIVE_RESTORE_ENV)
 
 
 @dataclass(frozen=True)
@@ -81,7 +56,7 @@ class PublishedWorkspace:
     reused_bytes: int = 0
     upload_seconds: float = 0.0
     manifest_size_bytes: int = 0
-    manifest_schema_version: int = WORKSPACE_MANIFEST_VERSION
+    manifest_schema_version: int = ARTIFACT_MANIFEST_VERSION
 
 
 @dataclass(frozen=True)
@@ -92,7 +67,7 @@ class RestoredWorkspace:
     reused_bytes: int
     download_seconds: float
     manifest_size_bytes: int
-    manifest_schema_version: int = WORKSPACE_MANIFEST_VERSION
+    manifest_schema_version: int = ARTIFACT_MANIFEST_VERSION
 
 
 @dataclass(frozen=True)
@@ -142,10 +117,6 @@ def workspace_transfer_provenance(
             "duration_seconds": restored.download_seconds,
         }
     return transfer
-
-
-def _canonical(payload: dict[str, Any]) -> bytes:
-    return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
 
 
 def _upload_workspace_manifest(
@@ -200,71 +171,11 @@ def publish_workspace(
     workspace: str | Path,
     s3_prefix: str,
     *,
-    cancellation_check: Callable[[], None] | None = None,
-) -> PublishedWorkspace:
-    started_at = time.monotonic()
-    root = Path(workspace).resolve(strict=True)
-    if not root.is_dir():
-        raise NotADirectoryError(root)
-    prefix = s3_prefix.strip("/")
-    if not prefix:
-        raise ValueError("Workspace S3 prefix cannot be empty")
-    entries: list[dict[str, int | str]] = []
-    for path in sorted(root.rglob("*")):
-        if cancellation_check is not None:
-            cancellation_check()
-        if path.is_symlink():
-            raise ValueError(f"Workspace cannot publish symbolic link: {path}")
-        if not path.is_file():
-            continue
-        relative = path.relative_to(root).as_posix()
-        verified = storage.upload_verified_file(path, f"{prefix}/files/{relative}")
-        entries.append(
-            {
-                "path": relative,
-                "size": int(verified["size"]),
-                "sha256": str(verified["sha256"]),
-            }
-        )
-    payload: dict[str, Any] = {
-        "schema_version": WORKSPACE_MANIFEST_VERSION,
-        "files": entries,
-    }
-    canonical = _canonical(payload)
-    digest = hashlib.sha256(canonical).hexdigest()
-    manifest_key = f"{prefix}/manifest.json"
-    verified_manifest = _upload_workspace_manifest(
-        canonical,
-        manifest_key,
-        digest,
-        temporary_prefix="droneai-workspace-",
-    )
-    return PublishedWorkspace(
-        manifest_key=manifest_key,
-        uri=f"s3://{S3_BUCKET}/{manifest_key}",
-        checksum_sha256=digest,
-        size_bytes=sum(cast(int, entry["size"]) for entry in entries),
-        file_count=len(entries),
-        uploaded_bytes=(
-            sum(cast(int, entry["size"]) for entry in entries)
-            + int(verified_manifest["size"])
-        ),
-        reused_bytes=0,
-        upload_seconds=round(time.monotonic() - started_at, 6),
-        manifest_size_bytes=int(verified_manifest["size"]),
-        manifest_schema_version=WORKSPACE_MANIFEST_VERSION,
-    )
-
-
-def publish_workspace_v2(
-    workspace: str | Path,
-    s3_prefix: str,
-    *,
     default_role: str,
     role_overrides: dict[str, str] | None = None,
     parents: tuple[ManifestParent, ...] = (),
     allow_partial_workspace: bool = False,
-    organization_id: str | None = None,
+    organization_id: str,
     cancellation_check: Callable[[], None] | None = None,
 ) -> PublishedWorkspace:
     """Publish a verified incremental CAS overlay.
@@ -274,7 +185,7 @@ def publish_workspace_v2(
     """
 
     started_at = time.monotonic()
-    tenant_organization_id = _tenant_cas_organization_id(organization_id)
+    tenant_organization_id = validate_cas_organization(organization_id)
     root = Path(workspace).resolve(strict=True)
     if not root.is_dir():
         raise NotADirectoryError(root)
@@ -325,17 +236,11 @@ def publish_workspace_v2(
             and parent_entry.blob.checksum_sha256 == digest
         ):
             continue
-        if tenant_organization_id is None:
-            uploaded = storage.publish_content_addressed_file(
-                file_path,
-                cancellation_check=cancellation_check,
-            )
-        else:
-            uploaded = storage.publish_content_addressed_file(
-                file_path,
-                organization_id=tenant_organization_id,
-                cancellation_check=cancellation_check,
-            )
+        uploaded = storage.publish_content_addressed_file(
+            file_path,
+            organization_id=tenant_organization_id,
+            cancellation_check=cancellation_check,
+        )
         transferred_bytes += uploaded.transferred_bytes
         if uploaded.reused:
             cas_reused_bytes += size
@@ -365,27 +270,19 @@ def publish_workspace_v2(
         if relative not in changed_paths
     )
     manifest = ArtifactManifest(
-        (
-            TENANT_ARTIFACT_MANIFEST_VERSION
-            if tenant_organization_id is not None
-            else ARTIFACT_MANIFEST_VERSION
-        ),
+        ARTIFACT_MANIFEST_VERSION,
         tuple(files),
         parents,
         organization_id=tenant_organization_id,
     )
-    canonical = (
-        canonical_v3_bytes(manifest)
-        if tenant_organization_id is not None
-        else canonical_v2_bytes(manifest)
-    )
+    canonical = canonical_v3_bytes(manifest)
     digest = hashlib.sha256(canonical).hexdigest()
     manifest_key = f"{prefix}/manifest.json"
     verified_manifest = _upload_workspace_manifest(
         canonical,
         manifest_key,
         digest,
-        temporary_prefix="droneai-workspace-v2-",
+        temporary_prefix="droneai-workspace-v3-",
     )
     manifest_size = int(verified_manifest["size"])
     return PublishedWorkspace(
@@ -406,9 +303,10 @@ def _load_manifest_overlay(
     manifest_key: str,
     expected_checksum_sha256: str,
     *,
-    expected_organization_id: str | None = None,
+    expected_organization_id: str,
     cancellation_check: Callable[[], None] | None = None,
 ) -> tuple[ArtifactManifest, dict[str, ManifestFile], int]:
+    expected_organization_id = validate_cas_organization(expected_organization_id)
     manifest_bytes_total = 0
     loaded_count = 0
     active: set[tuple[str, str]] = set()
@@ -441,11 +339,8 @@ def _load_manifest_overlay(
         if digest != checksum:
             raise OSError(f"Workspace manifest checksum mismatch: {digest}/{checksum}")
         manifest_bytes_total += len(content)
-        manifest = parse_artifact_manifest(content, manifest_key=key)
-        if (
-            manifest.organization_id is not None
-            and manifest.organization_id != expected_organization_id
-        ):
+        manifest = parse_artifact_manifest(content)
+        if manifest.organization_id != expected_organization_id:
             raise ValueError(
                 "Artifact manifest organization does not match the request tenant"
             )
@@ -479,7 +374,7 @@ def resolve_workspace_files(
     manifest_key: str,
     expected_checksum_sha256: str,
     *,
-    expected_organization_id: str | None = None,
+    expected_organization_id: str,
 ) -> dict[str, ManifestFile]:
     """Resolve an immutable workspace overlay without materializing its blobs.
 
@@ -504,7 +399,7 @@ def restore_workspace_measured(
     *,
     cancellation_check: Callable[[], None] | None = None,
     selection: WorkspaceSelection | None = None,
-    expected_organization_id: str | None = None,
+    expected_organization_id: str,
 ) -> RestoredWorkspace:
     started_at = time.monotonic()
     destination_root = Path(destination).resolve()
@@ -557,24 +452,3 @@ def restore_workspace_measured(
         manifest_size_bytes=manifest_bytes_total,
         manifest_schema_version=manifest.schema_version,
     )
-
-
-def restore_workspace(
-    manifest_key: str,
-    destination: str | Path,
-    expected_checksum_sha256: str,
-    *,
-    cancellation_check: Callable[[], None] | None = None,
-    selection: WorkspaceSelection | None = None,
-    expected_organization_id: str | None = None,
-) -> int:
-    """Restore a v1 workspace and preserve the legacy file-count return value."""
-
-    return restore_workspace_measured(
-        manifest_key,
-        destination,
-        expected_checksum_sha256,
-        cancellation_check=cancellation_check,
-        selection=selection,
-        expected_organization_id=expected_organization_id,
-    ).file_count

@@ -76,125 +76,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                               const RunMeasurements& measurements,
                               const std::filesystem::path& ply_path,
                               std::size_t gaussian_count) {
-    const bool reference_absgrad025 =
-        options.optimizer_profile ==
-            "reference-absolute-absgrad025";
-    const bool reference_absgrad050 =
-        options.optimizer_profile ==
-            "reference-absolute-absgrad050";
-    const bool reference_all =
-        options.optimizer_profile == "reference-absolute" ||
-        reference_absgrad025 || reference_absgrad050;
-    const bool dev34_geometry =
-        options.optimizer_profile == "dev34-opacity096-reference-scale" ||
-        options.optimizer_profile == "dev34-opacity096-reference-rotation" ||
-        options.optimizer_profile ==
-            "dev34-opacity096-reference-scale-rotation";
-    const bool dev35_staged_rotation =
-        options.optimizer_profile ==
-            "dev35-opacity096-reference-scale-staged-rotation004" ||
-        options.optimizer_profile ==
-            "dev35-opacity096-reference-scale-staged-rotation008";
-    const bool dev36_absgrad =
-        options.optimizer_profile ==
-            "dev36-staged-rotation008-absgrad025" ||
-        options.optimizer_profile ==
-            "dev36-staged-rotation008-absgrad050";
-    const bool dev37_antialias =
-        options.optimizer_profile ==
-            "dev37-staged-rotation008-absgrad050-aa005" ||
-        options.optimizer_profile ==
-            "dev37-staged-rotation008-absgrad050-aa015" ||
-        options.optimizer_profile ==
-            "dev37-staged-rotation008-absgrad050-aa030";
-    const bool dev38_fastgs =
-        options.optimizer_profile ==
-            "dev38-staged-rotation008-absgrad050-fastgs";
-    const bool effective_fastgs =
-        options.raster_profile == "fastgs" ||
-        (options.raster_profile == "auto" && dev38_fastgs);
-    const bool absgrad_enabled =
-        reference_absgrad025 || reference_absgrad050 ||
-        dev36_absgrad || dev37_antialias || dev38_fastgs;
-    const bool staged_rotation =
-        dev35_staged_rotation || dev36_absgrad ||
-        dev37_antialias || dev38_fastgs;
-    const bool calibrated_dc_opacity =
-        options.optimizer_profile == "calibrated-dc-0.005-opacity" ||
-        options.optimizer_profile == "calibrated-dc-0.010-opacity" ||
-        options.optimizer_profile == "calibrated-dc-0.020-opacity" ||
-        options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.024" ||
-        options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.048" ||
-        options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.096" ||
-        dev34_geometry ||
-        staged_rotation;
-    const bool reference_dc =
-        reference_all ||
-        options.optimizer_profile == "reference-dc-only" ||
-        options.optimizer_profile == "reference-dc-opacity" ||
-        calibrated_dc_opacity;
-    const bool reference_position =
-        reference_all ||
-        options.optimizer_profile == "reference-position-only";
-    const bool reference_opacity =
-        reference_all ||
-        options.optimizer_profile == "reference-opacity-only" ||
-        options.optimizer_profile == "reference-dc-opacity" ||
-        calibrated_dc_opacity;
-    const bool reference_scale =
-        reference_all ||
-        options.optimizer_profile == "reference-scale-only" ||
-        options.optimizer_profile == "dev34-opacity096-reference-scale" ||
-        options.optimizer_profile ==
-            "dev34-opacity096-reference-scale-rotation" ||
-        staged_rotation;
-    const bool reference_rotation =
-        reference_all ||
-        options.optimizer_profile == "reference-rotation-only" ||
-        options.optimizer_profile == "dev34-opacity096-reference-rotation" ||
-        options.optimizer_profile ==
-            "dev34-opacity096-reference-scale-rotation" ||
-        staged_rotation;
-    const bool mixed_epsilon =
-        options.optimizer_profile != "dronegs-dev16" &&
-        !reference_all;
-    const char* dc_learning_rate = reference_dc ? "0.002" : "0.05";
-    if (options.optimizer_profile == "calibrated-dc-0.005-opacity") {
-        dc_learning_rate = "0.005";
-    } else if (
-        options.optimizer_profile == "calibrated-dc-0.010-opacity" ||
-        options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.024" ||
-        options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.048" ||
-        options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.096" ||
-        dev34_geometry ||
-        staged_rotation) {
-        dc_learning_rate = "0.01";
-    } else if (
-        options.optimizer_profile == "calibrated-dc-0.020-opacity") {
-        dc_learning_rate = "0.02";
-    }
-    const char* opacity_learning_rate =
-        reference_opacity ? "0.012" : "0.01";
-    if (options.optimizer_profile ==
-        "calibrated-dc-0.010-opacity-0.024") {
-        opacity_learning_rate = "0.024";
-    } else if (
-        options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.048") {
-        opacity_learning_rate = "0.048";
-    } else if (
-        options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.096" ||
-        dev34_geometry ||
-        staged_rotation) {
-        opacity_learning_rate = "0.096";
-    }
+    const bool effective_fastgs = options.raster_profile == "fastgs";
     const auto temporary = options.run_manifest.string() + ".tmp";
     std::ofstream stream(temporary, std::ios::trunc);
     if (!stream) {
@@ -364,11 +246,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"opacity_decay\": 0.004,\n"
            << "    \"scale_decay\": 0.002,\n"
            << "    \"topology_compaction\": \"hard_dense_preserve_adam\",\n"
-           << "    \"growth_score\": "
-           << (absgrad_enabled
-                   ? "\"mrnf_error_edge_times_robust_abs_projected_gradient\""
-                   : "\"max_normalized_ssim_error_weighted_alpha_contribution\"")
-           << ",\n"
+           << "    \"growth_score\": \"max_normalized_ssim_error_weighted_alpha_contribution\",\n"
            << "    \"growth_gradient_threshold\": 0.003,\n"
            << "    \"growth_selection\": "
               "\"log_guided_weight_plus_splitmix64_gumbel_top_k\",\n"
@@ -378,42 +256,11 @@ void write_completed_manifest(const Options& options, const Scene& scene,
               "\"training_view_sobel_luminance_alpha_contribution_positive_median\",\n"
            << "    \"edge_score_weight\": 0.25,\n"
            << "    \"edge_extra_render_passes\": 0,\n"
-           << "    \"absgrad_guidance\": "
-           << (absgrad_enabled
-                   ? "\"homodirectional_per_pixel_projected_center_gradient\""
-                   : "null")
-           << ",\n"
-           << "    \"absgrad_normalization\": "
-           << (absgrad_enabled
-                   ? "\"per_visible_view_positive_median_clamped_4\""
-                   : "null")
-           << ",\n"
-           << "    \"absgrad_score_weight\": "
-           << (reference_absgrad025 ||
-                       options.optimizer_profile ==
-                           "dev36-staged-rotation008-absgrad025"
-                   ? "0.25"
-                   : (absgrad_enabled
-                          ? "0.50"
-                          : "0.0"))
-           << ",\n"
-           << "    \"antialias_filter_variance\": "
-           << (options.optimizer_profile ==
-                       "dev37-staged-rotation008-absgrad050-aa005"
-                   ? "0.05"
-                   : (options.optimizer_profile ==
-                              "dev37-staged-rotation008-absgrad050-aa015"
-                          ? "0.15"
-                          : (options.optimizer_profile ==
-                                     "dev37-staged-rotation008-absgrad050-aa030"
-                                 ? "0.30"
-                                 : "0.0")))
-           << ",\n"
-           << "    \"antialias_compensation\": "
-           << (dev37_antialias
-                   ? "\"sqrt_det_original_over_det_filtered_with_exact_vjp\""
-                   : "null")
-           << ",\n"
+           << "    \"absgrad_guidance\": null,\n"
+           << "    \"absgrad_normalization\": null,\n"
+           << "    \"absgrad_score_weight\": 0.0,\n"
+           << "    \"antialias_filter_variance\": 0.0,\n"
+           << "    \"antialias_compensation\": null,\n"
            << "    \"effective_raster_profile\": "
            << (effective_fastgs ? "\"fastgs\"" : "\"bounded\"")
            << ",\n"
@@ -430,69 +277,25 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"maximum_fragment_alpha\": "
            << (effective_fastgs ? "0.999" : "0.99")
            << ",\n"
-           << "    \"adam_epsilon\": "
-           << (mixed_epsilon
-                   ? "null"
-                   : (reference_all ? "1e-15" : "1e-8")) << ",\n"
-           << "    \"position_adam_epsilon\": "
-           << (reference_position ? "1e-15" : "1e-8") << ",\n"
-           << "    \"dc_adam_epsilon\": "
-           << (reference_dc ? "1e-15" : "1e-8") << ",\n"
-           << "    \"opacity_adam_epsilon\": "
-           << (reference_opacity ? "1e-15" : "1e-8") << ",\n"
-           << "    \"scale_adam_epsilon\": "
-           << (reference_scale ? "1e-15" : "1e-8") << ",\n"
-           << "    \"rotation_adam_epsilon\": "
-           << (reference_rotation ? "1e-15" : "1e-8") << ",\n"
-           << "    \"dc_lr\": "
-           << dc_learning_rate << ",\n"
-           << "    \"opacity_lr\": "
-           << opacity_learning_rate << ",\n"
-           << "    \"position_lr_initial_factor\": "
-           << (reference_position ? "0.00002" : "0.00016") << ",\n"
-           << "    \"position_lr_final_factor\": "
-           << (reference_position ? "0.0000002" : "0.0000016")
-           << ",\n"
-           << "    \"position_lr_scale\": "
-           << (reference_position
-                   ? "\"initial_gaussian_axis_10_90_percentile_median_width\""
-                   : "\"initial_gaussian_bbox_diagonal\"")
-           << ",\n"
-           << "    \"position_lr_schedule\": "
-           << (reference_position
-                   ? "\"exponential_step_minus_one_over_iterations\""
-                   : "\"exponential_step_minus_one_over_iterations_minus_one\"")
-           << ",\n"
-           << "    \"scale_lr_initial\": "
-           << (reference_scale ? "0.007" : "0.005") << ",\n"
+           << "    \"adam_epsilon\": 1e-15,\n"
+           << "    \"position_adam_epsilon\": 1e-15,\n"
+           << "    \"dc_adam_epsilon\": 1e-15,\n"
+           << "    \"opacity_adam_epsilon\": 1e-15,\n"
+           << "    \"scale_adam_epsilon\": 1e-15,\n"
+           << "    \"rotation_adam_epsilon\": 1e-15,\n"
+           << "    \"dc_lr\": 0.002,\n"
+           << "    \"opacity_lr\": 0.012,\n"
+           << "    \"position_lr_initial_factor\": 0.00002,\n"
+           << "    \"position_lr_final_factor\": 0.0000002,\n"
+           << "    \"position_lr_scale\": \"initial_gaussian_axis_10_90_percentile_median_width\",\n"
+           << "    \"position_lr_schedule\": \"exponential_step_minus_one_over_iterations\",\n"
+           << "    \"scale_lr_initial\": 0.007,\n"
            << "    \"scale_lr_final\": 0.005,\n"
-           << "    \"scale_lr_schedule\": "
-           << (reference_scale
-                   ? "\"exponential_step_minus_one_over_iterations\""
-                   : "\"constant\"")
-           << ",\n"
-           << "    \"rotation_lr\": "
-           << (staged_rotation
-                   ? "0.001"
-                   : (reference_rotation ? "0.002" : "0.001"))
-           << ",\n"
-           << "    \"rotation_lr_final\": "
-           << (options.optimizer_profile ==
-                       "dev35-opacity096-reference-scale-staged-rotation004"
-                   ? "0.004"
-                   : (options.optimizer_profile ==
-                                  "dev35-opacity096-reference-scale-staged-rotation008" ||
-                              absgrad_enabled
-                          ? "0.008"
-                          : (reference_rotation ? "0.002" : "0.001")))
-           << ",\n"
-           << "    \"rotation_lr_schedule\": "
-           << (staged_rotation
-                   ? "\"piecewise_constant_0.4\""
-                   : "\"constant\"")
-           << ",\n"
-           << "    \"rotation_lr_switch_fraction\": "
-           << (staged_rotation ? "0.4" : "null") << ",\n"
+           << "    \"scale_lr_schedule\": \"exponential_step_minus_one_over_iterations\",\n"
+           << "    \"rotation_lr\": 0.002,\n"
+           << "    \"rotation_lr_final\": 0.002,\n"
+           << "    \"rotation_lr_schedule\": \"constant\",\n"
+           << "    \"rotation_lr_switch_fraction\": null,\n"
            << "    \"optimizer_telemetry\": "
               "\"deterministic_approximately_4096_gaussians_steps_1_and_fifths\",\n"
            << "    \"log_scale_limit_delta\": 4.0,\n"

@@ -20,7 +20,6 @@ from colmap_worker import runtime as worker_runtime
 from colmap_worker import sparse_mapping
 from colmap_worker.stages import gaussian as gaussian_stage
 from colmap_worker.stages import preparation as preparation_stage
-from colmap_worker.stages import publication as publication_stage
 from gaussian_ortho import phase_artifacts
 from gaussian_ortho.capacity_planning import (
     GaussianCapacityPlan,
@@ -210,33 +209,21 @@ class TestColmapStageHelpers(unittest.TestCase):
         self.assertTrue(warnings)
 
     def test_versioned_quality_profile_becomes_custom_after_training_override(self):
-        profile = quality_profile("high-quality-v3")
+        profile = quality_profile("high-quality-v4")
         config, warnings = dronegs_config.resolve_dronegs_config(
             profile.parameters,
             facade_mode=False,
             data_factor=int(profile.parameters["gs_data_factor"]),
         )
 
-        self.assertEqual(config.profile_id, "high-quality-v3")
+        self.assertEqual(config.profile_id, "high-quality-v4")
         self.assertEqual(config.iterations, 30_000)
-        self.assertEqual(config.cap_max, 12_000_000)
+        self.assertEqual(config.cap_max, 6_000_000)
         self.assertEqual(config.capacity_mode, "adaptive")
         self.assertEqual(config.capacity_floor, 5_000_000)
         self.assertEqual(config.target_gaussian_spacing_pixels, 3.6)
         self.assertTrue(config.resident_partitioning)
         self.assertEqual(warnings, ())
-
-        legacy_profile = quality_profile("high-quality-v2")
-        legacy_config, legacy_warnings = dronegs_config.resolve_dronegs_config(
-            {
-                **legacy_profile.parameters,
-                "gs_resident_partitioning": "false",
-            },
-            facade_mode=False,
-            data_factor=int(legacy_profile.parameters["gs_data_factor"]),
-        )
-        self.assertFalse(legacy_config.resident_partitioning)
-        self.assertEqual(legacy_warnings, ())
 
         overridden, warnings = dronegs_config.resolve_dronegs_config(
             {**profile.parameters, "gs_cap_max": "11000000"},
@@ -639,39 +626,3 @@ class TestColmapStageHelpers(unittest.TestCase):
                 hydrated.render_state.coverage_camera_positions,
                 filtering_phase.render_state.coverage_camera_positions,
             )
-
-    def test_product_verification_requires_matching_canary_manifests(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            ortho = os.path.join(tmp_dir, "orthomosaic.tif")
-            height = os.path.join(tmp_dir, "height.tif")
-            final_ply = os.path.join(tmp_dir, "final.ply")
-            checkpoint_dir = os.path.join(tmp_dir, "checkpoint")
-            os.makedirs(checkpoint_dir)
-            for artifact in (ortho, height, final_ply):
-                Path(artifact).write_bytes(b"artifact")
-            Path(checkpoint_dir, "trainer_run.json").write_text("{}", encoding="utf-8")
-            preparation = types.SimpleNamespace(
-                params={"gcp_adjustment_enabled": False},
-                facade_mode=False,
-                facade_selection_report_path=os.path.join(tmp_dir, "facade.json"),
-            )
-            rtk_state = types.SimpleNamespace(report_path=os.path.join(tmp_dir, "rtk.json"))
-            alignment_state = types.SimpleNamespace(alignment_transform_path=None)
-            gaussian_state = types.SimpleNamespace(
-                ortho_file=ortho,
-                result={
-                    "height_file": height,
-                    "final_ply": final_ply,
-                    "checkpoint_dir": checkpoint_dir,
-                },
-            )
-
-            with patch.object(publication_stage, "convert_to_cog"):
-                with self.assertRaisesRegex(FileNotFoundError, "canary qualification"):
-                    publication_stage._verify_product_assets(
-                        preparation,
-                        rtk_state,
-                        alignment_state,
-                        gaussian_state,
-                        tmp_dir,
-                    )

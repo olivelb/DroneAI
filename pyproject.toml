@@ -20,7 +20,6 @@ source = [
     "shared",
     "app1-colmap",
     "app2-ia",
-    "app3-processing",
     "app4-dashboard/api",
     "tools",
 ]

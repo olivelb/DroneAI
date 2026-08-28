@@ -201,7 +201,7 @@ jobs:
           compose=(
             docker compose
             --project-name droneai-integration
-            --file compose.local.yaml
+            --file compose.test.yaml
             --file .github/compose.integration.yaml
           )
           "${compose[@]}" up --detach --wait postgres kafka minio
@@ -216,7 +216,7 @@ jobs:
           compose=(
             docker compose
             --project-name droneai-integration
-            --file compose.local.yaml
+            --file compose.test.yaml
             --file .github/compose.integration.yaml
             --file .github/compose.http-e2e.yaml
             --profile http-e2e
@@ -235,7 +235,7 @@ jobs:
         run: >-
           docker compose
           --project-name droneai-integration
-          --file compose.local.yaml
+          --file compose.test.yaml
           --file .github/compose.integration.yaml
           --file .github/compose.http-e2e.yaml
           --profile http-e2e
@@ -245,7 +245,7 @@ jobs:
         run: >-
           docker compose
           --project-name droneai-integration
-          --file compose.local.yaml
+          --file compose.test.yaml
           --file .github/compose.integration.yaml
           --file .github/compose.http-e2e.yaml
           --profile http-e2e
@@ -389,14 +389,6 @@ jobs:
               assert os.getuid() == 10001;
               app = importlib.import_module('app4-dashboard.api.main').app;
               assert len(app.openapi()['paths']) >= 25
-          - image: drone-processing:ci
-            artifact: processing-worker
-            dockerfile: app3-processing/Dockerfile
-            command: >-
-              import os, sys;
-              assert os.getuid() == 10001;
-              sys.path.insert(0, '/app/app3-processing');
-              import analysis_workflow, orthomosaic_tiler
           - image: drone-ia:ci
             artifact: ia-worker
             dockerfile: app2-ia/Dockerfile
@@ -407,7 +399,7 @@ jobs:
               assert torchvision.__version__.endswith('+cu129');
               assert ultralytics.__version__ == '8.4.0';
               sys.path.insert(0, '/app/app2-ia');
-              import detection_core, tile_detection_workflow
+              import detection_core, detection_stage, detection_shard_stage
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build ${{ matrix.image }}
@@ -480,9 +472,6 @@ jobs:
         run: >-
           helm template drone-ai charts/drone-ai
           --values charts/drone-ai/values-production.example.yaml
-          --set-string colmapWorker.tag="${GITHUB_SHA}"
-          --set-string iaWorker.tag="${GITHUB_SHA}"
-          --set-string processingWorker.tag="${GITHUB_SHA}"
           --set-string dashboardApi.tag="${GITHUB_SHA}"
           --set-string dashboardFrontend.tag="${GITHUB_SHA}"
           --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
@@ -496,7 +485,6 @@ jobs:
         run: >-
           helm template drone-ai charts/drone-ai
           --values charts/drone-ai/values-ovh-preprod.example.yaml
-          --set-string processingWorker.tag="${GITHUB_SHA}"
           --set-string dashboardApi.tag="${GITHUB_SHA}"
           --set-string dashboardFrontend.tag="${GITHUB_SHA}"
           --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
@@ -519,19 +507,13 @@ jobs:
             echo "Mutable application image tag found in the production render" >&2
             exit 1
           fi
-          test "$(grep -Ec '^[[:space:]]+image: .+:[0-9a-f]{40}$' /tmp/drone-ai-production.yaml)" -ge 5
+          test "$(grep -Ec '^[[:space:]]+image: .+:[0-9a-f]{40}$' /tmp/drone-ai-production.yaml)" -ge 6
       - name: Verify preproduction cost and image guards
         run: |
-          if grep -Eq '^[[:space:]]+name: (colmap-worker|ia-worker)$' /tmp/drone-ai-ovh-preprod.yaml; then
-            echo "GPU workers must remain opt-in in the preproduction overlay" >&2
+          if grep -Eq '^[[:space:]]+name: (colmap-worker|ia-worker|processing-worker)$' /tmp/drone-ai-ovh-preprod.yaml; then
+            echo "Retired Kafka compute workers must not be rendered" >&2
             exit 1
           fi
-          awk '
-            $0 == "  name: processing-worker" { found = 1 }
-            found && $0 == "  replicas: 0" { zero = 1 }
-            found && $0 == "---" { exit(zero ? 0 : 1) }
-            END { exit(found && zero ? 0 : 1) }
-          ' /tmp/drone-ai-ovh-preprod.yaml
           if grep -Eq '^[[:space:]]+image: .+:latest$' /tmp/drone-ai-ovh-preprod.yaml; then
             echo "Mutable service image tag found in the preproduction render" >&2
             exit 1

@@ -16,7 +16,8 @@ from rasterio.windows import Window
 
 from detection_core import DetectionRecord, run_yolo_detection
 from sam3_backend import Sam3Backend
-from shared.artifact_manifest import ManifestParent
+from shared.artifact_manifest import ManifestParent, content_addressed_blob_key
+from shared.checksums import sha256_file
 from shared.detection_geometry import dedupe_mission_detections
 from shared.detection_shard_results import DetectionAggregate
 from shared.detection_sharding import DetectionShardPlan, build_detection_shard_plan
@@ -33,10 +34,8 @@ from shared.stage_execution import (
 from shared.stage_workspace import (
     RestoredWorkspace,
     WorkspaceSelection,
-    artifact_manifest_v2_write_enabled,
     artifact_selective_restore_enabled,
     publish_workspace,
-    publish_workspace_v2,
     resolve_workspace_path,
     restore_workspace_measured,
     workspace_transfer_provenance,
@@ -98,8 +97,8 @@ class DetectionStageConfig:
         if not model_variant or len(model_variant) > 128:
             raise ValueError("Detection model variant must contain 1 to 128 characters")
         sam_prompt = str(ai.get("sam_prompt") or "car").strip() or "car"
-        if len(sam_prompt) > 128:
-            raise ValueError("SAM prompt must contain at most 128 characters")
+        if len(sam_prompt) > 256:
+            raise ValueError("SAM prompt must contain at most 256 characters")
         return cls(
             backend=backend,
             model_variant=model_variant,
@@ -210,7 +209,7 @@ class DetectionStageRunner:
                 raise ValueError("Detection raster must expose at least one band")
             if source.width != plan.width or source.height != plan.height:
                 raise ValueError("Detection shard plan does not match the raster dimensions")
-            for tile in plan.tiles(shard_index):
+            for completed, tile in enumerate(plan.tiles(shard_index), 1):
                 self.control.raise_if_cancelled()
                 window = Window(
                     tile.offset_x,
@@ -242,6 +241,10 @@ class DetectionStageRunner:
                 )
                 if len(raw_detections) > self.config.maximum_raw_detections:
                     raise RuntimeError("Detection result exceeds its safety limit")
+                if self.context.analysis is not None and plan.shard_count == 1 and (
+                    completed == plan.tile_count or completed % max(1, plan.tile_count // 100) == 0
+                ):
+                    self.control.report_progress(completed, plan.tile_count)
             metadata = {
                 "width": source.width,
                 "height": source.height,
@@ -405,6 +408,13 @@ def run_detection_stage(
                 "tile_count": raster_metadata["tile_count"],
             }
         )
+        if context.analysis is not None:
+            maximum_features = min(100_000, max(1, int(os.getenv("ANALYSIS_MAX_FINAL_DETECTIONS", "50000"))))
+            if len(collection["features"]) > maximum_features:
+                raise ValueError("Analysis feature count exceeds its safety limit")
+            collection["properties"].update(context.analysis)
+            for feature in collection["features"]:
+                feature["properties"].update({**context.analysis, "source": "ai"})
         result_dir = workspace / ".droneai" / "detection"
         raw_path = result_dir / "detections.json"
         geojson_path = result_dir / "detections.geojson"
@@ -424,40 +434,36 @@ def run_detection_stage(
             context.run_id,
             "detection-workspace",
         )
-        if artifact_manifest_v2_write_enabled():
-            source = context.inputs[0]
-            manifest_key = source.metadata.get("manifest_key")
-            if not isinstance(manifest_key, str) or not manifest_key:
-                raise ValueError("Raster workspace artifact has no manifest key")
-            published = publish_workspace_v2(
-                workspace,
-                prefix,
-                default_role="detection-workspace",
-                role_overrides={
-                    raw_path.relative_to(workspace).as_posix(): "detection-records",
-                    geojson_path.relative_to(workspace).as_posix(): (
-                        "detection-features"
-                    ),
-                },
-                parents=(
-                    ManifestParent(
-                        artifact_id=source.artifact_id,
-                        manifest_key=manifest_key,
-                        checksum_sha256=source.checksum_sha256,
-                    ),
+        source = context.inputs[0]
+        manifest_key = source.metadata.get("manifest_key")
+        if not isinstance(manifest_key, str) or not manifest_key:
+            raise ValueError("Raster workspace artifact has no manifest key")
+        published = publish_workspace(
+            workspace,
+            prefix,
+            default_role="detection-workspace",
+            role_overrides={
+                raw_path.relative_to(workspace).as_posix(): "detection-records",
+                geojson_path.relative_to(workspace).as_posix(): (
+                    "detection-features"
                 ),
-                allow_partial_workspace=selective_restore,
-                organization_id=context.organization_id,
-                cancellation_check=control.raise_if_cancelled,
-            )
-        else:
-            published = publish_workspace(
-                workspace,
-                prefix,
-                cancellation_check=control.raise_if_cancelled,
-            )
+            },
+            parents=(
+                ManifestParent(
+                    artifact_id=source.artifact_id,
+                    manifest_key=manifest_key,
+                    checksum_sha256=source.checksum_sha256,
+                ),
+            ),
+            allow_partial_workspace=selective_restore,
+            organization_id=context.organization_id,
+            cancellation_check=control.raise_if_cancelled,
+        )
         return StageExecutionResult(
             kind="detection_workspace",
+            analysis_features=(
+                tuple(collection["features"]) if context.analysis is not None else None
+            ),
             uri=published.uri,
             checksum_sha256=published.checksum_sha256,
             size_bytes=published.size_bytes,
@@ -467,6 +473,14 @@ def run_detection_stage(
                 "detections_file": raw_path.relative_to(workspace).as_posix(),
                 "geojson_file": geojson_path.relative_to(workspace).as_posix(),
                 "feature_count": len(collection["features"]),
+                **({
+                    "analysis_run_id": context.analysis["run_id"],
+                    "geojson_object_key": content_addressed_blob_key(
+                        sha256_file(geojson_path), organization_id=context.organization_id,
+                    ),
+                    "model_manifest": model_manifest,
+                    "raster": raster_metadata,
+                } if context.analysis is not None else {}),
             },
             quality_metrics={
                 "tile_count": raster_metadata["tile_count"],

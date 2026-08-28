@@ -67,40 +67,39 @@ The full invariants and emergency limits are in
 
 ## Conditional multipart storage gate
 
-Before enabling `stageJobs.artifactManifestV2WriteEnabled` on an S3-compatible
-provider, qualify its real endpoint:
+Before deploying the v3 writer on an S3-compatible provider, qualify its real
+endpoint using an explicit organization:
 
 ```bash
-scripts/deploy/qualify-ovh-s3-multipart.sh
+DRONEAI_QUALIFICATION_ORGANIZATION_ID=your-organization scripts/deploy/qualify-ovh-s3-multipart.sh
 ```
 
-The command obtains the existing scoped OVH Object Storage credentials from
-the Terraform outputs without printing them. It uploads one random 6 MiB CAS
-object through multipart completion, confirms that `If-None-Match: *` rejects
-an overwrite, verifies size/checksum and reuse, then deletes the probe and
-verifies cleanup. A failure blocks the v2 writer rollout; never replace the
-conditional completion with an unconditional fallback.
+The command obtains the existing scoped provider credentials without printing
+them. It creates a random 6 MiB tenant CAS object, confirms that conditional
+multipart completion rejects an overwrite, verifies identity and reuse, then
+removes only the probe. A failure blocks deployment; never use an unconditional
+fallback. Local MinIO checks are not an OVH qualification.
 
-Roll out incremental materialization and fan-out in three independently
-reversible steps:
+All workspace writes and reads now use
+[Artifact Manifest v3](contracts/artifact-manifest-v3.md). There is no
+writer-version feature flag or old-run replay. Deploy matching API/control and
+executor images, drain old work first, and use fresh runs for the new campaign.
+No object migration or deletion is performed by this source cleanup.
 
-1. set `stageJobs.artifactManifestV2WriteEnabled=true` while keeping
-   `stageJobs.artifactSelectiveRestoreEnabled=false`, then qualify a complete
-   five-Job product and its v1-reader rollback;
-2. set `stageJobs.artifactSelectiveRestoreEnabled=true` for the detection
-   canary, verify that restore transfer bytes contain only the declared
-   orthomosaic and that the resulting artifact still resolves every parent
-   file plus the detection products;
-3. set `stageJobs.detectionFanout.enabled=true` only for a large-raster canary,
-   verify the persisted plan, every indexed shard receipt, the distinct
-   finalizer Job and the final immutable detection artifact. Also run a small
-   raster and confirm that it remains monolithic.
+Selective materialization and fan-out remain separately gated:
 
-The chart rejects step 2 without step 1 and step 3 without step 2. To roll back,
-disable detection fan-out first, then disable selective restore after verifying
-one full detection restore, and finally disable the v2 writer.
-Do not enable selective restore for reconstruction, Gaussian training,
-filtering or rasterization without a separate contract and qualification.
+1. qualify a full current stage chain with
+   `stageJobs.artifactSelectiveRestoreEnabled=false`;
+2. enable selective restore for the detection canary and verify the exact
+   orthomosaic transfer plus the complete inherited parent overlay;
+3. enable `stageJobs.detectionFanout.enabled` for a large-raster canary and
+   verify the durable plan, all receipts and the separate finalizer. A small
+   raster must remain monolithic.
+
+The chart still rejects fan-out without selective restore. Disable fan-out
+before disabling selective restore when reverting those two canaries.
+Do not activate selective restore on other stages without a separate check.
+The removed v1/v2 writer switch is not a rollback mechanism.
 
 ## Scoped credential gate for stage Jobs
 
@@ -120,7 +119,7 @@ administration privilege, and S3 policies must be limited to the DroneAI bucket
 and the exact read/write/delete operations needed by the executor. Account for
 immutable upstream manifests and organization-scoped
 `organizations/{organization_id}/blobs/sha256/` CAS objects when writing those
-policies. Historical global CAS reads are migration compatibility only. Do not
+policies. Global CAS reads are no longer supported. Do not
 claim credential isolation merely by copying the same principal into five
 differently named Secrets.
 
@@ -252,6 +251,9 @@ OVHcloud production needs its own evidence against the exact promoted release.
 
 ## Activation status and gate for bounded Jobs
 
+The following records describe the earlier deployed v2 release. They remain
+historical evidence and do not qualify this v3-only cleanup or a new rollout.
+
 The one-shot executor implementation, complete artifact chain and nine
 production drills are qualified on BIGZEN K3s/RTX 3090. The original mission
 `chapelle-q3-five-jobs-20260809` exercised retries, immutable hand-offs and the
@@ -372,25 +374,6 @@ Job before the cleanup worker can remove S3 or the database graph. Completion
 writes a `storage_released` usage event. Never interpret the HTTP response as
 proof of physical deletion; use the mission disappearance and usage ledger.
 
-### Legacy resource adoption
-
-Historical `legacy-unassigned` datasets and terminal missions are adopted only
-with the operator command documented in
-[`contracts/legacy-adoption-v1.md`](contracts/legacy-adoption-v1.md). Run the
-default read-only plan first, archive its JSON, review every source/target
-prefix, the physical `target_write_bytes` and logical quota impact, then pass
-the freshly recomputed checksum to `--apply`. Stop writers for the selected
-database graphs and S3 prefixes throughout this maintenance sequence.
-
-Never delete the legacy source after the command reports success. First verify
-the tenant catalogue/API, restore at least one adopted artifact from its v3
-manifest, confirm the append-only `legacy_adoption_completed` event, and apply
-the ordinary backup/legal-hold policy. A failed run may leave safe verified
-copies in the target prefix. After fixing the cause, reuse the selection and
-`run_id` only if the freshly regenerated plan has the same checksum; otherwise
-review a new plan and use its new `run_id`. Never manually relabel rows or
-overwrite objects.
-
 ## Failure recovery
 
 | Observation | Safe response |
@@ -406,7 +389,6 @@ overwrite objects.
 | Database is unavailable/corrupt | Stop writers, restore into an isolated instance, validate migrations/counts, then perform a reviewed cutover. |
 | S3 object is missing | Stop downstream retries and recover the exact version/checksum; do not substitute a similarly named object. |
 | Deployment regression | Roll back to the recorded Helm revision and immutable image digests; schema rollback requires its own tested procedure. |
-| Legacy adoption failed | Keep source objects untouched. Inspect the durable `legacy_adoption_failed` event and fix the reported object/DB conflict. Resume with the recorded `run_id` only when the regenerated plan checksum is unchanged; otherwise review and start a new run. |
 
 The upload reconciler runs before expired-upload cleanup on every
 `DRONEAI_UPLOAD_CLEANUP_SECONDS` interval. Inspect pending states without

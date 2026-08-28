@@ -8,7 +8,6 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_ROOTS = (
     REPOSITORY_ROOT / "app1-colmap" / "colmap_worker",
     REPOSITORY_ROOT / "app2-ia",
-    REPOSITORY_ROOT / "app3-processing",
     REPOSITORY_ROOT / "app4-dashboard" / "api",
     REPOSITORY_ROOT / "app4-dashboard" / "frontend" / "app",
     REPOSITORY_ROOT / "shared",

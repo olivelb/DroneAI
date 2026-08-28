@@ -19,7 +19,7 @@ implemented system as it exists now.
 | Fast aerial alignment and RTK/GCP behavior | [`FAST_ALIGNMENT.md`](FAST_ALIGNMENT.md) |
 | Geospatial workspace and AI results | [`GEOSPATIAL_WORKSPACE.md`](GEOSPATIAL_WORKSPACE.md) |
 | GCP workspace implementation qualification | [`benchmarks/gcp-workspace-2026-08-10.md`](benchmarks/gcp-workspace-2026-08-10.md) |
-| Projected and resident quality-profile contract | [`contracts/quality-profiles-v3.md`](contracts/quality-profiles-v3.md) |
+| Current qualified quality-profile contract | [`contracts/quality-profiles-v3.md`](contracts/quality-profiles-v3.md) |
 | Fast-v2 projected-initialization evidence | [`benchmarks/silo-projected-initialization-fast-2026-08-13.md`](benchmarks/silo-projected-initialization-fast-2026-08-13.md) |
 | Normal-v4 8 GiB evidence | [`benchmarks/silo-normal-v4-8g-2026-08-14.md`](benchmarks/silo-normal-v4-8g-2026-08-14.md) |
 | Mission ownership, catalogue and support scope | [`contracts/mission-ownership-v1.md`](contracts/mission-ownership-v1.md) |
@@ -30,7 +30,7 @@ implemented system as it exists now.
 | Commercial organization quotas, retention and usage ledger | [`contracts/organization-saas-policy-v1.md`](contracts/organization-saas-policy-v1.md) |
 | Tenant-owned dataset catalogue and storage boundary | [`contracts/tenant-datasets-v1.md`](contracts/tenant-datasets-v1.md) |
 | Versioned stage attempts and immutable artifact DAG | [`contracts/versioned-stage-dag-v1.md`](contracts/versioned-stage-dag-v1.md) |
-| Incremental content-addressed artifact manifest | [`contracts/artifact-manifest-v2.md`](contracts/artifact-manifest-v2.md) |
+| Incremental content-addressed artifact manifest | [`contracts/artifact-manifest-v3.md`](contracts/artifact-manifest-v3.md) |
 | Tenant content-addressed storage | [`contracts/tenant-cas-v3.md`](contracts/tenant-cas-v3.md) |
 | Machine-readable production drill evidence | [`contracts/production-qualification-evidence-v1.schema.json`](contracts/production-qualification-evidence-v1.schema.json) |
 | Audited feature corrections and named raster styles | [`contracts/explorer-editing-styles-v1.md`](contracts/explorer-editing-styles-v1.md) |
@@ -50,6 +50,11 @@ implemented system as it exists now.
 Plans and roadmaps are proposals rather than descriptions of delivered behavior.
 They must not override the current documents or executable contracts above.
 
+## Cleanup status
+
+The [2026-08-28 cleanup record](audits/2026-08-28-current-production-cleanup.md)
+distinguishes completed removals from pending structural work.
+
 ## Historical evidence
 
 The following files are immutable, dated engineering evidence. They can contain
@@ -62,8 +67,6 @@ the current release status:
   [`benchmarks/gstile-v4-costs-qualification.md`](benchmarks/gstile-v4-costs-qualification.md)
 - rejected directional-opacity refit scratch experiment (runtime not delivered):
   [`benchmarks/gstile-refit-scratch-qualification.md`](benchmarks/gstile-refit-scratch-qualification.md)
-- superseded fixed-cap quality profile contract:
-  [`contracts/quality-profiles-v1.md`](contracts/quality-profiles-v1.md)
 - machine-readable Helenenschacht sparse/RTK evidence:
   [`benchmarks/helenenschacht-sparse-precision-ab-2026-07-31.json`](benchmarks/helenenschacht-sparse-precision-ab-2026-07-31.json)
 - local CUDA 12.9.2 runtime qualification:

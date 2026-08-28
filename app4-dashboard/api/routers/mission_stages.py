@@ -11,7 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from shared import storage
-from shared.config import S3_BUCKET, TOPIC_MISSION
+from shared.config import S3_BUCKET
 from shared.database import (
     Mission,
     MissionArtifact,
@@ -19,10 +19,10 @@ from shared.database import (
     MissionStageRun,
     get_session,
 )
-from shared.inbox_outbox import enqueue_outbox
-from shared.kafka_partitioning import tenant_mission_key
 from shared.gcp_bundle import validate_gcp_bundle
 from shared.organization_saas import (
+    MANUAL_DELETION_FAILED_STEP,
+    MANUAL_DELETION_STEP,
     StorageQuotaExceeded,
     reserve_stage_output_storage,
 )
@@ -39,7 +39,6 @@ from shared.stage_contracts import (
 )
 from shared.tenancy import MissionObjectNamespace
 
-from ..messaging import build_stage_mission_event
 from ..mission_access import get_owned_mission
 from ..security import Principal, require_admin, require_operator
 from ..stage_orchestrator import stage_jobs_enabled
@@ -82,7 +81,6 @@ def _stage_parameters(
     mission_parameters: dict[str, Any] | None = None,
     *,
     organization_id: str | None = None,
-    allow_legacy_gcp_bundle: bool = False,
 ) -> dict[str, Any]:
     parameters = {
         "dag_version": STAGE_DAG_VERSION,
@@ -101,7 +99,6 @@ def _stage_parameters(
             validate_gcp_bundle(
                 bundle,
                 expected_organization_id=organization_id,
-                allow_legacy_global=allow_legacy_gcp_bundle,
             )
         except ValueError as error:
             raise HTTPException(
@@ -229,46 +226,10 @@ def _validate_published_artifact(
 
 
 def _queue_ready_stage_runs(session: Any, mission: Mission) -> list[str]:
-    namespace = MissionObjectNamespace.from_binding(
-        cast(str, mission.organization_id),
-        cast(str, mission.vol_id),
-        cast(str | None, mission.workspace_prefix),
-    )
-    ready_runs = release_ready_stage_runs(session, mission)
-    queued: list[str] = []
-    for run in ready_runs:
-        dependencies = STAGE_DEPENDENCIES[cast(StageId, run.stage)]
-        upstream = {
-            dependency: artifact_id
-            for dependency, artifact_id in zip(
-                dependencies,
-                cast(list[str], run.upstream_artifact_ids),
-                strict=True,
-            )
-        }
-        payload = {
-            **cast(dict[str, Any], mission.params or {}),
-            "vol_id": cast(str, mission.vol_id),
-            "organization_id": namespace.organization_id,
-            "workspace_prefix": namespace.root,
-            "attempt": cast(int, run.attempt),
-            "phases": [cast(str, run.stage)],
-            "stage_run_id": cast(str, run.run_id),
-            "upstream_artifact_ids": upstream,
-            "stage_parameters": cast(dict[str, Any], run.parameters or {}),
-        }
-        if not stage_jobs_enabled():
-            enqueue_outbox(
-                session,
-                topic=TOPIC_MISSION,
-                event=build_stage_mission_event(payload),
-                key=tenant_mission_key(
-                    cast(str, mission.organization_id),
-                    cast(str, mission.vol_id),
-                ),
-            )
-        queued.append(cast(str, run.run_id))
-    return queued
+    return [
+        cast(str, run.run_id)
+        for run in release_ready_stage_runs(session, mission)
+    ]
 
 
 @router.post(
@@ -286,6 +247,11 @@ def create_stage_run(
     ],
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> dict[str, Any]:
+    if not stage_jobs_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Stage retries require Stage Jobs",
+        )
     durable_key = _request_key(principal, idempotency_key)
     try:
         with get_session() as session:
@@ -314,7 +280,6 @@ def create_stage_run(
                         request,
                         cast(dict[str, Any], mission.params or {}),
                         organization_id=str(mission.organization_id),
-                        allow_legacy_gcp_bundle=True,
                     )
                     or set(cast(list[str], existing.upstream_artifact_ids or []))
                     != set(request.upstream_artifact_ids.values())
@@ -333,6 +298,13 @@ def create_stage_run(
                 action="stage_retry",
                 for_update=True,
             )
+            if mission.status in {"cancelled", "deleting", "deletion_failed"} or mission.current_step in {
+                MANUAL_DELETION_STEP, MANUAL_DELETION_FAILED_STEP,
+            }:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cancelled or deleting missions cannot queue stage retries; create a new mission",
+                )
             required = set(STAGE_DEPENDENCIES[stage])
             if set(request.upstream_artifact_ids) != required:
                 raise HTTPException(
@@ -378,27 +350,6 @@ def create_stage_run(
             )
             session.add(run)
             session.flush()
-            payload = {
-                **cast(dict[str, Any], mission.params or {}),
-                "vol_id": vol_id,
-                "organization_id": cast(str, mission.organization_id),
-                "workspace_prefix": cast(str, mission.workspace_prefix),
-                "attempt": attempt,
-                "phases": [stage],
-                "stage_run_id": run.run_id,
-                "upstream_artifact_ids": request.upstream_artifact_ids,
-                "stage_parameters": parameters,
-            }
-            if not stage_jobs_enabled():
-                enqueue_outbox(
-                    session,
-                    topic=TOPIC_MISSION,
-                    event=build_stage_mission_event(payload),
-                    key=tenant_mission_key(
-                        cast(str, mission.organization_id),
-                        vol_id,
-                    ),
-                )
             return _serialize_stage_run(run)
     except HTTPException:
         raise
@@ -438,6 +389,8 @@ def publish_stage_artifact(
         )
         if run is None:
             raise HTTPException(status_code=404, detail="Stage run not found")
+        if run.analysis_run_id is not None:
+            raise HTTPException(status_code=409, detail="Analysis results must be published by their Stage Job")
         _validate_published_artifact(mission, run, request)
         existing = (
             session.query(MissionArtifact)

@@ -23,7 +23,7 @@ from tools.run_local_gaussian import (
 
 def _arguments(**overrides):
     values = {
-        "profile": "low-memory",
+        "profile": "normal",
         "iterations": None,
         "cap_max": None,
         "sh_degree": None,
@@ -44,32 +44,8 @@ def _arguments(**overrides):
     return Namespace(**values)
 
 
-def test_low_memory_profile_is_conservative_for_eight_gigabytes():
-    profile = PROFILES["low-memory"]
-
-    assert profile.backend == "dronegs"
-    assert profile.cap_max <= 500_000
-    assert profile.sh_degree <= 1
-    assert profile.data_factor >= 4
-    assert profile.tile_mode_auto is True
-    assert profile.tile_mode == 4
-
-
-def test_balanced_profile_matches_validated_dev45_recipe():
-    profile = PROFILES["balanced"]
-
-    assert profile.iterations == 15_000
-    assert profile.cap_max == 1_500_000
-    assert profile.sh_degree == 3
-    assert profile.data_factor == 4
-    assert profile.max_width == 1600
-    assert profile.optimizer_profile == "reference-absolute"
-    assert profile.raster_profile == "fastgs"
-    assert profile.profile_id == "DRONEGS_PRODUCTION_PROFILE_V1"
-    assert profile.pruning_policy == "spatial-bounds"
-    assert profile.topology_cooldown == 1_000
-    assert profile.photometric_finish == 1_000
-    assert profile.photometric_mse_percent == 100
+def test_only_current_profiles_are_exposed():
+    assert set(PROFILES) == {"fast", "normal", "high-quality", "facade-hd"}
 
 
 def test_fast_profile_matches_versioned_minimum_quality_envelope():
@@ -79,24 +55,7 @@ def test_fast_profile_matches_versioned_minimum_quality_envelope():
     assert profile.cap_max == 1_500_000
     assert profile.data_factor == 8
     assert profile.max_width == 1600
-    assert profile.profile_id == "fast-v1"
-
-
-def test_fast_resident_profile_exercises_preview_seams_without_changing_fast():
-    profile = PROFILES["fast-resident"]
-
-    assert profile.iterations == 7_500
-    assert profile.cap_max == 1_500_000
-    assert profile.data_factor == 8
-    assert profile.max_width == 1600
     assert profile.profile_id == "fast-v2"
-    assert profile.capacity_mode == "adaptive"
-    assert profile.capacity_floor == 1_500_000
-    assert profile.target_gaussian_spacing_pixels == 8.0
-    assert profile.resident_partitioning is True
-    assert profile.initial_scale_policy == "projected-knn"
-    assert profile.capacity_targeted_growth is True
-    assert profile.resolution == 0.05
 
 
 def test_normal_profile_matches_versioned_quality_envelope():
@@ -166,11 +125,11 @@ def test_profile_overrides_are_explicit_and_validated():
     assert profile.iterations == 750
     assert profile.max_width == 1200
     assert profile.filter_enabled is False
-    assert profile.cap_max == PROFILES["low-memory"].cap_max
+    assert profile.cap_max == PROFILES["normal"].cap_max
 
 
 def test_numeric_tile_mode_is_an_expert_override():
-    profile = resolve_profile(_arguments(profile="balanced", tile_mode=1))
+    profile = resolve_profile(_arguments(profile="normal", tile_mode=1))
 
     assert profile.tile_mode == 1
     assert profile.tile_mode_auto is False
@@ -179,7 +138,7 @@ def test_numeric_tile_mode_is_an_expert_override():
 
 def test_report_parameters_distinguish_automatic_policy_from_effective_mode():
     automatic = report_parameters(PROFILES["facade-hd"])
-    expert = report_parameters(resolve_profile(_arguments(profile="balanced", tile_mode=1)))
+    expert = report_parameters(resolve_profile(_arguments(profile="normal", tile_mode=1)))
 
     assert automatic["tile_mode"] == "auto"
     assert automatic["tile_mode_configured"] == 4
@@ -206,12 +165,12 @@ def test_effective_runtime_plan_is_persisted_before_training_completion(tmp_path
     assert persisted["effective_parameters"] == runtime_plan
 
 
-def test_balanced_training_overrides_become_custom_recipe():
+def test_normal_training_overrides_become_custom_recipe():
     profile = resolve_profile(
         _arguments(
-            profile="balanced",
+            profile="normal",
             iterations=30_000,
-            cap_max=2_000_000,
+            cap_max=4_000_000,
             data_factor=1,
             max_width=4096,
         )
@@ -219,8 +178,8 @@ def test_balanced_training_overrides_become_custom_recipe():
 
     assert profile.profile_id == "custom"
     assert profile.optimizer_profile == "reference-absolute"
-    assert profile.canary_min_psnr == PROFILES["balanced"].canary_min_psnr
-    assert profile.canary_min_ssim == PROFILES["balanced"].canary_min_ssim
+    assert profile.canary_min_psnr == PROFILES["normal"].canary_min_psnr
+    assert profile.canary_min_ssim == PROFILES["normal"].canary_min_ssim
 
 
 def test_checkpoint_cadence_override_is_an_explicit_training_recipe():
@@ -234,8 +193,8 @@ def test_checkpoint_cadence_override_is_an_explicit_training_recipe():
 
 
 def test_host_image_cache_auto_is_operational_and_explicit_values_are_validated():
-    automatic = resolve_profile(_arguments(profile="balanced"))
-    explicit = resolve_profile(_arguments(profile="balanced", host_image_cache_mib=12_288))
+    automatic = resolve_profile(_arguments(profile="normal"))
+    explicit = resolve_profile(_arguments(profile="normal", host_image_cache_mib=12_288))
 
     assert automatic.host_image_cache_mib == 0
     assert explicit.host_image_cache_mib == 12_288
@@ -282,9 +241,7 @@ def test_image_objective_override_is_explicit_and_defaults_stay_compatible():
 
 def test_opacity_sh_is_an_explicit_custom_profile_opt_in():
     default = resolve_profile(_arguments(profile="facade-hd"))
-    experiment = resolve_profile(
-        _arguments(profile="facade-hd", opacity_sh_enabled=True)
-    )
+    experiment = resolve_profile(_arguments(profile="facade-hd", opacity_sh_enabled=True))
 
     assert default.opacity_sh_enabled is False
     assert experiment.opacity_sh_enabled is True
@@ -301,10 +258,10 @@ def test_facade_hd_overrides_preserve_separate_recipe_identities():
     assert qualification_override.qualification_policy_id == "custom"
 
 
-def test_balanced_raster_only_override_keeps_production_recipe():
-    profile = resolve_profile(_arguments(profile="balanced", resolution=0.005))
+def test_normal_raster_only_override_keeps_production_recipe():
+    profile = resolve_profile(_arguments(profile="normal", resolution=0.005))
 
-    assert profile.profile_id == "DRONEGS_PRODUCTION_PROFILE_V1"
+    assert profile.profile_id == "normal-v3"
 
 
 def test_canary_overrides_are_validated():
@@ -327,7 +284,7 @@ def test_custom_output_must_stay_inside_workspace(tmp_path):
     workspace.mkdir()
 
     with pytest.raises(ValueError, match="inside the marked workspace"):
-        output_paths(workspace, "smoke", tmp_path / "outside.tif")
+        output_paths(workspace, "normal", tmp_path / "outside.tif")
 
 
 def test_checkpoint_root_can_use_a_separate_fast_filesystem(tmp_path):

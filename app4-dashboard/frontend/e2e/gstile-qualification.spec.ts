@@ -12,6 +12,7 @@ type ManifestPack = {
 
 type QualificationManifest = {
   bundleId: string;
+  profile: string;
   source: { gaussianCount: number };
   packs: ManifestPack[];
 };
@@ -41,7 +42,7 @@ const missionDetail = {
   current_step: "DONE",
   progress: 100,
   pipeline: "modern",
-  quality_profile: "high-quality-v1",
+  quality_profile: "high-quality-v4",
   attempt_count: 1,
   updated_at: "2026-08-22T10:00:00Z",
   overall_status: "success",
@@ -189,15 +190,18 @@ const startRangeServer = async (
 const closeServer = (server: Server) =>
   new Promise<void>((resolveClose, reject) => {
     server.close((error) => (error ? reject(error) : resolveClose()));
+    server.closeAllConnections();
   });
 
-test("streams the real hierarchical Saint-Etienne bundle without an incomplete cut", async ({
+for (const assemblyMode of ["worker", "main-thread", "retired-query"] as const) {
+test("streams a current V4 bundle with " + assemblyMode + " assembly", async ({
   page,
 }, testInfo) => {
   const bundleRoot = process.env.GSTILE_BUNDLE_ROOT;
   test.skip(!bundleRoot, "GSTILE_BUNDLE_ROOT is required for real-bundle qualification");
-  test.setTimeout(5 * 60_000);
+  test.setTimeout(3 * 60_000);
   const manifest = loadManifest(bundleRoot!);
+  expect(manifest.profile).toBe("dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4");
   const { server, origin, rangeRequestCount } = await startRangeServer(
     bundleRoot!,
     manifest,
@@ -207,16 +211,8 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
       page,
       descriptor(manifest, (pack) => `${origin}/${pack.path}`),
     );
-    await page.goto("/missions/gstile-qualification");
-    const viewer = page.getByTestId("gstile-viewer");
-    await expect(viewer).toHaveAttribute("data-status", "Prêt", {
-      timeout: 4 * 60_000,
-    });
-    const resident = Number(await viewer.getAttribute("data-resident-gaussians"));
-    const selected = Number(await viewer.getAttribute("data-selected-nodes"));
-    expect(resident).toBeGreaterThan(0);
-    expect(resident).toBeLessThanOrEqual(6_000_000);
-    expect(selected).toBeGreaterThan(0);
+    // Probe on a secure local origin before loading any scene.
+    await page.goto("/");
     const adapterInfo = await page.evaluate(async () => {
       const gpu = (
         navigator as Navigator & {
@@ -229,6 +225,7 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
                 architecture: string;
                 device: string;
                 description: string;
+                isFallbackAdapter?: boolean;
               };
             } | null>;
           };
@@ -244,10 +241,35 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
             architecture: adapter.info.architecture,
             device: adapter.info.device,
             description: adapter.info.description,
+            isFallbackAdapter: adapter.info.isFallbackAdapter ?? false,
           }
         : null;
     });
     expect(adapterInfo).not.toBeNull();
+    expect(adapterInfo?.isFallbackAdapter, "A hardware WebGPU adapter is required").toBe(false);
+    expect(JSON.stringify(adapterInfo), "Software adapters cannot qualify images")
+      .not.toMatch(/swiftshader|llvmpipe|lavapipe|software|microsoft basic render/i);
+    await testInfo.attach("webgpu-adapter", {
+      body: JSON.stringify({ adapterInfo, browser: page.context().browser()?.version(), platform: process.platform }),
+      contentType: "application/json",
+    });
+    await page.goto(
+      "/missions/gstile-qualification" +
+      (assemblyMode === "main-thread" ? "?gstileWorkerAssembly=0" :
+        assemblyMode === "retired-query"
+          ? "?gstileOpacity=base&gstileSort=cpu&gstileTransform=float32&gstileMaxScale=0.000001&gstileCoverage=0&gstileSiblingLeaves=1&gstileRadialSort=1&gstileGpuAssembly=tiled"
+          : ""),
+    );
+    const viewer = page.getByTestId("gstile-viewer");
+    await expect(viewer).toHaveAttribute("data-status", "Prêt", {
+      timeout: 90_000,
+    });
+    const resident = Number(await viewer.getAttribute("data-resident-gaussians"));
+    const selected = Number(await viewer.getAttribute("data-selected-nodes"));
+    expect(resident).toBeGreaterThan(0);
+    expect(resident).toBeLessThanOrEqual(7_500_000);
+    expect(selected).toBeGreaterThan(0);
+    expect(rangeRequestCount()).toBeGreaterThan(0);
     console.log(
       JSON.stringify({
         event: "gstile_initial_render",
@@ -261,7 +283,29 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
     const canvas = viewer.locator("canvas");
     const canvasBox = await canvas.boundingBox();
     expect(canvasBox).not.toBeNull();
-    const beforePan = await canvas.screenshot();
+    // HUD updates must not make a blank canvas pass the visual smoke check.
+    await expect.poll(async () => {
+      return page.evaluate(async (png) => {
+        const blob = await (await fetch("data:image/png;base64," + png)).blob();
+        const bitmap = await createImageBitmap(blob);
+        const surface = new OffscreenCanvas(bitmap.width, bitmap.height);
+        const context = surface.getContext("2d");
+        if (!context) throw new Error("Screenshot inspection needs a 2D context");
+        context.drawImage(bitmap, 0, 0);
+        const { data } = context.getImageData(16, 160, bitmap.width - 32, bitmap.height - 176);
+        bitmap.close();
+        const minimum = [255, 255, 255];
+        const maximum = [0, 0, 0];
+        for (let index = 0; index < data.length; index += 4) {
+          for (let channel = 0; channel < 3; channel += 1) {
+            minimum[channel] = Math.min(minimum[channel], data[index + channel]);
+            maximum[channel] = Math.max(maximum[channel], data[index + channel]);
+          }
+        }
+        return Math.max(...maximum.map((value, channel) => value - minimum[channel]));
+      }, (await canvas.screenshot()).toString("base64"));
+    }, { timeout: 10_000, message: "GSTile must render visible scene pixels below the HUD" }).toBeGreaterThan(8);
+    const beforePan = await canvas.screenshot({ path: testInfo.outputPath("initial-v4-gstile.png") });
     await page.keyboard.down("Shift");
     await page.mouse.move(
       canvasBox!.x + canvasBox!.width / 2,
@@ -279,39 +323,14 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
     expect((await canvas.screenshot()).equals(beforePan)).toBe(false);
     await expect(viewer).toHaveAttribute("data-status", "Prêt");
     await expect(viewer).not.toHaveAttribute("data-lod-state", "refining", {
-      timeout: 4 * 60_000,
+      timeout: 90_000,
     });
     await expect(viewer).toHaveAttribute("data-pending-nodes", "0");
 
-    const requestsBeforeZoom = rangeRequestCount();
     await canvas.hover();
     await page.mouse.wheel(0, -2_400);
-    await expect.poll(rangeRequestCount, { timeout: 60_000 }).toBeGreaterThan(
-      requestsBeforeZoom,
-    );
     await expect(viewer).toHaveAttribute("data-status", "Prêt");
-    const progressiveResidents: number[] = [];
-    let sawIntermediateCut = false;
-    await expect
-      .poll(
-        async () => {
-          const resident = Number(
-            await viewer.getAttribute("data-resident-gaussians"),
-          );
-          const target = Number(
-            await viewer.getAttribute("data-target-gaussians"),
-          );
-          const pending = Number(await viewer.getAttribute("data-pending-nodes"));
-          expect(resident).toBeLessThanOrEqual(6_000_000);
-          progressiveResidents.push(resident);
-          sawIntermediateCut ||= pending > 0 && resident !== target;
-          return pending;
-        },
-        { timeout: 4 * 60_000, intervals: [250, 500, 1_000] },
-      )
-      .toBe(0);
-    expect(sawIntermediateCut).toBe(true);
-    expect(new Set(progressiveResidents).size).toBeGreaterThan(1);
+    await expect(viewer).toHaveAttribute("data-pending-nodes", "0", { timeout: 90_000 });
     await expect(viewer).not.toHaveAttribute("data-lod-state", "refining");
     const residentAfterZoom = Number(
       await viewer.getAttribute("data-resident-gaussians"),
@@ -323,7 +342,7 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
     expect(Number(await viewer.getAttribute("data-selected-nodes"))).toBe(
       Number(await viewer.getAttribute("data-target-nodes")),
     );
-    expect(residentAfterZoom).toBeLessThanOrEqual(6_000_000);
+    expect(residentAfterZoom).toBeLessThanOrEqual(7_500_000);
     console.log(
       JSON.stringify({
         event: "gstile_zoom_reselection",
@@ -335,7 +354,7 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
       }),
     );
     await page.screenshot({
-      path: testInfo.outputPath("saint-etienne-gstile-lod.png"),
+      path: testInfo.outputPath("current-v4-gstile.png"),
       fullPage: true,
     });
   } finally {
@@ -343,16 +362,18 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
   }
 });
 
-test("refuses the real 49-million-splat exact bundle before requesting packs", async ({
+}
+
+test("refuses a retired manifest profile before requesting packs", async ({
   page,
 }) => {
-  const bundleRoot = process.env.GSTILE_EXACT_BUNDLE_ROOT;
+  const bundleRoot = process.env.GSTILE_BUNDLE_ROOT;
   test.skip(
     !bundleRoot,
-    "GSTILE_EXACT_BUNDLE_ROOT is required for exact-profile safety qualification",
+    "GSTILE_BUNDLE_ROOT is required for retired-profile rejection",
   );
   test.setTimeout(2 * 60_000);
-  const manifest = loadManifest(bundleRoot!);
+  const manifest = { ...loadManifest(bundleRoot!), profile: "dronegs-sh3-opacity-sh3-q96" };
   let packRequestCount = 0;
   await mockMissionApi(
     page,
@@ -367,7 +388,6 @@ test("refuses the real 49-million-splat exact bundle before requesting packs", a
   await expect(viewer).toHaveAttribute("data-status", "Échec", {
     timeout: 90_000,
   });
-  await expect(viewer).toContainText("exigent le LOD hiérarchique");
+  await expect(viewer).toContainText("profile");
   expect(packRequestCount).toBe(0);
-  expect(manifest.source.gaussianCount).toBeGreaterThan(2_000_000);
 });

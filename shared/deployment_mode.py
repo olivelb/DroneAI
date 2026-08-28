@@ -28,14 +28,6 @@ def bounded_stage_jobs_enabled() -> bool:
     if is_protected_environment() and not enabled:
         raise RuntimeError(
             "Staging and production require bounded stage Jobs; "
-            "fused Kafka compute is development-only"
+            "Kafka compute has been retired"
         )
     return enabled
-
-
-def assert_fused_compute_allowed(service_name: str) -> None:
-    if is_protected_environment():
-        raise RuntimeError(
-            f"{service_name} fused Kafka worker is development-only and cannot "
-            f"run in {deployment_environment()}"
-        )

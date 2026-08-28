@@ -60,15 +60,15 @@ Metadata inspect(const std::filesystem::path& path) {
     constexpr std::array<char, 16U> expected{
         'D','R','O','N','E','G','S','-','C','K','P','T','-','V','1','\0'};
     const auto version = read<std::uint32_t>(stream);
-    if (magic != expected || (version != 4U && version != 5U)) {
-        throw std::runtime_error("benchmark requires a V4/V5 checkpoint");
+    if (magic != expected || version != 5U) {
+        throw std::runtime_error("benchmark requires a V5 checkpoint");
     }
     Metadata metadata{};
     metadata.dataset = read_string(stream);
     metadata.configuration = read_string(stream);
     for (int i = 0; i < 6; ++i) static_cast<void>(read<std::uint64_t>(stream));
     static_cast<void>(read<float>(stream));
-    for (int i = 0; i < (version == 5U ? 4 : 2); ++i) {
+    for (int i = 0; i < 4; ++i) {
         const auto present = read<std::uint8_t>(stream);
         if (present > 1U) throw std::runtime_error("invalid optional metric flag");
         if (present != 0U) static_cast<void>(read<float>(stream));
@@ -84,8 +84,8 @@ Metadata inspect(const std::filesystem::path& path) {
     const auto fastgs = read<std::uint8_t>(stream);
     if (metadata.count == 0U || metadata.count >= static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
         metadata.maximum_steps == 0U || metadata.maximum_sh > 3U || metadata.sh_interval == 0U ||
-        metadata.profile > static_cast<std::uint32_t>(
-            dronegs::MrnfOptimizerProfile::dev38_staged_rotation008_absgrad050_fastgs) || fastgs > 1U) {
+        metadata.profile != static_cast<std::uint32_t>(
+            dronegs::MrnfOptimizerProfile::reference_absolute) || fastgs > 1U) {
         throw std::runtime_error("unsupported checkpoint runtime metadata");
     }
     metadata.fastgs = fastgs != 0U;

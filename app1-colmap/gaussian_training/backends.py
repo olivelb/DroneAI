@@ -17,7 +17,6 @@ from typing import Any, Protocol
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
-    effective_raster_profile,
 )
 
 from .dataset_identity import compute_dataset_identity
@@ -32,8 +31,8 @@ ProgressCallback = Callable[[int, float, int], None]
 CancellationCheck = Callable[[], None]
 CheckpointCallback = Callable[[Path, int], None]
 SUPPORTED_STRATEGIES = {"mrnf"}
-SUPPORTED_DRONEGS_PRUNING_POLICIES = {"original", "spatial-bounds"}
-SUPPORTED_DRONEGS_RASTER_PROFILES = {"auto", "bounded", "fastgs"}
+SUPPORTED_DRONEGS_PRUNING_POLICIES = {"spatial-bounds"}
+SUPPORTED_DRONEGS_RASTER_PROFILES = {"fastgs"}
 SUPPORTED_DRONEGS_INITIAL_SCALE_POLICIES = {"local-knn", "projected-knn"}
 SUPPORTED_DRONEGS_TEST_SPLITS = {"modulo", "spatial-block"}
 SUPPORTED_DRONEGS_BACKGROUND_MODES = {"black", "random"}
@@ -84,29 +83,18 @@ class DroneGSTuning:
             raise ValueError("profile_id must not be empty")
         if not isinstance(self.qualification_policy_id, str) or not self.qualification_policy_id.strip():
             raise ValueError("qualification_policy_id must not be empty")
-        # The native trainer owns the versioned optimizer-profile registry.
-        # Keeping this boundary open preserves old ablation manifests while
-        # the mission schema exposes only supported production choices.
-        if not isinstance(self.optimizer_profile, str) or not self.optimizer_profile.strip():
-            raise ValueError("optimizer_profile must not be empty")
+        if self.optimizer_profile != "reference-absolute":
+            raise ValueError("unsupported DroneGS optimizer_profile")
         if not isinstance(self.adaptive_growth_target, bool):
             raise ValueError("adaptive_growth_target must be boolean")
         if not isinstance(self.adaptive_native_crop_tiles, bool):
             raise ValueError("adaptive_native_crop_tiles must be boolean")
         if not isinstance(self.opacity_sh_enabled, bool):
             raise ValueError("opacity_sh_enabled must be boolean")
-        _require_supported(
-            "pruning_policy", self.pruning_policy, SUPPORTED_DRONEGS_PRUNING_POLICIES
-        )
-        _require_supported(
-            "raster_profile", self.raster_profile, SUPPORTED_DRONEGS_RASTER_PROFILES
-        )
-        _require_supported(
-            "background_mode", self.background_mode, SUPPORTED_DRONEGS_BACKGROUND_MODES
-        )
-        _require_supported(
-            "loss_pixel_mask", self.loss_pixel_mask, SUPPORTED_DRONEGS_LOSS_PIXEL_MASKS
-        )
+        _require_supported("pruning_policy", self.pruning_policy, SUPPORTED_DRONEGS_PRUNING_POLICIES)
+        _require_supported("raster_profile", self.raster_profile, SUPPORTED_DRONEGS_RASTER_PROFILES)
+        _require_supported("background_mode", self.background_mode, SUPPORTED_DRONEGS_BACKGROUND_MODES)
+        _require_supported("loss_pixel_mask", self.loss_pixel_mask, SUPPORTED_DRONEGS_LOSS_PIXEL_MASKS)
         _require_supported(
             "initial_scale_policy",
             self.initial_scale_policy,
@@ -124,9 +112,7 @@ class DroneGSTuning:
             or not 1 <= self.maximum_scale_growth_factor <= 1024
         ):
             raise ValueError("maximum_scale_growth_factor must be in [1, 1024]")
-        _require_supported(
-            "test_split", self.test_split, SUPPORTED_DRONEGS_TEST_SPLITS
-        )
+        _require_supported("test_split", self.test_split, SUPPORTED_DRONEGS_TEST_SPLITS)
         integer_ranges = {
             "sh_degree_interval": (self.sh_degree_interval, 1, None),
             "topology_cooldown": (self.topology_cooldown, 0, None),
@@ -626,10 +612,7 @@ class DroneGSBackend:
             or parameters["optimizer_profile"] != request.dronegs.optimizer_profile
             or parameters["pruning_policy"] != request.dronegs.pruning_policy
             or parameters["raster_profile"] != request.dronegs.raster_profile
-            or (
-                parameters.get("opacity_sh_enabled")
-                is not request.dronegs.opacity_sh_enabled
-            )
+            or (parameters.get("opacity_sh_enabled") is not request.dronegs.opacity_sh_enabled)
             or parameters.get("initial_scale_policy") != request.dronegs.initial_scale_policy
             or not manifest_parameter_matches(
                 parameters.get("initial_max_projected_sigma_pixels"),
@@ -642,11 +625,7 @@ class DroneGSBackend:
             or parameters.get("adaptive_native_crop_tiles") != int(request.dronegs.adaptive_native_crop_tiles)
             or parameters.get("test_split") != request.dronegs.test_split
             or parameters.get("test_guard_percent") != request.dronegs.test_guard_percent
-            or parameters["effective_raster_profile"]
-            != effective_raster_profile(
-                request.dronegs.raster_profile,
-                request.dronegs.optimizer_profile,
-            )
+            or parameters["effective_raster_profile"] != request.dronegs.raster_profile
         ):
             raise RuntimeError("DroneGS manifest does not describe the requested dataset/profile")
         canary = evaluate_quality_canary(manifest, request.dronegs)

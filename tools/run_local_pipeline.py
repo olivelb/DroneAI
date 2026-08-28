@@ -24,7 +24,7 @@ WORKSPACE_MARKER = ".droneai-local-workspace.json"
 MANIFEST_NAME = "pipeline_run.json"
 STAGE_ORDER = ("colmap", "gaussian", "detection")
 MODERN_DEFAULTS = PIPELINE_DEFAULTS["modern"]
-FAST_DEFAULTS = quality_profile("fast-v1").parameters
+FAST_DEFAULTS = quality_profile("fast-v2").parameters
 NORMAL_DEFAULTS = quality_profile("normal-v3").parameters
 HIGH_QUALITY_DEFAULTS = quality_profile("high-quality-v4").parameters
 

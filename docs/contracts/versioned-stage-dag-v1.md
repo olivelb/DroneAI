@@ -92,11 +92,11 @@ Content-Type: application/json
 The route re-verifies S3 even for an idempotent replay; an unavailable,
 unverified or differently addressed manifest is never trusted from request
 metadata alone. Successful publication releases only blocked direct dependants
-whose exact input stage is now available. The resulting Kafka command carries
-the run UUID, attempt, selected single stage, exact upstream UUID map and stage
-parameters.
+whose exact input stage is now available. The scheduler reads the queued row
+and dispatches its exact run UUID, attempt, parent artifacts and parameters
+to the bounded executor. No Kafka compute command is emitted.
 
-## Ownership and compatibility
+## Ownership and execution
 
 All reads and mutations reuse the mission ownership contract. Administrative
 cross-owner access remains explicit and audited. Artifact IDs never weaken the
@@ -110,12 +110,12 @@ runs keep their legacy detail projection. New executors include `stage_run_id`
 in status events so a delayed event from an older attempt can never mutate the
 newer attempt.
 
-The fused COLMAP/DroneGS worker remains a compatibility path for existing and
-deliberately local deployments. It treats an omitted `detection` phase as
-terminal after raster publication, so no tiling or inference is launched
-accidentally. New Kubernetes qualifications use the bounded executors below;
-both paths call the same scientific stage boundaries and this migration did not
-change CUDA, COLMAP or DroneGS versions.
+Bounded Stage Jobs are the only supported execution path. Mission creation and
+stage retry return HTTP 503 when Stage Jobs are disabled. Cancelled/deleting missions reject new retries with HTTP 409 and require a
+new mission; cancellation is never cleared by retry. Global mission replay
+is removed; retries keep successful ancestors and use exact immutable inputs.
+The COLMAP, CUDA and DroneGS scientific implementations are unchanged by this
+transport retirement.
 
 The scheduler policy is deterministic and tenant-aware: oldest work is kept in
 order within each organization, organizations are served round-robin, and
@@ -193,22 +193,17 @@ removes any file whose downloaded size or digest differs. Both directions call
 the cooperative cancellation hook between files. Every bounded adapter records
 a versioned `workspace_transfer` provenance block for publication and, when
 applicable, restoration: logical bytes, file count, transferred bytes, reused
-bytes, manifest bytes and elapsed time. The v1 transfer still republishes and
-restores the complete workspace, so `reused_bytes` is intentionally zero; these
-measurements are the baseline for the incremental/content-addressed manifest
-migration rather than a claim that deduplication already exists.
+bytes, manifest bytes and elapsed time.
 
-The reader now normalizes deployed manifest v1 and strict
-[`Artifact Manifest v2`](artifact-manifest-v2.md). The shared restore engine
-resolves checksum-verified v2 parent overlays and supports bounded selection by
-role and logical path. The writer remains v1 by default. A disabled Helm flag
-can publish v2 CAS overlays with exact parents and stage-specific roles. A
-second disabled flag lets only the detection adapter restore its exact declared
-orthomosaic; it is rejected unless the v2 writer is active, and its output
-continues to inherit every unmaterialized parent file. Other stage adapters
-still request full restores. Blobs above 5 GiB use conditional multipart
-completion and still require an endpoint qualification before activation. This
-reader-first order preserves rollback compatibility during the canary.
+The only supported workspace contract is
+[Artifact Manifest v3](artifact-manifest-v3.md). All writers use tenant CAS
+overlays with exact parents and stage-specific roles; all readers require
+the durable mission organization and reject old formats. The detection-only
+selective-restore flag remains disabled by default. When enabled, it restores
+the declared orthomosaic while preserving every unmaterialized parent file in
+the output overlay. Other stages request full restores. Conditional multipart
+completion and provider qualification requirements are unchanged. Old runs
+must be drained before deploying matching API/control and executor images.
 
 The first bundled adapter now executes `reconstruction` in the COLMAP image:
 it downloads the immutable dataset prefix, runs preparation, sparse mapping,
@@ -304,8 +299,8 @@ resource class and previous Job identity remain in provenance, and
 deterministic names make recreation idempotent. Pre-accounting shard Jobs are
 conservatively charged for every shard while active, and a missing legacy
 finalizer is reconstructed on CPU. `stageJobs.detectionFanout.enabled` remains
-`false` by default and the chart rejects it unless Manifest v2 writes and
-detection selective restore are already enabled.
+`false` by default and the chart rejects it unless detection selective
+restore is already enabled.
 
 The corresponding handoffs use versioned JSON sidecars plus a PLY kept inside
 the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of

@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import Text, func, or_
 
-from shared.database import AIAnalysisRun, Detection, MapFeature, get_session
-from shared.geospatial_assets import detections_feature_collection
+from shared.database import AIAnalysisRun, MapFeature, get_session
 from shared.geospatial_workspace import geometry_bounds
 
 from ..map_support import (
@@ -16,7 +15,6 @@ from ..map_support import (
     JsonObject,
     MissionRecord,
     RouteSession,
-    apply_detection_spatial_filter,
     apply_spatial_filter,
     feature_collection,
     get_mission,
@@ -43,7 +41,7 @@ def _search_map_records(
     deleted: bool,
     limit: int,
 ) -> tuple[list[MapFeature], bool]:
-    if source == "legacy":
+    if source == "pipeline":
         return [], False
     query = session.query(MapFeature).filter(MapFeature.mission_id == mission_id)
     query = query.filter(
@@ -81,57 +79,6 @@ def _search_map_records(
         query.order_by(MapFeature.updated_at.desc()).limit(limit + 1).all(),
     )
     return records[:limit], len(records) > limit
-
-
-def _search_legacy_records(
-    session: RouteSession,
-    *,
-    mission_id: int,
-    text: str,
-    class_name: str | None,
-    min_confidence: float | None,
-    bounds: Bounds | None,
-    limit: int,
-) -> tuple[list[Detection], bool]:
-    query = session.query(Detection).filter(Detection.mission_id == mission_id)
-    if text:
-        query = query.filter(Detection.class_name.ilike(f"%{text}%"))
-    if class_name:
-        query = query.filter(Detection.class_name == class_name)
-    if min_confidence is not None:
-        query = query.filter(Detection.confidence >= min_confidence)
-    query = apply_detection_spatial_filter(query, bounds)
-    records = cast(
-        list[Detection],
-        query.order_by(Detection.id.desc()).limit(limit + 1).all(),
-    )
-    return records[:limit], len(records) > limit
-
-
-def _legacy_geojson(
-    records: list[Detection],
-    mission: MissionRecord,
-    vol_id: str,
-) -> list[JsonObject]:
-    metadata = mission.tiling_metadata or {}
-    collection = detections_feature_collection(
-        records,
-        geotransform=metadata.get("transform"),
-        source_crs=metadata.get("crs"),
-        vol_id=vol_id,
-    )
-    features = cast(list[JsonObject], collection["features"])
-    for feature in features:
-        properties = cast(JsonObject, feature["properties"])
-        properties.update(
-            {
-                "source": "legacy",
-                "name": properties.get("class_name"),
-                "description": "Initial pipeline detection",
-                "color": "#f43f5e",
-            }
-        )
-    return features
 
 
 def _search_pipeline_artifact(
@@ -212,7 +159,7 @@ def search_map_features(
     principal: Annotated[Principal, Depends(require_authenticated)],
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
     q: Annotated[str, Query(max_length=160)] = "",
-    source: Annotated[str | None, Query()] = None,
+    source: Annotated[Literal["manual", "ai", "pipeline"] | None, Query()] = None,
     run_id: Annotated[str | None, Query()] = None,
     class_name: Annotated[str | None, Query()] = None,
     min_confidence: Annotated[float | None, Query(ge=0, le=1)] = None,
@@ -245,7 +192,7 @@ def search_map_features(
         )
         features.extend(map_feature_geojson(typed_session, item) for item in records)
         remaining = max(0, limit - len(features))
-        if remaining and source in {None, "", "legacy"} and not run_id:
+        if remaining and source in {None, "", "pipeline"} and not run_id:
             immutable = _search_pipeline_artifact(
                 typed_session,
                 mission,
@@ -261,18 +208,6 @@ def search_map_features(
             if immutable is not None:
                 features.extend(immutable[0])
                 truncated = truncated or immutable[1]
-            else:
-                legacy, legacy_truncated = _search_legacy_records(
-                    typed_session,
-                    mission_id=mission.id,
-                    text=text,
-                    class_name=class_name,
-                    min_confidence=min_confidence,
-                    bounds=bounds,
-                    limit=remaining,
-                )
-                features.extend(_legacy_geojson(legacy, mission, vol_id))
-                truncated = truncated or legacy_truncated
     return {
         **feature_collection(features, vol_id=vol_id, truncated=truncated),
         "bounds": _aggregate_bounds(features),

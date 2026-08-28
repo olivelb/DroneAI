@@ -9,7 +9,7 @@ import {
   RotateCcw,
   XCircle,
 } from "lucide-react";
-import { getFileUrl } from "../../lib/api";
+import { getAnalysisVectorsUrl } from "../../lib/api";
 import { useI18n } from "../../lib/i18n/provider";
 import { useStore } from "../../lib/store";
 import type {
@@ -282,7 +282,7 @@ export default function AnalysisPanel({
             )}
             {run.result_s3_key && (
               <a
-                href={getFileUrl(run.result_s3_key)}
+                href={getAnalysisVectorsUrl(run.vol_id, run.run_id)}
                 className="flex min-h-9 flex-1 items-center justify-center gap-1 rounded-lg border border-[#d4dfdb] text-xs"
               >
                 <Download size={12} /> GeoJSON

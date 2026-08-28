@@ -409,7 +409,9 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
             ),
             {"password": password},
         )
-        session.execute(text(f'GRANT CONNECT ON DATABASE droneai TO "{role}"'))
+        database_name = session.scalar(text("SELECT current_database()"))
+        quoted_database = session.get_bind().dialect.identifier_preparer.quote(database_name)
+        session.execute(text(f'GRANT CONNECT ON DATABASE {quoted_database} TO "{role}"'))
         session.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
         session.execute(
             text(
@@ -433,7 +435,7 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
             ),
             {"password": stage_password},
         )
-        session.execute(text(f'GRANT CONNECT ON DATABASE droneai TO "{stage_role}"'))
+        session.execute(text(f'GRANT CONNECT ON DATABASE {quoted_database} TO "{stage_role}"'))
         session.execute(text(f'GRANT USAGE ON SCHEMA public TO "{stage_role}"'))
         session.execute(text(f'GRANT SELECT ON missions TO "{stage_role}"'))
         session.execute(

@@ -43,6 +43,7 @@ class AIAnalysisRun(RequiredTimestampMixin, Base):
 
     __tablename__ = "ai_analysis_runs"
     __table_args__ = (
+        UniqueConstraint("id", "mission_id", name="uq_ai_analysis_run_mission"),
         Index("ix_ai_runs_mission_created", "mission_id", "created_at"),
         Index("ix_ai_runs_recovery", "status", "heartbeat_at"),
         CheckConstraint(

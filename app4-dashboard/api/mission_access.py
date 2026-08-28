@@ -21,7 +21,7 @@ class MissionQuery(Protocol):
 
     def first(self) -> Any: ...
 
-    def with_for_update(self) -> Self: ...
+    def with_for_update(self, *, key_share: bool = False) -> Self: ...
 
 
 class MissionSession(Protocol):
@@ -115,7 +115,9 @@ def get_owned_mission(
         vol_id=vol_id,
     ).filter(Mission.vol_id == vol_id)
     if for_update:
-        query = query.with_for_update()
+        # Serialize mission changes without blocking child-artifact foreign keys.
+        # PostgreSQL renders key_share=True as FOR NO KEY UPDATE.
+        query = query.with_for_update(key_share=True)
     mission = cast(Mission | None, query.first())
     if mission is None:
         raise HTTPException(

@@ -64,7 +64,7 @@ def _mission_with_reconstruction(scope, run_id="a" * 32):
             owner_subject="operator-a",
             workspace_prefix=f"missions/mission-{run_id[0]}",
             status="pending",
-            params={"quality_profile": "normal-v1"},
+            params={"quality_profile": "normal-v3"},
         )
         session.add(mission)
         session.flush()
@@ -116,7 +116,7 @@ def test_one_shot_success_publishes_immutable_artifact_and_releases_next_stage(
         heartbeat_interval_seconds=60,
     )
 
-    assert observed["context"].mission_parameters["quality_profile"] == "normal-v1"
+    assert observed["context"].mission_parameters["quality_profile"] == "normal-v3"
     assert observed["context"].organization_id == "legacy-unassigned"
     assert observed["context"].workspace_prefix == "missions/mission-a"
     assert observed["context"].mission_attempt == 0

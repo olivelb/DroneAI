@@ -8,12 +8,8 @@ DRONEAI_ENV = os.getenv("DRONEAI_ENV", "development").strip().lower()
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "my-kafka.drone-ai.svc.cluster.local:9092")
 
-TOPIC_MISSION = "vols-bruts"
-TOPIC_ORTHO = "images-ortho"
 TOPIC_STATUS = "pipeline-status"
 TOPIC_CONTROL = "pipeline-control"
-TOPIC_IMAGE_TILES = "image-tiles"
-TOPIC_TILE_DETECTIONS = "tile-detections"
 TOPIC_DEAD_LETTER = os.getenv("TOPIC_DEAD_LETTER", "pipeline-dead-letter")
 
 # ---------------------------------------------------------------------------
