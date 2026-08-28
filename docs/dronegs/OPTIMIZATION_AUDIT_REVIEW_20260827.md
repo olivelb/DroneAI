@@ -24,6 +24,11 @@ L'essai suivant de réutilisation des temporaires du refit directionnel est
 **rejeté** : médiane 0,49 % plus lente et deux paires en régression. Production
 restaurée à l'identique ; [contrats et résultat négatif](../benchmarks/gstile-refit-scratch-qualification.md)
 conservés, sans remettre en cause les optimisations précédentes.
+L'attente active OpenBLAS raccourcie est ensuite **qualifiée pour la CLI** :
+21,585 → 18,260 s (−15,40 % médian), quatre paires plus rapides et 630 fichiers
+identiques. Le nombre de threads reste inchangé ; les essais à 1/2/4 threads
+modifiaient les octets et ne sont pas livrés. Aucun réglage du worker partagé
+ni gain de RSS ; voir la [qualification BLAS](../benchmarks/gstile-blas-timeout-qualification.md).
 
 ## Conclusion
 
@@ -134,6 +139,15 @@ et le PlayCanvas 2.21.4 patché dans `node_modules/playcanvas/build/playcanvas/s
    Parité des 630 fichiers confirmée ; seul le bilan et 69 contrats numériques
    sont conservés. Pas de changement de production pour cet essai ; voir le
    [résultat négatif](../benchmarks/gstile-refit-scratch-qualification.md).
+   **Attente active OpenBLAS : retenue pour la CLI isolée.** Défaut
+   `OPENBLAS_THREAD_TIMEOUT=16` avant import NumPy, réglages explicites conservés,
+   aucun changement du nombre de threads, des calculs ni de la bibliothèque.
+   Dix builds identiques et −15,40 % de temps médian sur le pilote V4 ; RSS
+   mesuré +2,11 %. Les variantes à moins de threads ne sont pas transparentes
+   numériquement et sont mises de côté, sans conclure à un défaut visuel.
+   [Protocole et limites](../benchmarks/gstile-blas-timeout-qualification.md).
+   Le worker applicatif partagé n'utilise pas ce défaut : son isolation reste
+   un travail distinct, pas une accélération déployée implicitement.
 4. **Prototype tri externe Morton** (priorité producteur 100 M) : runs bornés,
    fusion multi-voies, tie-break source ID, feuilles contiguës et métadonnées
    bottom-up. Tester centres confondus, distributions très déséquilibrées,

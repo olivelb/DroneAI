@@ -5,17 +5,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from gstile_cli_common import configure_repository_imports, jsonl_progress_callback
 
 configure_repository_imports(__file__)
 
-from gaussian_tiles import GsTileBuildOptions, build_gstile_bundle  # noqa: E402
-
-
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="The standalone CLI defaults OPENBLAS_THREAD_TIMEOUT to 16; explicit environment settings are preserved.",
+    )
     parser.add_argument("source_ply", type=Path)
     parser.add_argument("output_directory", type=Path)
     parser.add_argument("--leaf-size", type=int, default=65_536)
@@ -67,6 +68,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
+    from gaussian_tiles import GsTileBuildOptions, build_gstile_bundle
+
     progress_callback = jsonl_progress_callback(arguments.progress_jsonl)
     result = build_gstile_bundle(
         arguments.source_ply,
@@ -98,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
                 "leaf_count": result.leaf_count,
                 "pack_bytes": result.pack_bytes,
                 "maximum_quantization_error": result.maximum_errors,
+                "openblas_thread_timeout": os.environ.get("OPENBLAS_THREAD_TIMEOUT"),
             },
             sort_keys=True,
         )
@@ -106,4 +110,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Only the dedicated CLI process: never tune a host application's BLAS on import.
+    # OpenBLAS reads this before NumPy initializes; 16 is a cycle exponent, not ms.
+    # Keep thread counts and arithmetic unchanged, and respect even an explicit "0".
+    os.environ.setdefault("OPENBLAS_THREAD_TIMEOUT", "16")
     raise SystemExit(main())

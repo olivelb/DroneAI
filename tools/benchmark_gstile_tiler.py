@@ -182,6 +182,13 @@ def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             "lodProxySize": arguments.lod_proxy_size,
             "lodProxyStrategy": arguments.lod_proxy_strategy,
             "command": command,
+            "inheritedBlasEnvironment": {
+                key: os.environ.get(key)
+                for key in (
+                    "OPENBLAS_NUM_THREADS", "OPENBLAS_DEFAULT_NUM_THREADS", "GOTO_NUM_THREADS",
+                    "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLIS_NUM_THREADS", "OPENBLAS_THREAD_TIMEOUT",
+                )
+            },
         },
         "measurements": {
             "wallSeconds": wall_seconds,
