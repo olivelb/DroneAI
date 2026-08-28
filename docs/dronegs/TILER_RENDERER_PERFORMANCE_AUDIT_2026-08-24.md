@@ -305,6 +305,15 @@ de RSS total n'est démontré. Voir la
 Ce n'est pas une mesure du vrai Saint-Étienne 50 M ni un gain à additionner aux
 lots précédents. Renderer et format inchangés.
 
+Complément suivant : moyennes des attributs en blocs de huit colonnes, avec
+pondération dans le tableau possédé et mêmes réductions/contrôles de finitude.
+Tous les attributs restent calculés, même ceux remplacés ensuite par le refit.
+Pilote V4 complet : 25,889 → 22,817 s (−11,87 % médian), pic RSS mesuré −11,21 %,
+630 fichiers identiques. Référence variable, gains par paire 5,13–26,48 % ;
+pas de promesse universelle ni de gain à additionner. Compatibilité V3/V4 testée,
+timing V3 et corpus réel non qualifiés. Voir la
+[qualification des moyennes par colonnes](../benchmarks/gstile-moment-columns-qualification.md).
+
 ### 10. Opacité directionnelle évaluée par frame sans réupload global — impact moyen à élevé
 
 Déplacer la dépendance caméra du work-buffer vers le vertex/compute shader de
