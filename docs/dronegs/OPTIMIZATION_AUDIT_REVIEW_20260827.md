@@ -20,6 +20,10 @@ La fusion des attributs par blocs de huit colonnes est ensuite **qualifiée** :
 25,889 → 22,817 s (−11,87 %) et pic RSS mesuré −11,21 %, sur un nouveau pilote
 V4 synthétique 1 M. Référence variable, quatre paires plus rapides, 630 fichiers
 identiques ; [résultats et limites](../benchmarks/gstile-moment-columns-qualification.md).
+L'essai suivant de réutilisation des temporaires du refit directionnel est
+**rejeté** : médiane 0,49 % plus lente et deux paires en régression. Production
+restaurée à l'identique ; [contrats et résultat négatif](../benchmarks/gstile-refit-scratch-qualification.md)
+conservés, sans remettre en cause les optimisations précédentes.
 
 ## Conclusion
 
@@ -124,6 +128,12 @@ et le PlayCanvas 2.21.4 patché dans `node_modules/playcanvas/build/playcanvas/s
    La référence varie fortement et les gains par paire vont de 5,13 à 26,48 % :
    voir les [limites de qualification](../benchmarks/gstile-moment-columns-qualification.md).
    Pas de gain V3 chronométré ni d'extrapolation au corpus réel.
+   **Temporaires du refit directionnel : essai non retenu.** Les coûts isolés
+   semblaient légèrement favorables mais la construction complète ne franchit
+   aucun des deux seuils fixés : médiane −0,49 % de gain, deux paires plus lentes.
+   Parité des 630 fichiers confirmée ; seul le bilan et 69 contrats numériques
+   sont conservés. Pas de changement de production pour cet essai ; voir le
+   [résultat négatif](../benchmarks/gstile-refit-scratch-qualification.md).
 4. **Prototype tri externe Morton** (priorité producteur 100 M) : runs bornés,
    fusion multi-voies, tie-break source ID, feuilles contiguës et métadonnées
    bottom-up. Tester centres confondus, distributions très déséquilibrées,

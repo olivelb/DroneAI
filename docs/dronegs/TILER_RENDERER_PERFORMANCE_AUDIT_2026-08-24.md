@@ -314,6 +314,13 @@ pas de promesse universelle ni de gain à additionner. Compatibilité V3/V4 test
 timing V3 et corpus réel non qualifiés. Voir la
 [qualification des moyennes par colonnes](../benchmarks/gstile-moment-columns-qualification.md).
 
+L'essai ultérieur de temporaires réutilisés dans le refit directionnel est
+rejeté : médiane 21,500 → 21,606 s (0,49 % plus lente), deux paires en régression,
+malgré 630 fichiers identiques. Runtime restauré à l'identique ; seuls 69
+contrats numériques et le [bilan négatif](../benchmarks/gstile-refit-scratch-qualification.md)
+sont conservés. Le faible gain mémoire observé ne remplace pas le seuil de
+vitesse préannoncé. Les optimisations précédemment qualifiées restent actives.
+
 ### 10. Opacité directionnelle évaluée par frame sans réupload global — impact moyen à élevé
 
 Déplacer la dépendance caméra du work-buffer vers le vertex/compute shader de
