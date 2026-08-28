@@ -112,6 +112,12 @@ def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         raise FileNotFoundError(source)
     if output.exists():
         raise FileExistsError(f"Benchmark output is immutable: {output}")
+    # Pin absence semantics across older and newly promoted CLI defaults.
+    # Capability discovery is outside the timed/resource interval.
+    cli_help = subprocess.run(
+        [sys.executable, str(implementation / "tools" / "build_gstiles.py"), "--help"],
+        cwd=implementation, capture_output=True, text=True, check=True, timeout=30,
+    ).stdout
     command = [
         sys.executable,
         str(implementation / "tools" / "build_gstiles.py"),
@@ -124,6 +130,8 @@ def _run(arguments: argparse.Namespace) -> dict[str, Any]:
     ]
     if arguments.pack_target_bytes is not None:
         command.extend(["--pack-target-bytes", str(arguments.pack_target_bytes)])
+    elif "--individual-packs" in cli_help:
+        command.append("--individual-packs")
     if arguments.pack_workers is not None:
         command.extend(["--pack-workers", str(arguments.pack_workers)])
     if arguments.pack_pending_bytes is not None:
@@ -139,6 +147,8 @@ def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 arguments.lod_proxy_strategy,
             ]
         )
+    elif "--no-lod" in cli_help:
+        command.append("--no-lod")
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     started = time.perf_counter()
     completed = subprocess.run(

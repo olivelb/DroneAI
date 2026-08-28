@@ -1,5 +1,11 @@
 # One-command local deployment
 
+For the tiler and renderer, deploy the frontend and COLMAP application images
+from the same qualified release. The [GSTile production profile](docs/contracts/gstile-production-defaults-v1.md)
+documents effective defaults, explicit rollbacks and the dedicated viewer Job's
+OpenBLAS startup policy. Rebuild an outdated base when its locked Python
+dependencies differ; copying application code does not update that runtime.
+
 DroneAI has one public build-and-deploy entry point:
 
 ```bash

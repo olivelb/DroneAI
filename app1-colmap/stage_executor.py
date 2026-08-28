@@ -10,16 +10,6 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from colmap_worker.stage_executor import (
-    run_gaussian_filtering_stage,
-    run_gaussian_viewer_stage,
-    run_gaussian_training_stage,
-    run_rasterization_stage,
-    run_reconstruction_stage,
-)
-from shared.stage_execution import execute_one_shot_stage
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Execute one bounded COLMAP stage")
     parser.add_argument(
@@ -33,6 +23,21 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    if __name__ == "__main__" and args.stage == "gaussian_viewer":
+        from shared.gstile_defaults import configure_gstile_process
+
+        configure_gstile_process()
+    # Import only after the dedicated viewer Job has established its policy.
+    # Other stages and programmatic hosts retain their existing BLAS runtime.
+    from colmap_worker.stage_executor import (
+        run_gaussian_filtering_stage,
+        run_gaussian_viewer_stage,
+        run_gaussian_training_stage,
+        run_rasterization_stage,
+        run_reconstruction_stage,
+    )
+    from shared.stage_execution import execute_one_shot_stage
+
     if args.stage == "reconstruction":
         execute_one_shot_stage("reconstruction", run_reconstruction_stage)
     elif args.stage == "gaussian_training":

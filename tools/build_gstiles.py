@@ -12,6 +12,17 @@ from gstile_cli_common import configure_repository_imports, jsonl_progress_callb
 
 configure_repository_imports(__file__)
 
+from shared.gstile_defaults import (  # noqa: E402
+    GSTILE_DEFAULTS_PROFILE,
+    GSTILE_LOD_PROXY_SIZE,
+    GSTILE_LOD_PROXY_STRATEGY,
+    GSTILE_PACK_PENDING_BYTES,
+    GSTILE_PACK_TARGET_BYTES,
+    GSTILE_PACK_WORKERS,
+    configure_gstile_process,
+)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -20,27 +31,35 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("source_ply", type=Path)
     parser.add_argument("output_directory", type=Path)
     parser.add_argument("--leaf-size", type=int, default=65_536)
-    parser.add_argument(
+    lod = parser.add_mutually_exclusive_group()
+    lod.add_argument(
         "--lod-proxy-size",
         type=int,
-        help="opt into deterministic hierarchical LOD with this proxy size",
+        default=GSTILE_LOD_PROXY_SIZE,
+        help="hierarchical LOD proxy size (default: 16384); must not exceed leaf size",
     )
+    lod.add_argument("--no-lod", dest="lod_proxy_size", action="store_const", const=None,
+                     help="explicit leaf-only rollback; do not generate LOD proxies")
     parser.add_argument(
         "--lod-proxy-strategy",
         choices=("adaptive-moment", "moment-matched", "spatial-stratified", "minhash"),
-        default="moment-matched",
+        default=GSTILE_LOD_PROXY_STRATEGY,
         help="LOD proxy strategy; adaptive-moment enables V4, replacement modes preserve legacy bundles",
     )
     parser.add_argument("--chunk-records", type=int, default=131_072)
-    parser.add_argument("--pack-workers", type=int, choices=(1, 2, 4), default=1,
-                        help="bounded parallel pack preparation; 1 keeps synchronous execution")
-    parser.add_argument("--pack-pending-bytes", type=int, default=128 * 1024**2,
+    parser.add_argument("--pack-workers", type=int, choices=(1, 2, 4), default=GSTILE_PACK_WORKERS,
+                        help="bounded parallel pack preparation (default: 2); 1 keeps synchronous execution")
+    parser.add_argument("--pack-pending-bytes", type=int, default=GSTILE_PACK_PENDING_BYTES,
                         help="queued input/output reservation cap, excluding encoder scratch (default 128 MiB)")
-    parser.add_argument(
+    packs = parser.add_mutually_exclusive_group()
+    packs.add_argument(
         "--pack-target-bytes",
         type=int,
-        help="aggregate spatially adjacent tiles into canonical packs up to this size",
+        default=GSTILE_PACK_TARGET_BYTES,
+        help="depth-spatial aggregate target (default: 2097152 bytes)",
     )
+    packs.add_argument("--individual-packs", dest="pack_target_bytes", action="store_const", const=None,
+                       help="explicit one-representation-per-pack rollback")
     parser.add_argument(
         "--filter-invisible-giant-scale",
         type=float,
@@ -102,6 +121,14 @@ def main(argv: list[str] | None = None) -> int:
                 "pack_bytes": result.pack_bytes,
                 "maximum_quantization_error": result.maximum_errors,
                 "openblas_thread_timeout": os.environ.get("OPENBLAS_THREAD_TIMEOUT"),
+                "build_configuration": {
+                    "defaults_profile": GSTILE_DEFAULTS_PROFILE,
+                    "lod_proxy_size": arguments.lod_proxy_size,
+                    "lod_proxy_strategy": arguments.lod_proxy_strategy,
+                    "pack_target_bytes": arguments.pack_target_bytes,
+                    "pack_workers": arguments.pack_workers,
+                    "pack_pending_bytes": arguments.pack_pending_bytes,
+                },
             },
             sort_keys=True,
         )
@@ -113,5 +140,5 @@ if __name__ == "__main__":
     # Only the dedicated CLI process: never tune a host application's BLAS on import.
     # OpenBLAS reads this before NumPy initializes; 16 is a cycle exponent, not ms.
     # Keep thread counts and arithmetic unchanged, and respect even an explicit "0".
-    os.environ.setdefault("OPENBLAS_THREAD_TIMEOUT", "16")
+    configure_gstile_process()
     raise SystemExit(main())

@@ -7,6 +7,12 @@ Kubernetes environment.
 
 ## Qualification levels
 
+GSTile's current [production defaults and rollback contract](contracts/gstile-production-defaults-v1.md)
+apply to new builds and viewer sessions. Existing content-addressed bundles are
+never rewritten by a default change. Keep the preceding image and configuration
+available when switching a viewer; qualify HTTP health and bundle loading on the
+target before replacing its listener.
+
 | Level | Trigger | Required evidence | Automatic in pull requests |
 |---|---|---|---|
 | Q0 — contracts | Every code change | Static analysis, CPU tests, contract and documentation checks | Yes |

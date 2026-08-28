@@ -75,8 +75,10 @@ Required top-level fields:
 Each node has `id`, `bounds.min`, `bounds.max`, `gaussianCount`, and either
 `children` or a `tile`, never both. Bounds enclose Gaussian centres. A tile has
 `pack`, `byteOffset`, `byteLength`, `recordCount`, `sha256` and `quantization`.
-By default the tiler writes one tile per pack. With `pack_target_bytes`, it
-groups exact tiles and proxies into separate, bounded packs. Aggregated
+The [production policy](gstile-production-defaults-v1.md) defaults to a 2 MiB
+`pack_target_bytes` target, grouping exact tiles and proxies into separate,
+bounded packs. Explicit `None` (CLI `--individual-packs`) retains individual
+representation packs. Aggregated
 representations use the `depth-spatial-v1` layout: a pack contains one
 representation kind at one tree depth, ordered by spatial node identifier.
 A LOD cut normally selects a parent or its descendants, not both; mixing

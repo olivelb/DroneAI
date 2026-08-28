@@ -564,10 +564,22 @@ def test_rasterization_adapter_qualifies_filtered_model_without_refiltering(
     assert cancellation.cleared == 1
 
 
+@pytest.mark.parametrize("raw_options", [
+    {},
+    {"leaf_size": 1024, "lod_proxy_size": 1024, "lod_proxy_strategy": "moment-matched",
+     "pack_target_bytes": None, "pack_workers": 1},
+    {"lod_proxy_size": None, "pack_target_bytes": None, "pack_workers": 1},
+])
+@pytest.mark.parametrize("real_tiler", [False, True])
 def test_gaussian_viewer_adapter_builds_product_only_from_filtered_model(
     tmp_path,
     monkeypatch,
+    raw_options,
+    real_tiler,
 ):
+    from gaussian_tiles.tests.test_gstile import _records, _write_ply
+
+    actual_build = gaussian_tiles.build_gstile_bundle
     monkeypatch.setenv("DRONEAI_STAGE_WORK_ROOT", str(tmp_path / "work"))
     cancellation = FakeCancellationState()
     monkeypatch.setattr(stage_executor.runtime, "cancellation_state", cancellation)
@@ -585,7 +597,7 @@ def test_gaussian_viewer_adapter_builds_product_only_from_filtered_model(
     artifact = SimpleNamespace(
         model_path=model_path,
         partition_models=(),
-        output_gaussians=42,
+        output_gaussians=2500,
         scene_summary=SimpleNamespace(
             facade_frame={
                 "axes_world": {
@@ -599,16 +611,24 @@ def test_gaussian_viewer_adapter_builds_product_only_from_filtered_model(
 
     def read_artifact(_workspace, _config):
         calls.append("read")
-        model_path.write_bytes(b"filtered-gaussians")
+        _write_ply(model_path, _records(2500))
         return artifact
 
     monkeypatch.setattr(phase_artifacts, "read_filtering_artifact", read_artifact)
 
     def build(source, output, *, options):
         calls.append("tile")
-        assert Path(source).read_bytes() == b"filtered-gaussians"
-        assert options.leaf_size == 1024
+        assert Path(source) == model_path
+        assert options.leaf_size == raw_options.get("leaf_size", 65536)
+        assert options.lod_proxy_size == raw_options.get("lod_proxy_size", 16384)
+        assert options.lod_proxy_strategy == raw_options.get("lod_proxy_strategy", "adaptive-moment")
+        assert options.pack_target_bytes == raw_options.get("pack_target_bytes", 2097152)
+        assert options.pack_workers == raw_options.get("pack_workers", 2)
+        assert options.pack_pending_bytes == 134217728
+        options.validate()
         options.cancellation_check()
+        if real_tiler:
+            return actual_build(source, output, options=options)
         output = Path(output)
         output.mkdir(parents=True)
         manifest_path = output / "manifest.json"
@@ -622,7 +642,7 @@ def test_gaussian_viewer_adapter_builds_product_only_from_filtered_model(
         return SimpleNamespace(
             manifest_path=manifest_path,
             bundle_id="sha256:" + "f" * 64,
-            gaussian_count=42,
+            gaussian_count=2500,
             leaf_count=1,
             pack_bytes=4,
             maximum_errors={"position": 0.001},
@@ -634,15 +654,25 @@ def test_gaussian_viewer_adapter_builds_product_only_from_filtered_model(
         _context(
             "gaussian_viewer",
             input_kind="gaussian_filtering_workspace",
-            parameters={"gaussian_viewer": {"leaf_size": 1024}},
+            parameters={"gaussian_viewer": raw_options},
         ),
         FakeControl(),
     )
 
     assert calls == ["restore", "read", "tile", "publish"]
     assert result.kind == "gaussian_viewer_bundle"
-    assert result.metadata["gaussian_count"] == 42
-    assert result.metadata["lod"] == "leaf-only-v1"
+    assert result.metadata["gaussian_count"] == 2500
+    if not real_tiler:
+        assert result.metadata["lod"] == "leaf-only-v1"
+    elif raw_options.get("lod_proxy_size", 16384) is None:
+        assert result.metadata["lod"] == "leaf-only"
+    elif raw_options.get("lod_proxy_strategy") == "moment-matched":
+        assert result.metadata["lod"] == "deterministic-morton-moment-matched-v3"
+    else:
+        assert result.metadata["lod"] == "deterministic-adaptive-cost-moment-opacity-refit-v4"
+    assert result.metadata["build_configuration"]["defaults_profile"] == "gstile-qualified-2026-08-28"
+    assert result.metadata["build_configuration"]["pack_workers"] == raw_options.get("pack_workers", 2)
+    assert result.provenance["build_configuration"] == result.metadata["build_configuration"]
     assert result.metadata["recommended_view"] == {
         "kind": "facade",
         "right": [0.0, 1.0, 0.0],
