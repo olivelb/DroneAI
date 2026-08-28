@@ -321,6 +321,16 @@ contrats numériques et le [bilan négatif](../benchmarks/gstile-refit-scratch-q
 sont conservés. Le faible gain mémoire observé ne remplace pas le seuil de
 vitesse préannoncé. Les optimisations précédemment qualifiées restent actives.
 
+Complément BLAS : les variantes 1/2/4 threads changent les octets des bundles
+et ne sont pas livrées comme optimisations transparentes. En gardant les
+20 threads observés mais en raccourcissant leur attente active, le nouveau
+pilote complet passe de 21,585 à 18,260 s (−15,40 % médian), quatre paires plus
+rapides et 630 fichiers identiques. Défaut `OPENBLAS_THREAD_TIMEOUT=16` limité
+au processus CLI avant import NumPy ; toute valeur explicite est conservée.
+Bibliothèque, worker partagé et renderer inchangés. RSS mesuré +2,11 %, pas
+de promesse sur le vrai corpus ni d'addition des gains. Voir la
+[qualification BLAS](../benchmarks/gstile-blas-timeout-qualification.md).
+
 ### 10. Opacité directionnelle évaluée par frame sans réupload global — impact moyen à élevé
 
 Déplacer la dépendance caméra du work-buffer vers le vertex/compute shader de

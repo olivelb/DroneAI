@@ -1,6 +1,7 @@
 # GSTile CLI: shorter OpenBLAS idle wait
 
-2026-08-28. Candidate under qualification; no full-build gain accepted yet.
+2026-08-28. **Qualified for the standalone CLI: 15.40% less median build time,
+all four measured pairs faster, all 630 files identical.**
 
 ## Scope and mechanism
 
@@ -78,6 +79,8 @@ The first test harness incorrectly assumed `runpy.run_path()` added the script
 directory to `sys.path`; seven import checks failed, while 368 tests passed.
 The test harness now models script startup correctly; application behavior and
 numeric tolerances were not relaxed. Original test source is retained.
+The corrected suite has **375 passing affected tests**; scoped Ruff, Markdown
+link and whitespace checks pass. No test or CI threshold was relaxed.
 
 Pin clean baseline, runtime and driver commits before timing. Synthetic
 1,048,576 SH3/directional records, **not real Saint-Etienne 50 M**, source
@@ -104,4 +107,77 @@ contract. Byte-identical bundles with an unchanged renderer require no new
 Chrome visual test and do not expand the previous PLY visual qualification.
 
 Evidence root: `/home/olivier/droneai-qualifications/gstile-blas-timeout-20260828`.
-No cleanup is authorized. Results will be appended after the complete cohort.
+No cleanup is authorized.
+
+## Complete-build result and delivery
+
+All ten builds completed without exclusions, retries or failed samples.
+All 630 files (manifest, raw packs and Zstd sidecars) have the same SHA-256
+inventory, independently confirmed by nine explicit-argv recursive binary
+`diff -rq` comparisons against the first reference. Source unchanged, every
+report clean and pinned, inherited controls unset throughout. Common bundle ID:
+`sha256:190c82ac43ce470269737fd70c35f8a6d0f669e9999b55e8a1edc8443b22d7eb`.
+
+| Trial | Order | Reference seconds | Timeout 16 seconds | Time reduction |
+| --- | --- | ---: | ---: | ---: |
+| Warmup | AB | 21.163 | 18.558 | — |
+| Pair 1 | AB | 20.864 | 18.301 | 12.28% |
+| Pair 2 | BA | 22.209 | 18.077 | 18.61% |
+| Pair 3 | AB | 21.713 | 18.328 | 15.59% |
+| Pair 4 | BA | 21.456 | 18.219 | 15.09% |
+| Measured median | — | **21.585** | **18.260** | **15.40%** |
+
+Both predeclared gates pass. Median child user CPU is 147.801 versus 15.810 s,
+about 89.3% lower; this is cumulative CPU, **not wall-time speedup or measured
+energy consumption**. It supports idle contention as the cause, not a claim
+that 89% of tiler arithmetic disappeared. Filesystem output blocks remain
+3,381,408 per run. Measured peak child RSS is 401,424 versus 409,896 KiB:
+8,472 KiB **higher** (2.11%). No memory reduction is claimed.
+
+Keep the small CLI startup change and environment reporting. The library,
+long-lived worker and renderer remain unchanged. Do not add prior gains or
+generalize this synthetic V4 result to BIGZEN, real 50 M, V3 throughput,
+other BLAS implementations or deployments that already set a short timeout.
+For the backend's original idle policy, launch the CLI with
+`OPENBLAS_THREAD_TIMEOUT=0`; existing explicit thread controls still take effect.
+Do not set a process-wide policy inside an already-running worker.
+
+## Provenance and reproduction
+
+- Runtime: `6dc6a8718766b64c91bc006f861718bb9eb6b5f8`.
+- Measured clean candidate/driver: `529a811c282f6240a177ee82d414e07de3e9d3d8`.
+- Reference: `a0434f726f7651a616909c168a70c65d77092830`.
+- Versioned [driver](gstile-blas-timeout-builds.mjs) and
+  [results](gstile-blas-timeout-results.json) retain protocol, all trials,
+  reference inventory, runtime metadata, report hashes and exact calculations.
+- All raw reports, stdout/stderr, bundles, inventories, protocol, trials and
+  the reference worktree remain at the evidence root. Both exploratory
+  sweeps, numeric `.npy` arrays and initial harness failures remain separate.
+
+From the measured candidate or a clean documentation-only successor, create
+a **new** evidence directory and detached `baseline` checkout at the reference
+commit, retain the pinned source and numeric probe evidence, then run:
+
+```sh
+node docs/benchmarks/gstile-blas-timeout-builds.mjs /absolute/new-evidence-directory
+```
+
+The driver refuses existing outputs, explicit inherited controls, changed
+runtime/library/source, dirty reports or numerical differences. Any other
+environment needs its own declared protocol; no silent substitution or rerun.
+
+## Follow-up profile, outside the timing cohort
+
+A separate clean `529a811` cProfile build uses the same fixture/options and
+CLI timeout. Its complete bundle is binary-identical to the reference.
+The instrumented total is 18.587 s and is **not another benchmark sample**.
+Inclusive costs: moment matching 6.160 s, candidate edges 5.746 s, of which
+blocked distances 2.242 s; averaging 2.191 s and refit 1.981 s are included
+inside moment matching. Do not sum nested costs. File splitting is 1.395 s,
+Q96 encoding 1.102 s, and fsync 0.468 s on this synthetic pilot.
+
+This points back to V4 candidate/group processing before another compression
+or fsync change. It does not authorize reduced durability or predict a future
+gain. Profile, text summary, metadata and exact bundle are retained at
+`/home/olivier/droneai-qualifications/gstile-blas-timeout-profile-20260828`;
+the adjacent `.mjs` driver is also retained. No experiment output was deleted.
