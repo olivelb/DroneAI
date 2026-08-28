@@ -27,7 +27,7 @@ image_tag="${IMAGE_TAG:-}"
 if [[ -z "${image_tag}" ]]; then
   if helm status drone-ai --namespace "${namespace}" >/dev/null 2>&1; then
     deployed_tags=()
-    for deployment in processing-worker dashboard-api dashboard-control-worker dashboard-frontend; do
+    for deployment in dashboard-api dashboard-control-worker dashboard-frontend; do
       image_ref="$(kubectl -n "${namespace}" get deployment "${deployment}" \
         -o jsonpath='{.spec.template.spec.containers[0].image}')"
       deployed_tags+=("${image_ref##*:}")
@@ -58,7 +58,6 @@ helm lint "${repo_root}/charts/drone-ai" -f "${values}" \
   --set-string "storage.s3PublicEndpoint=${s3_endpoint}" \
   --set-string "postgres.backup.s3Endpoint=${s3_endpoint}" \
   --set-string "postgres.backup.s3Bucket=${backup_bucket}" \
-  --set-string "processingWorker.tag=${image_tag}" \
   --set-string "dashboardApi.tag=${image_tag}" \
   --set-string "dashboardFrontend.tag=${image_tag}" >/dev/null
 
@@ -71,7 +70,6 @@ release_args=(
   --set-string "storage.s3PublicEndpoint=${s3_endpoint}"
   --set-string "postgres.backup.s3Endpoint=${s3_endpoint}"
   --set-string "postgres.backup.s3Bucket=${backup_bucket}"
-  --set-string "processingWorker.tag=${image_tag}"
   --set-string "dashboardApi.tag=${image_tag}"
   --set-string "dashboardFrontend.tag=${image_tag}"
 )

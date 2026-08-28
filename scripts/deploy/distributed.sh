@@ -177,18 +177,6 @@ resolve_node_port() {
     fatal "No free Kubernetes NodePort at or above $requested."
 }
 
-distributed_memory_values() {
-    local memory_gib colmap_limit processing_limit
-    memory_gib="$(awk '/MemTotal/ {printf "%d", $2 / 1024 / 1024}' /proc/meminfo)"
-    colmap_limit=$((memory_gib - 4))
-    ((colmap_limit > 80)) && colmap_limit=80
-    ((colmap_limit < 12)) && colmap_limit=12
-    processing_limit=$((memory_gib / 3))
-    ((processing_limit > 16)) && processing_limit=16
-    ((processing_limit < 4)) && processing_limit=4
-    printf '%s %s\n' "$colmap_limit" "$processing_limit"
-}
-
 deploy_distributed() {
     install_k3s
     install_helm
@@ -199,13 +187,11 @@ deploy_distributed() {
     mkdir -p \
         "$DATA_ROOT/kafka-data" \
         "$DATA_ROOT/minio-data" \
-        "$DATA_ROOT/model-cache" \
         "$DATA_ROOT/colmap-work" \
         "$DATA_ROOT/postgres-data"
     chmod 0777 \
         "$DATA_ROOT/kafka-data" \
         "$DATA_ROOT/minio-data" \
-        "$DATA_ROOT/model-cache" \
         "$DATA_ROOT/postgres-data"
     "${SUDO[@]}" chown 10001:10001 "$DATA_ROOT/colmap-work"
     "${SUDO[@]}" chmod 0770 "$DATA_ROOT/colmap-work"
@@ -215,25 +201,16 @@ deploy_distributed() {
     MINIO_CONSOLE_PORT="$(resolve_node_port "$MINIO_CONSOLE_PORT" drone-ai/minio-console)"
     MINIO_API_PORT="$(resolve_node_port "$MINIO_API_PORT" drone-ai/minio-api)"
 
-    local access_host memory_values colmap_limit processing_limit drives_json
+    local access_host drives_json
     access_host="$(detect_distributed_access_host)"
-    memory_values="$(distributed_memory_values)"
-    read -r colmap_limit processing_limit <<<"$memory_values"
     drives_json="$(discover_work_drives)"
     info "Work drives: $(jq --raw-output 'map(.label) | join(", ")' <<<"$drives_json")"
 
-    local stage_job_values=()
-    if [[ -n "${STAGE_JOBS_IMAGE_TAG:-}" ]]; then
-        stage_job_values=(
+    local stage_job_values=(
             --set global.requireImmutableImages=true
-            --set-string "colmapWorker.tag=$STAGE_JOBS_IMAGE_TAG"
-            --set-string "iaWorker.tag=$STAGE_JOBS_IMAGE_TAG"
-            --set-string "processingWorker.tag=$STAGE_JOBS_IMAGE_TAG"
             --set-string "dashboardApi.tag=$STAGE_JOBS_IMAGE_TAG"
             --set-string "dashboardFrontend.tag=$STAGE_JOBS_IMAGE_TAG"
             --set colmapWorker.enabled=false
-            --set iaWorker.enabled=false
-            --set processingWorker.replicaCount=0
             --set stageJobs.enabled=true
             --set-string "stageJobs.executors.reconstruction.image=drone-colmap:$STAGE_JOBS_IMAGE_TAG"
             --set-json 'stageJobs.executors.reconstruction.command=["python3","app1-colmap/stage_executor.py","reconstruction"]'
@@ -257,8 +234,7 @@ deploy_distributed() {
             --set-json 'stageJobs.executors.detection.tolerations=[{"key":"nvidia.com/gpu","operator":"Equal","value":"present","effect":"NoSchedule"}]'
             --set-string "stageJobs.executors.gaussian_viewer.image=drone-colmap:$STAGE_JOBS_IMAGE_TAG"
             --set-json 'stageJobs.executors.gaussian_viewer.command=["python3","app1-colmap/stage_executor.py","gaussian_viewer"]'
-        )
-    fi
+    )
 
     info "Deploying DroneAI through Helm"
     helm_root upgrade --install drone-ai "$REPO_ROOT/charts/drone-ai" \
@@ -266,13 +242,8 @@ deploy_distributed() {
         --set-string "kafka.persistence.hostPath=$DATA_ROOT/kafka-data" \
         --set-string "minio.persistence.hostPath=$DATA_ROOT/minio-data" \
         --set-string "postgres.persistence.hostPath=$DATA_ROOT/postgres-data" \
-        --set-string "iaWorker.modelCache.hostPath=$DATA_ROOT/model-cache" \
         --set-json "colmapWorker.workVolume.drives=$drives_json" \
         --set-string "colmapWorker.workVolume.default=local" \
-        --set-string "colmapWorker.resources.requests.memory=8Gi" \
-        --set-string "colmapWorker.resources.limits.memory=${colmap_limit}Gi" \
-        --set-string "processingWorker.resources.requests.memory=2Gi" \
-        --set-string "processingWorker.resources.limits.memory=${processing_limit}Gi" \
         --set "dashboardFrontend.service.nodePort=$DASHBOARD_PORT" \
         --set "dashboardApi.service.nodePort=$API_PORT" \
         --set "minio.consoleNodePort=$MINIO_CONSOLE_PORT" \
@@ -284,22 +255,13 @@ deploy_distributed() {
         --wait-for-jobs \
         --timeout 10m
 
-    if [[ -n "${STAGE_JOBS_IMAGE_TAG:-}" ]]; then
-        kube rollout restart deployment/dashboard-api \
-            deployment/dashboard-control-worker deployment/dashboard-frontend \
-            --namespace drone-ai
-        kube wait --for=condition=Available \
-            deployment/dashboard-api deployment/dashboard-control-worker \
-            deployment/dashboard-frontend \
-            --namespace drone-ai --timeout=5m
-    else
-        kube rollout restart deployment \
-            colmap-worker ia-worker processing-worker dashboard-api \
-            dashboard-control-worker dashboard-frontend \
-            --namespace drone-ai
-        kube wait --for=condition=Available deployment --all \
-            --namespace drone-ai --timeout=5m
-    fi
+    kube rollout restart deployment/dashboard-api \
+        deployment/dashboard-control-worker deployment/dashboard-frontend \
+        --namespace drone-ai
+    kube wait --for=condition=Available \
+        deployment/dashboard-api deployment/dashboard-control-worker \
+        deployment/dashboard-frontend \
+        --namespace drone-ai --timeout=5m
 
     wait_for_http "http://$access_host:$API_PORT/" "Dashboard API"
     wait_for_http "http://$access_host:$DASHBOARD_PORT/" "Dashboard"

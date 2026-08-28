@@ -7,13 +7,13 @@ excluding the OVH Kubernetes API from this rollout.
 
 ## Effective defaults
 
-| Boundary | Default | Explicit rollback / limit |
+| Boundary | Default | Supported limit / override |
 |---|---|---|
-| React viewer and qualification harness RAM pack cache | 1,536 MiB, lazy, byte-bounded SLRU | `gstileMemoryCache=standard`: 768 MiB; `desktop` remains an alias of the default |
-| Rendering | Existing merged renderer and qualified worker/GPU optimizations | No promotion of experimental incremental rendering |
-| Producer library, CLI and `gaussian_viewer` stage | Adaptive-moment V4, proxy size 16,384 | `lod_proxy_size=None` / CLI `--no-lod`; legacy strategies remain explicit |
-| Leaves / input chunks | 65,536 / 131,072 records | Smaller leaves require a compatible explicit proxy size or no LOD |
-| Pack layout | Depth-spatial aggregation, target 2,097,152 bytes | `pack_target_bytes=None` / CLI `--individual-packs`; oversized representations retain existing handling |
+| React viewer and qualification harness RAM pack cache | 1,536 MiB, lazy, byte-bounded SLRU | No historical RAM-profile selector |
+| Rendering | Merged arena, GPU sort, packed transforms and directional opacity | Tiled/incremental, non-LOD, reference-PLY, CPU sort and float32 renderer alternatives removed |
+| Producer library, CLI and `gaussian_viewer` stage | Adaptive-moment V4, proxy size 16,384 | Positive proxy sizes only; other LOD strategies and leaf-only builds are retired |
+| Leaves / input chunks | 65,536 / 131,072 records | Smaller leaves require a compatible positive proxy size |
+| Pack layout | Depth-spatial aggregation, target 2,097,152 bytes | Positive aggregate targets only; oversized representations retain existing handling |
 | Pack preparation | Two workers, 128 MiB pending reservation | `pack_workers=1`; reservation excludes encoder scratch, not a process RSS cap |
 | Dedicated CLI and one-shot viewer Job | `OPENBLAS_THREAD_TIMEOUT=16` before numerical imports | Any explicit value, including `0`, wins; thread counts never changed |
 
@@ -23,7 +23,7 @@ recorded effective fields take precedence when explicit overrides are present.
 Other one-shot stages, imported modules and long-lived host processes do not
 receive the BLAS policy. It is a cycle-counter exponent, not milliseconds.
 
-RAM query values are fixed profiles, never arbitrary sizes. No eager allocation,
+The RAM ceiling is fixed; the old query profiles are removed. No eager allocation,
 browser-memory heuristic or new browser API is introduced. The 75% protected
 cache fraction, two IndexedDB slots, six network slots and 2 GiB persistent
 cache are unchanged. Browser total-memory qualification was explicitly waived
@@ -43,11 +43,11 @@ unqualified incremental rendering, larger experimental pack layouts or reduced
 BLAS thread counts under the label "all upgrades". No splats are discarded by
 the new policy; giant filtering remains opt-in.
 
-## Compatibility and rollback
+## Current format and release handling
 
-Existing bundle IDs, manifests and packs stay immutable. New builds choose the
-previously explicit qualified profile; the format and reader compatibility are
-unchanged. Default changes do not migrate or recompute published products.
+Existing bundle IDs, manifests and packs stay immutable. New builds and both
+readers support only adaptive V4. Historical profiles are rejected before pack
+loading. This cleanup does not migrate or recompute published products.
 
 The ordinary CLI now needs only:
 
@@ -55,29 +55,39 @@ The ordinary CLI now needs only:
 python tools/build_gstiles.py input.ply NEW_OUTPUT_DIRECTORY
 ```
 
-To reproduce the former leaf-only/individual/synchronous policy:
+The producer no longer supports `--no-lod`, `--individual-packs`, minhash,
+spatial-stratified or moment-matched V3 builds. The historical bundle repacker
+has also been removed. Library and Stage Job options reject absent LOD/pack
+sizes and retired strategies. Worker counts and bounded aggregate/proxy sizes
+remain configurable within the same V4 algorithm.
 
-```bash
-python tools/build_gstiles.py input.ply ANOTHER_NEW_DIRECTORY \
-  --no-lod --individual-packs --pack-workers 1
-```
+Benchmarks now default to the current V4/aggregate production configuration;
+they no longer discover or adapt to historical CLI absence semantics.
+The [cleanup record](../audits/2026-08-28-current-production-cleanup.md) lists
+the removed reader/rendering branches, hardware image checks and retained safety controls.
 
-Stage `parameters.gaussian_viewer` accepts the corresponding explicit fields:
-
-```json
-{"lod_proxy_size": null, "pack_target_bytes": null, "pack_workers": 1}
-```
-
-`GsTileBuildOptions` accepts the same overrides. Invalid leaf/proxy combinations
-fail rather than silently changing the LOD. Benchmark commands explicitly pin
-historical absence semantics using supported rollback flags; their omitted
-LOD/pack options must not accidentally become new production defaults.
-
-Retain old images and immutable bundles for operational rollback. Update the
-frontend and producer release together, smoke-test on a separate port, then
-switch the existing listener with restart of the previous image on failure.
+This source cleanup does not delete deployed images or immutable objects.
+Deploy frontend and producer together and smoke-test on a separate port
+before switching an existing listener.
 Do not replace a dirty checkout or silently install a new full platform when
 only the qualification viewer is running.
+
+## Hardware image checks
+
+Image tests require a hardware WebGPU adapter. The Playwright GSTile project
+disables software rasterization and rejects SwiftShader, llvmpipe, lavapipe and
+fallback adapters before loading the scene. A ready HUD alone cannot pass: the
+test also checks scene pixels outside the HUD. If WSL cannot expose hardware
+WebGPU, run the existing suite with Windows Node and Chrome while keeping the
+Next server and authoritative source in WSL; see
+[Development](../../DEVELOPMENT.md#hardware-webgpu-image-tests).
+
+Historical URL parameters for GPU assembly, RAM profiles, CPU/radial sort,
+float32 transforms, opacity, maximum scale, sibling leaves and offscreen
+coverage no longer select alternate production paths. Internal scale
+validation and coverage defaults remain intact. The qualified opacity shader
+sources are unchanged; the renderer always supplies directional mode 1.
+Worker/main-thread decoding and transport fallbacks remain supported.
 
 ## Evidence and limits
 

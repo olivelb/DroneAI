@@ -243,10 +243,6 @@ def prepare_colmap_pipeline_run(
 ) -> PipelinePreparation:
     # --- Pipeline selection ---
     pipeline_mode = mission_params.get("pipeline", "modern")
-    if pipeline_mode not in ("modern", "legacy"):
-        runtime.report_mission_progress(vol_id, "WARNING", 1, log=f"Unknown pipeline '{pipeline_mode}', defaulting to 'modern'")
-        pipeline_mode = "modern"
-
     params = merge_pipeline_params(pipeline_mode, mission_params)
     feature_type = normalize_feature_type(params.get("feature_type"))
     matcher_type = normalize_matcher_type(params.get("matcher_type"))
@@ -267,7 +263,7 @@ def prepare_colmap_pipeline_run(
         "PIPELINE",
         1,
         log=(
-            f"Using {'🚀 COLMAP 4 Modern defaults' if pipeline_mode == 'modern' else '🔧 Legacy defaults'} "
+            f"Using 🚀 COLMAP 4 Modern defaults "
             f"with extractor={feature_type} and matcher={matcher_type} ({resolved_matcher_type})."
         ),
     )

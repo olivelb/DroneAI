@@ -72,7 +72,7 @@ public:
         std::uint64_t maximum_steps,
         std::size_t maximum_gaussians = 0U,
         MrnfOptimizerProfile optimizer_profile =
-            MrnfOptimizerProfile::dronegs_dev16,
+            MrnfOptimizerProfile::reference_absolute,
         std::uint32_t maximum_sh_degree = 0U,
         std::uint32_t sh_degree_interval = 1000U,
         std::uint64_t noise_seed = 0U,

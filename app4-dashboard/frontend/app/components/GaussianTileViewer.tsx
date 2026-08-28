@@ -10,16 +10,12 @@ import type {
 import { decodeGsTileManifest } from "../lib/gstile/contracts";
 import {
   createPlayCanvasResidentBackend,
-  gstileGpuAssembly,
-  gstileOpacityMode,
-  gstileSortMode,
-  gstileTransformPrecision,
   gstileVerticalFovDegrees,
 } from "../lib/gstile/playcanvas-backend";
 import { decodeGsTileViewerDescriptor } from "../lib/gstile/descriptor";
 import { createGsTilePersistentCache } from "../lib/gstile/persistent-range-cache";
 import {
-  gstileMemoryCacheBytes,
+  DEFAULT_GSTILE_MEMORY_CACHE_BYTES,
   DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS,
   GsTileRangeScheduler,
 } from "../lib/gstile/range-source";
@@ -33,28 +29,13 @@ export type GaussianTileViewerProps = {
 
 const defaultBackendFactory = () => {
   const search = new URLSearchParams(window.location.search);
-  const scaleOption = search.get("gstileMaxScale");
   const debugTilesOption = search.get("gstileDebugTiles");
   const debugTiles =
     debugTilesOption === "id" || debugTilesOption === "lod"
       ? debugTilesOption : "off";
-  const assemblyOption = search.get("gstileGpuAssembly");
-  const gpuAssembly = gstileGpuAssembly(assemblyOption);
-  const maximumGaussianScale =
-    scaleOption === null || scaleOption === "none"
-      ? Number.MAX_VALUE
-      : Number(scaleOption);
   return createPlayCanvasResidentBackend({
-    transformPrecision: gstileTransformPrecision(search.get("gstileTransform")),
     verticalFovDegrees: gstileVerticalFovDegrees(search.get("gstileFov")),
-    maximumGaussianScale,
-    includeSiblingLeaves: search.get("gstileSiblingLeaves") === "1",
-    retainOffscreenCoverage: search.get("gstileCoverage") !== "0",
-    opacityMode: gstileOpacityMode(search.get("gstileOpacity")),
-    sortMode: gstileSortMode(search.get("gstileSort")),
-    radialSorting: search.get("gstileRadialSort") === "1",
     debugTiles,
-    gpuAssembly,
     workerAssembly: search.get("gstileWorkerAssembly") !== "0",
     recycleDecodeInput: search.get("gstileRecycleInput") !== "0",
   });
@@ -106,7 +87,7 @@ const formatCount = (value: number) =>
   new Intl.NumberFormat(undefined, { notation: "compact" }).format(value);
 
 /**
- * Lifecycle shell shared by every GSTile renderer.
+ * Lifecycle shell for the production GSTile renderer.
  *
  * GPU resources, request queues and camera state intentionally live in the
  * backend, outside React state. React receives only throttled diagnostics.
@@ -119,12 +100,7 @@ export default function GaussianTileViewer({
 }: GaussianTileViewerProps) {
   const searchParams = useSearchParams();
   const backendQueryKey = searchParams.toString();
-  const memoryCacheBytes = gstileMemoryCacheBytes(searchParams.get("gstileMemoryCache"));
-  const assemblyOption = gstileGpuAssembly(
-    searchParams.get("gstileGpuAssembly"),
-  );
-  const mergedGpuMode = assemblyOption === "merged";
-  const incrementalGpuMode = assemblyOption === "incremental";
+  const memoryCacheBytes = DEFAULT_GSTILE_MEMORY_CACHE_BYTES;
   const viewerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState("Initialisation…");
@@ -330,11 +306,7 @@ export default function GaussianTileViewer({
       </button>
       <div className="pointer-events-none absolute left-3 top-3 rounded-xl border border-white/10 bg-black/55 px-3 py-2 text-[11px] text-white/80 backdrop-blur">
         <div className="font-semibold text-white">
-          {mergedGpuMode
-            ? "GSTile MERGED"
-            : incrementalGpuMode
-              ? "GSTile INCREMENTAL"
-              : "GSTile"} · {displayStatus}
+          GSTile MERGED · {displayStatus}
         </div>
         {!error && (
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-white/60">

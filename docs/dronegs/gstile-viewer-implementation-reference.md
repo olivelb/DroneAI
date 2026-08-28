@@ -1,10 +1,14 @@
 # DroneGS tiler and GSTile viewer — implementation reference
 
-This document is the delivery reference for the DroneAI Gaussian streaming
-work. It refines the architecture proposal into ordered, testable increments.
-Scientific representation and platform orchestration are tracked separately.
+This document retains implementation history and scientific evidence from
+successive increments. It is **not the current activation contract**.
+Use the [production defaults](../contracts/gstile-production-defaults-v1.md)
+and [cleanup record](../audits/2026-08-28-current-production-cleanup.md):
+the current path is V4, merged GPU arena and a fixed 1,536 MiB RAM cache.
+Historical commands, alternative profiles and rollback selectors below are
+not supported by the cleaned source tree.
 
-## Current loading policy — 2026-08-27
+## Historical loading policy — 2026-08-27
 
 The range scheduler keeps 768 MiB as the default RAM ceiling, but uses a
 byte-bounded segmented LRU: demanded ranges can occupy a protected segment of

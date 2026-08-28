@@ -12,10 +12,6 @@ from shared.dronegs_profile import (
 from shared.facade_process import (
     FACADE_DRONEGS_IDENTITY_PARAMETERS,
     FACADE_DRONEGS_PROFILE_ID,
-    FACADE_LEGACY_DRONEGS_IDENTITY_PARAMETERS,
-    FACADE_LEGACY_DRONEGS_PROFILE_ID,
-    FACADE_PREVIOUS_DRONEGS_IDENTITY_PARAMETERS,
-    FACADE_PREVIOUS_DRONEGS_PROFILE_ID,
     FACADE_PROCESS_OVERRIDES,
     FACADE_QUALIFICATION_POLICY_ID,
     FACADE_QUALIFICATION_THRESHOLDS,
@@ -45,36 +41,6 @@ def expected_profile_identity(
                     FACADE_PROCESS_OVERRIDES.get("gs_maximum_scale_growth_factor", 54.59815)
                 ),
                 "capacity_targeted_growth": bool(FACADE_PROCESS_OVERRIDES.get("gs_capacity_targeted_growth", False)),
-            }
-        )
-        return expected
-    if profile_id == FACADE_LEGACY_DRONEGS_PROFILE_ID:
-        expected = dict(FACADE_LEGACY_DRONEGS_IDENTITY_PARAMETERS)
-        expected.update(
-            {
-                "capacity_mode": "fixed",
-                "capacity_floor": int(expected["cap_max"]),
-                "target_gaussian_spacing_pixels": 0.0,
-                "resident_partitioning": False,
-                "initial_scale_policy": "local-knn",
-                "initial_max_projected_sigma_pixels": 2.0,
-                "maximum_scale_growth_factor": 54.59815,
-                "capacity_targeted_growth": False,
-            }
-        )
-        return expected
-    if profile_id == FACADE_PREVIOUS_DRONEGS_PROFILE_ID:
-        expected = dict(FACADE_PREVIOUS_DRONEGS_IDENTITY_PARAMETERS)
-        expected.update(
-            {
-                "capacity_mode": "adaptive",
-                "capacity_floor": 5_000_000,
-                "target_gaussian_spacing_pixels": 3.6,
-                "resident_partitioning": True,
-                "initial_scale_policy": "local-knn",
-                "initial_max_projected_sigma_pixels": 2.0,
-                "maximum_scale_growth_factor": 54.59815,
-                "capacity_targeted_growth": False,
             }
         )
         return expected

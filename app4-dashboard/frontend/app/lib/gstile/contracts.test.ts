@@ -4,7 +4,7 @@ import { decodeGsTileManifest, resolveGsTilePackUrl } from "./contracts";
 const manifest = () => ({
   schema: "droneai-gstile",
   version: 1,
-  profile: "dronegs-sh3-opacity-sh3-q96",
+  profile: "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4",
   bundleId: `sha256:${"a".repeat(64)}`,
   source: {
     sha256: "b".repeat(64),
@@ -19,6 +19,8 @@ const manifest = () => ({
     {
       id: "r",
       bounds: { min: [0, 0, 0], max: [1, 1, 1] },
+      renderBounds: { min: [-0.5, -0.5, -0.5], max: [1.5, 1.5, 1.5] },
+      geometricError: 0,
       gaussianCount: 1,
       tile: {
         pack: "r",
@@ -55,7 +57,9 @@ const manifest = () => ({
     leafCount: 1,
     packBytes: 128,
     bytesPerGaussian: 128,
-    lod: "leaf-only",
+    lod: "deterministic-adaptive-cost-moment-opacity-refit-v4",
+    proxyCount: 0,
+    proxyRecords: 0,
   },
 });
 
@@ -125,15 +129,21 @@ const lodManifest = () => {
   ];
   return {
     ...base,
-    profile: "dronegs-sh3-opacity-sh3-q96-minhash-lod-v1",
+    profile: "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4",
     source: { ...base.source, gaussianCount: 2 },
-    nodes,
+    nodes: nodes.map((node) => ({
+      ...node,
+      renderBounds: {
+        min: node.bounds.min.map((coordinate) => coordinate - 0.5),
+        max: node.bounds.max.map((coordinate) => coordinate + 0.5),
+      },
+    })),
     packs,
     statistics: {
       leafCount: 2,
       packBytes: 384,
       bytesPerGaussian: 192,
-      lod: "deterministic-minhash-replacement-v1",
+      lod: "deterministic-adaptive-cost-moment-opacity-refit-v4",
       exactPackBytes: 256,
       proxyCount: 1,
       proxyRecords: 1,
@@ -143,35 +153,24 @@ const lodManifest = () => {
 };
 
 describe("GSTile browser contract", () => {
-  it("accepts the version-one baseline manifest", () => {
+  it("accepts a single-leaf V4 manifest", () => {
     expect(decodeGsTileManifest(manifest()).root).toBe("r");
   });
 
-  it("accepts a separate deterministic replacement-LOD profile", () => {
+  it("accepts a hierarchical V4 manifest", () => {
     const decoded = decodeGsTileManifest(lodManifest());
     expect(decoded.nodes.find((node) => node.id === "r")?.lodTile?.recordCount).toBe(
       1,
     );
   });
 
-  it("accepts the spatially stratified replacement-LOD profile", () => {
-    const value = lodManifest();
-    value.profile = "dronegs-sh3-opacity-sh3-q96-stratified-lod-v2";
-    value.statistics.lod = "deterministic-morton-stratified-replacement-v2";
-    const decoded = decodeGsTileManifest(value);
-    expect(decoded.profile).toBe(
-      "dronegs-sh3-opacity-sh3-q96-stratified-lod-v2",
-    );
-  });
-
-  it("accepts the moment-matched replacement-LOD profile", () => {
-    const value = lodManifest();
-    value.profile = "dronegs-sh3-opacity-sh3-q96-moment-lod-v3";
-    value.statistics.lod = "deterministic-morton-moment-matched-v3";
-    const decoded = decodeGsTileManifest(value);
-    expect(decoded.profile).toBe(
-      "dronegs-sh3-opacity-sh3-q96-moment-lod-v3",
-    );
+  it.each([
+    "dronegs-sh3-opacity-sh3-q96",
+    "dronegs-sh3-opacity-sh3-q96-minhash-lod-v1",
+    "dronegs-sh3-opacity-sh3-q96-stratified-lod-v2",
+    "dronegs-sh3-opacity-sh3-q96-moment-lod-v3",
+  ])("rejects retired profile %s", (profile) => {
+    expect(() => decodeGsTileManifest({ ...manifest(), profile })).toThrow(/profile/);
   });
 
   it("accepts several independently quantized tiles in one canonical pack", () => {

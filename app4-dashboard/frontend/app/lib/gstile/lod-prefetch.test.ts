@@ -41,7 +41,7 @@ const manifest = (): GsTileManifest => {
   return {
     schema: "droneai-gstile",
     version: 1,
-    profile: "dronegs-sh3-opacity-sh3-q96",
+    profile: "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4",
     bundleId: `sha256:${"f".repeat(64)}`,
     source: {
       sha256: "e".repeat(64),

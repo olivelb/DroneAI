@@ -14,7 +14,6 @@ if str(APP1_ROOT) not in sys.path:
 from gaussian_training.qualification import (  # noqa: E402
     compare_native_crop_tiling_manifests,
     compare_performance_manifests,
-    compare_qualification_manifests,
     compare_resident_seed_contract_manifests,
 )
 
@@ -40,7 +39,7 @@ def _manifest(
             "held_out_image_count": 16,
         },
         "parameters": {
-            "profile_id": "high-quality-v3",
+            "profile_id": "high-quality-v4",
             "optimizer_profile": profile,
             "pruning_policy": "spatial-bounds",
             "raster_profile": "fastgs",
@@ -79,49 +78,6 @@ def _manifest(
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
-
-
-def test_compare_controlled_qualification_runs(tmp_path):
-    report = compare_qualification_manifests(
-        [
-            _manifest(tmp_path / "reference.json", "reference-absolute", 0.0),
-            _manifest(
-                tmp_path / "abs025.json",
-                "reference-absolute-absgrad025",
-                0.25,
-            ),
-        ],
-        expected_profiles={
-            "reference-absolute",
-            "reference-absolute-absgrad025",
-        },
-    )
-
-    assert report["baseline_optimizer_profile"] == "reference-absolute"
-    assert report["runs"][1]["delta_from_baseline"]["psnr"] == pytest.approx(0.25)
-    assert report["runs"][1]["lpips"] is None
-    assert report["runs"][1]["delta_from_baseline"]["pixel_weighted_psnr"] == pytest.approx(0.25)
-
-
-def test_compare_rejects_uncontrolled_parameter_drift(tmp_path):
-    reference = _manifest(tmp_path / "reference.json", "reference-absolute", 0.0)
-    drifted = _manifest(
-        tmp_path / "drifted.json",
-        "reference-absolute-absgrad025",
-        0.25,
-        seed=43,
-    )
-
-    with pytest.raises(ValueError, match="outside the allowed"):
-        compare_qualification_manifests([reference, drifted])
-
-
-def test_compare_requires_unique_profiles(tmp_path):
-    first = _manifest(tmp_path / "first.json", "reference-absolute", 0.0)
-    second = _manifest(tmp_path / "second.json", "reference-absolute", 0.0)
-
-    with pytest.raises(ValueError, match="must be unique"):
-        compare_qualification_manifests([first, second])
 
 
 def test_compare_native_crop_tiling_runs(tmp_path):

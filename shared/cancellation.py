@@ -105,7 +105,9 @@ def _cancellation_record(
             Mission.organization_id == target_organization_id
         )
     if for_update:
-        query = query.with_for_update()
+        # Cancellation changes state, not parent keys. Keep child FK inserts
+        # compatible while serializing concurrent cancellation requests.
+        query = query.with_for_update(key_share=True)
     return query.first()
 
 

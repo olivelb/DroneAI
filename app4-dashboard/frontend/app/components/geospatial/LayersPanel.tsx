@@ -28,7 +28,7 @@ interface LayersPanelProps {
   savedRasterStyles: RasterLayerStyle[];
   rasterStyleName: string;
   savingRasterStyle: boolean;
-  showLegacy: boolean;
+  showPipeline: boolean;
   showManual: boolean;
   analyses: AnalysisRun[];
   visibleRuns: string[];
@@ -37,7 +37,7 @@ interface LayersPanelProps {
   onRasterStyleNameChange: (name: string) => void;
   onSavedRasterStyleApply: (style: RasterLayerStyle) => void;
   onRasterStyleSave: () => void;
-  onLegacyChange: (visible: boolean) => void;
+  onPipelineChange: (visible: boolean) => void;
   onManualChange: (visible: boolean) => void;
   onRunVisibilityChange: (runId: string, visible: boolean) => void;
 }
@@ -52,7 +52,7 @@ export default function LayersPanel({
   savedRasterStyles,
   rasterStyleName,
   savingRasterStyle,
-  showLegacy,
+  showPipeline,
   showManual,
   analyses,
   visibleRuns,
@@ -61,7 +61,7 @@ export default function LayersPanel({
   onRasterStyleNameChange,
   onSavedRasterStyleApply,
   onRasterStyleSave,
-  onLegacyChange,
+  onPipelineChange,
   onManualChange,
   onRunVisibilityChange,
 }: LayersPanelProps) {
@@ -119,8 +119,8 @@ export default function LayersPanel({
         {[
           {
             labelKey: "layers.pipelineDetections" as MessageKey,
-            visible: showLegacy,
-            toggle: onLegacyChange,
+            visible: showPipeline,
+            toggle: onPipelineChange,
           },
           {
             labelKey: "layers.manualAnnotations" as MessageKey,

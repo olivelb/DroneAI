@@ -19,9 +19,7 @@ from shared.stage_execution import (
 from shared.stage_workspace import (
     PublishedWorkspace,
     RestoredWorkspace,
-    artifact_manifest_v2_write_enabled,
     publish_workspace,
-    publish_workspace_v2,
     restore_workspace_measured,
     workspace_transfer_provenance,
 )
@@ -80,12 +78,6 @@ def _publish_stage_workspace(
         context.run_id,
         f"{stage}-workspace",
     )
-    if not artifact_manifest_v2_write_enabled():
-        return publish_workspace(
-            workspace,
-            prefix,
-            cancellation_check=control.raise_if_cancelled,
-        )
     parents: list[ManifestParent] = []
     for source in context.inputs:
         manifest_key = source.metadata.get("manifest_key")
@@ -98,7 +90,7 @@ def _publish_stage_workspace(
                 checksum_sha256=source.checksum_sha256,
             )
         )
-    return publish_workspace_v2(
+    return publish_workspace(
         workspace,
         prefix,
         default_role=f"{stage}-workspace",
@@ -125,13 +117,7 @@ def _publish_product_workspace(
         context.run_id,
         f"{stage}-workspace",
     )
-    if not artifact_manifest_v2_write_enabled():
-        return publish_workspace(
-            product_root,
-            prefix,
-            cancellation_check=control.raise_if_cancelled,
-        )
-    return publish_workspace_v2(
+    return publish_workspace(
         product_root,
         prefix,
         default_role=default_role,

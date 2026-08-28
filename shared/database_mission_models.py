@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -227,6 +228,16 @@ class MissionStageRun(RequiredTimestampMixin, Base):
             name="uq_mission_stage_run_attempt",
         ),
         UniqueConstraint("idempotency_key", name="uq_mission_stage_run_idempotency"),
+        ForeignKeyConstraint(
+            ["analysis_run_id", "mission_id"],
+            ["ai_analysis_runs.id", "ai_analysis_runs.mission_id"],
+            name="fk_stage_analysis_mission", ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "analysis_run_id IS NULL OR stage = 'detection'",
+            name="ck_stage_analysis_detection",
+        ),
+        Index("ix_stage_analysis_attempt", "analysis_run_id", "attempt"),
         CheckConstraint(
             _values_check("stage", MISSION_STAGE_TYPES),
             name="ck_mission_stage_runs_stage",
@@ -260,6 +271,7 @@ class MissionStageRun(RequiredTimestampMixin, Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_id = Column(String(36), unique=True, nullable=False, default=lambda: str(uuid4()), index=True)
     mission_id = Column(Integer, ForeignKey("missions.id", ondelete="CASCADE"), nullable=False, index=True)
+    analysis_run_id = Column(Integer, nullable=True)
     stage = Column(String(32), nullable=False)
     attempt = Column(Integer, nullable=False, default=0)
     status = Column(String(32), nullable=False, default="blocked")

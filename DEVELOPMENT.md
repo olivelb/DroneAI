@@ -27,7 +27,7 @@ APT-based systems, creates or refreshes `.venv` from the committed development
 lock and runs the shared static checks. Set `PYTHON_BIN` to select a supported
 Python interpreter explicitly.
 
-The development lock pins `pip` 26.1.2 so the pinned `pip-tools` compiler can
+The development lock pins `pip` 26.2.1 so the pinned `pip-tools` compiler can
 regenerate every lock from its committed input file with an audited toolchain.
 
 Run the checks:
@@ -57,12 +57,13 @@ Manual dispatch retains the complete suite for release qualification or an
 explicit recheck. The selector and its regression tests live in
 `scripts/ci/select_ci_jobs.py` and `tests/test_ci_change_scopes.py`. The always
 present `CI gate` accepts successful or intentionally skipped scoped jobs and
-fails for any failed or cancelled selected job; branch protection requires
-this aggregate check instead of every conditional matrix entry.
+fails for any failed or cancelled selected job. Branch protection requires
+this aggregate check and `CUDA validation gate`. Split database model modules
+and migration verifier changes also select the real PostgreSQL migration gate.
 
 Coverage uses branch measurement across the
 application and local tools, with a repository-wide non-regression floor of
-60%. The current CPU suite measures 68%, leaving eight points of headroom.
+60%. The current CPU suite measures 70%, leaving ten points of headroom.
 That floor is a ratchet, not a completeness claim: new or changed pure
 logic is expected to receive focused unit tests even when subprocess, CUDA or
 external-service boundaries require integration tests.
@@ -111,9 +112,9 @@ local contracts. The complete app2 worker now passes the same strict gate:
 loading and segmentation, and `tile_detection_workflow.py` owns download,
 geolocation, publication and attempt-scoped progress state.
 The app3 entrypoint is likewise limited to Kafka lifecycle composition;
-`processing_dispatcher.py` routes validated events while
-`legacy_aggregation.py` isolates the initial mission compatibility path and
-its durable recovery.
+`processing_dispatcher.py` routes validated events to the current analysis
+workflow and rejects detections without an analysis run ID. Shared overlap
+deduplication lives in `processing_core.py`.
 The dashboard API strict-typing ratchet covers the package boundary,
 RBAC/session security, Kafka/outbox publication, transactional status inbox
 and WebSocket fan-out, Kubernetes status records and image preview helpers.
@@ -134,9 +135,8 @@ dashboard HTTP route module is therefore covered without broad ignores.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.
 
-Kafka event payloads are defined once in `shared/event_schemas.py`. The seven
-version-one event families (`mission`, `orthomosaic`, `image_tile`,
-`tile_detection`, `status`, `control`, and `dead_letter`) share a trace
+Kafka event payloads are defined once in `shared/event_schemas.py`. The three
+version-one event families (`status`, `control`, and `dead_letter`) share a trace
 envelope and receive strict field-level validation while allowing additive
 extension fields. Regenerate the machine-readable contract after changing a
 model:
@@ -148,20 +148,15 @@ python tools/export_event_schemas.py
 `make static` verifies that
 `docs/contracts/kafka-events-v1.schema.json` is current.
 
-Tile work uses `shared.kafka_partitioning.tile_work_key()` at both the
-`image-tiles` and `tile-detections` boundaries. Keep the key stable across
-attempts and distinct across tile indices: retries of one logical tile require
-ordering, while separate tiles must remain available to separate consumer
-replicas. Helm topic definitions may increase partition counts but never
-reduce them. Drain tile topics before an increase because Kafka can remap keys
-when the partition count changes.
+Control and status events use tenant-scoped mission keys. Compute runs through
+durable Stage Jobs and immutable manifests; Kafka compute contracts and
+worker inbox leases have been removed. Helm topic definitions may increase
+partition counts but never reduce them.
 
-Focused worker tests also exercise RTK candidate acceptance, rejection, cache
-reuse and bounded fallback, plus mandatory publication assets, GCP provenance,
-best-effort recovery uploads and aerial/facade completion routing.
-AI model-provenance tests additionally require immutable SAM 3 revisions,
-streaming artifact hashes, bounded Kafka manifests and rejection of mixed-model
-tile results within one durable analysis run.
+Current tests exercise RTK promotion/rejection, bounded reconstruction,
+versioned workspace restore/publication, GCP provenance, coverage gates and
+aerial/facade routing. Detection tests check immutable model identity, indexed
+shard completeness and atomic artifact/feature publication.
 
 GPU and external-service tests are excluded from the default test command:
 
@@ -183,7 +178,7 @@ CUDA container validation is split deliberately. The hosted
 portable DroneGS binary inside it, and builds the `dronegs-builder` stages from
 both production Dockerfiles. A parallel matrix prepares the pinned external
 COLMAP dependencies, builds both final CUDA runtime images, emits their Syft
-CycloneDX and Trivy HIGH/CRITICAL evidence, and rejects fixable CRITICAL
+CycloneDX and Trivy HIGH/CRITICAL evidence, and rejects fixable HIGH and CRITICAL
 findings. These hosted jobs validate Docker recipes and toolchains without
 claiming to exercise a GPU. Pull requests may start the lightweight CUDA
 selector when relevant files change, but do not run either costly build job
@@ -235,7 +230,7 @@ self-hosted GPU runner before manually requesting physical-GPU qualification.
 The hosted CI builds the dashboard API, processing worker, CUDA COLMAP base and
 local Gaussian runtime images, then generates a CycloneDX JSON SBOM with Syft
 and a HIGH/CRITICAL JSON vulnerability report with Trivy for each image.
-Fixable CRITICAL findings fail the image job; unfixed findings remain visible
+Fixable HIGH and CRITICAL findings fail the image job; unfixed findings remain visible
 in the report without making a release impossible. The commit-scoped
 `supply-chain-<image>-<sha>` artifacts are retained for 30 days, including
 failed jobs. Syft and Trivy container tags and multi-architecture digests are
@@ -349,3 +344,40 @@ dashboard:
 
 Use `./deploy.sh <mode> --no-build` while iterating on runtime configuration.
 See [`DEPLOYMENT.md`](DEPLOYMENT.md) for lifecycle and troubleshooting.
+
+
+## Hardware WebGPU image tests
+
+The GSTile Playwright project requires a real V4 bundle and hardware WebGPU.
+It refuses software adapters; do not add SwiftShader or software-fallback flags.
+The fixture must be suitable for visible rendering. API routes are mocked;
+packs, range requests, decode, GPU rendering and camera interactions are real.
+
+On a host exposing hardware WebGPU to Chromium, build the frontend then run
+from `app4-dashboard/frontend`:
+
+```bash
+GSTILE_BUNDLE_ROOT=/absolute/path/to/current-v4-bundle   corepack npm run test:e2e -- --project=gstile-webgpu --workers=1
+```
+
+On this WSL host, use Windows Chrome and Windows Node. First build and start
+Next in WSL on `127.0.0.1:3000`. Then, in a second WSL terminal:
+
+```bash
+cd /home/olivier/droneAI/app4-dashboard/frontend
+export GSTILE_BUNDLE_ROOT=/absolute/path/to/current-v4-bundle
+export GSTILE_EXTERNAL_SERVER=1
+export GSTILE_CHROME_EXECUTABLE='C:\Program Files\Google\Chrome\Application\chrome.exe'
+export CI=true
+export WSLENV="${WSLENV:+$WSLENV:}GSTILE_BUNDLE_ROOT/p:GSTILE_EXTERNAL_SERVER:GSTILE_CHROME_EXECUTABLE:CI"
+test_cli=$(wslpath -w "$PWD/node_modules/playwright/cli.js")
+"/mnt/c/Program Files/nodejs/node.exe" "$test_cli" test   --project=gstile-webgpu --workers=1 --retries=0 </dev/null
+```
+
+Windows Chrome uses a temporary browser profile; no personal profile is used.
+Windows Node reads the authoritative source and pure JavaScript Playwright
+dependencies over WSL UNC paths. No Windows repository clone is needed.
+`GSTILE_EXTERNAL_SERVER=1` means the caller owns the Next process and must stop
+it afterwards. Omit it when Playwright should manage its own WSL server.
+Adapter identity is attached to the report. The small synthetic cleanup fixture
+does not qualify large-scene LOD transitions or scientific image quality.

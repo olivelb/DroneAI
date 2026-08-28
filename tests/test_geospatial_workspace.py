@@ -4,7 +4,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from shared.database import AIAnalysisRun, AIAnalysisTile, Mission
-from shared.event_contracts import deterministic_event_id
 from shared.geospatial_workspace import (
     bounds_intersect,
     geometry_bounds,
@@ -118,9 +117,3 @@ def test_analysis_tile_receipts_are_unique_per_run_not_per_mission():
         )
         with pytest.raises(IntegrityError):
             session.commit()
-
-
-def test_kafka_tile_identity_is_scoped_to_analysis_run():
-    first = deterministic_event_id("image_tile", "mission", "run-a", 4)
-    second = deterministic_event_id("image_tile", "mission", "run-b", 4)
-    assert first != second

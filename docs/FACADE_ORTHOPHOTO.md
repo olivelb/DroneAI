@@ -174,7 +174,7 @@ as a fallback.
 - facade missions use the same adaptive resident core/buffer process as maps.
   The selected production profile controls the scientific envelope: qualified
   `normal-v3` uses 15,000 iterations, a 3 M scene floor and an 8-pixel density
-  target, while candidate `high-quality-v4` uses 30,000 iterations, a 5 M
+  target, while qualified `high-quality-v4` uses 30,000 iterations, a 5 M
   floor, a 6 M hard resident cap and a 3.6-pixel target. The detected VRAM ceiling can reduce each
   resident PLY and increase the number of wall-plane blocks without reducing
   the requested total surface density;

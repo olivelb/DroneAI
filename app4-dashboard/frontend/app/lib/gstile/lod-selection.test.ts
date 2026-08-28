@@ -14,7 +14,7 @@ const tile = (recordCount: number) => ({
 const manifest = (): GsTileManifest => ({
   schema: "droneai-gstile",
   version: 1,
-  profile: "dronegs-sh3-opacity-sh3-q96-minhash-lod-v1",
+  profile: "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4",
   bundleId: `sha256:${"a".repeat(64)}`,
   source: {
     sha256: "b".repeat(64),
@@ -54,7 +54,7 @@ const manifest = (): GsTileManifest => ({
     leafCount: 2,
     packBytes: 0,
     bytesPerGaussian: 0,
-    lod: "deterministic-minhash-replacement-v1",
+    lod: "deterministic-adaptive-cost-moment-opacity-refit-v4",
   },
 });
 

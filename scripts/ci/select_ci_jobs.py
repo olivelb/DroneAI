@@ -65,7 +65,6 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             for directory in (
                 "app1-colmap",
                 "app2-ia",
-                "app3-processing",
                 "app4-dashboard/api",
                 "shared",
                 "alembic",
@@ -84,7 +83,6 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
                     for directory in (
                         "app1-colmap",
                         "app2-ia",
-                        "app3-processing",
                         "app4-dashboard/api",
                         "shared",
                         "tools",
@@ -106,14 +104,21 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             selected["docs"] = True
         if _under(path, "app1-colmap/dronegs") and not path.endswith(".md"):
             selected["dronegs"] = True
-        if _under(path, "alembic") or path in {
+        database_model = (
+            _under(path, "shared")
+            and PurePosixPath(path).name.startswith("database")
+            and path.endswith(".py")
+        )
+        migration_verifier = (
+            path.startswith("scripts/ci/verify_") and path.endswith("migration.py")
+        )
+        if database_model or migration_verifier or _under(path, "alembic") or path in {
             "alembic.ini",
             "app4-dashboard/api/stage_orchestrator.py",
             "shared/config.py",
             "shared/database.py",
             "tests/integration/test_stage_scheduler_postgres.py",
             "scripts/ci/verify_rolling_migration.py",
-            "tools/adopt_legacy_storage.py",
             "requirements/dev.in",
             "requirements/dev.txt",
         }:
@@ -128,8 +133,7 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
                 ".github/compose.http-e2e.yaml",
                 ".github/compose.integration.yaml",
                 "alembic.ini",
-                "compose.local.yaml",
-                "tools/adopt_legacy_storage.py",
+                "compose.test.yaml",
                 "requirements/dev.in",
                 "requirements/dev.txt",
             }
@@ -146,7 +150,6 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
         if (
             _under(path, "shared")
             or _under(path, "app2-ia")
-            or _under(path, "app3-processing")
             or _under(path, "app4-dashboard/api")
             or _under(path, "alembic")
             or path
@@ -154,7 +157,6 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
                 ".dockerignore",
                 "alembic.ini",
                 "app2-ia/Dockerfile",
-                "app3-processing/Dockerfile",
                 "app4-dashboard/api/Dockerfile",
                 "requirements/api.in",
                 "requirements/api.txt",

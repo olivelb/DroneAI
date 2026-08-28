@@ -59,10 +59,6 @@ workers retain their operator connection.
   value: {{ $root.Values.dashboardApi.environment | quote }}
 - name: KAFKA_BROKER
   value: {{ default (printf "my-kafka.%s.svc.cluster.local:9092" $root.Values.global.namespace) $root.Values.kafka.broker | quote }}
-- name: INBOX_LEASE_SECONDS
-  value: {{ $root.Values.kafka.workerInbox.leaseSeconds | quote }}
-- name: INBOX_BUSY_RETRY_SECONDS
-  value: {{ $root.Values.kafka.workerInbox.busyRetrySeconds | quote }}
 - name: CANCELLATION_POLL_SECONDS
   value: {{ $root.Values.kafka.cancellationPollSeconds | quote }}
 - name: S3_ENDPOINT

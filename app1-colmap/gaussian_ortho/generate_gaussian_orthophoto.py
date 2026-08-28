@@ -31,7 +31,6 @@ import numpy as np
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
-    effective_raster_profile,
 )
 from shared.facade_process import FACADE_PARAMETER_DEFAULTS
 
@@ -218,10 +217,7 @@ def _reusable_dronegs_result(
         "optimizer_profile": request.dronegs.optimizer_profile,
         "pruning_policy": request.dronegs.pruning_policy,
         "raster_profile": request.dronegs.raster_profile,
-        "effective_raster_profile": effective_raster_profile(
-            request.dronegs.raster_profile,
-            request.dronegs.optimizer_profile,
-        ),
+        "effective_raster_profile": request.dronegs.raster_profile,
         "sh_degree_interval": request.dronegs.sh_degree_interval,
         "checkpoint_every": request.dronegs.checkpoint_every,
         "test_every": request.dronegs.test_every,
@@ -1962,7 +1958,8 @@ def _qualify_gaussian_density_for_rasterization(
         config.vol_id,
         "GAUSS",
         95,
-        "Scientific density qualification warning: " + message
+        "Scientific density qualification warning: "
+        + message
         + " Continuing because the expert density gate override is active.",
         config.report_fn,
     )
@@ -2465,9 +2462,7 @@ def generate_gaussian_orthophoto(
             f"using the {host_cache_plan.limit_mib} MiB compatibility ceiling."
         )
     else:
-        cache_message = (
-            f"DroneGS host image cache ceiling: {host_cache_plan.limit_mib} MiB (explicit)."
-        )
+        cache_message = f"DroneGS host image cache ceiling: {host_cache_plan.limit_mib} MiB (explicit)."
     _report(vol_id, "GAUSS", 1, cache_message, report_fn)
 
     config = GaussianOrthoConfig(
@@ -2618,6 +2613,7 @@ def generate_gaussian_orthophoto(
     )
     phase_timings["rasterization"] = perf_counter() - phase_started
     from .raster_product import finalize_gaussian_raster_product
+
     phase_started = perf_counter()
     result = finalize_gaussian_raster_product(
         config,
@@ -2627,15 +2623,15 @@ def generate_gaussian_orthophoto(
         final_ply=(
             unified_ply_file
             if resume_filtered_partitions
-            else training_phase.training_state.final_ply if training_phase is not None else None
+            else training_phase.training_state.final_ply
+            if training_phase is not None
+            else None
         ),
         cupy_version=cp.__version__,
     )
     phase_timings["quality_and_geotiff_publication"] = perf_counter() - phase_started
     result["preparation_reports"] = (
-        list(training_phase.training_state.preparation_reports)
-        if training_phase is not None
-        else []
+        list(training_phase.training_state.preparation_reports) if training_phase is not None else []
     )
     result["phase_timings_seconds"] = {name: round(seconds, 6) for name, seconds in phase_timings.items()}
     return result

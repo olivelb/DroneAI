@@ -115,7 +115,7 @@ def build_gcp_bundle_files(
 
 def bundle_blob(
     data: bytes,
-    organization_id: str | None = None,
+    organization_id: str,
 ) -> dict[str, Any]:
     checksum = hashlib.sha256(data).hexdigest()
     return {
@@ -128,7 +128,7 @@ def bundle_blob(
     }
 
 
-def _bundle_organization(payload: dict[str, Any]) -> tuple[int, str | None]:
+def _bundle_organization(payload: dict[str, Any]) -> str:
     schema_version = payload.get("schema_version")
     expected_fields = {
         "schema_version",
@@ -138,38 +138,28 @@ def _bundle_organization(payload: dict[str, Any]) -> tuple[int, str | None]:
         "accuracy_csv",
         "quality",
     }
-    bundle_organization: str | None = None
-    if schema_version == 2:
-        expected_fields.add("organization_id")
-        raw_organization = payload.get("organization_id")
-        if not isinstance(raw_organization, str):
-            raise ValueError("GCP bundle organization is invalid")
-        bundle_organization = validate_organization_id(raw_organization)
-        if bundle_organization == LEGACY_ORGANIZATION_ID:
-            raise ValueError("GCP bundle v2 requires a non-legacy organization")
-    elif schema_version != 1:
+    if type(schema_version) is not int or schema_version != 2:
         raise ValueError("Unsupported GCP bundle schema version")
+    expected_fields.add("organization_id")
+    raw_organization = payload.get("organization_id")
+    if not isinstance(raw_organization, str):
+        raise ValueError("GCP bundle organization is invalid")
+    bundle_organization = validate_organization_id(raw_organization)
+    if bundle_organization == LEGACY_ORGANIZATION_ID:
+        raise ValueError("GCP bundle v2 requires a non-legacy organization")
     if set(payload) != expected_fields:
         raise ValueError("GCP bundle fields are invalid")
-    return schema_version, bundle_organization
+    return bundle_organization
 
 
 def _validate_bundle_tenant(
-    schema_version: int,
-    bundle_organization: str | None,
+    bundle_organization: str,
     expected_organization_id: str | None,
-    *,
-    allow_legacy_global: bool,
 ) -> None:
     if expected_organization_id is None:
         return
     expected_organization = validate_organization_id(expected_organization_id)
-    if expected_organization == LEGACY_ORGANIZATION_ID:
-        if schema_version != 1:
-            raise ValueError("Legacy mission requires GCP bundle v1")
-    elif bundle_organization != expected_organization and not (
-        allow_legacy_global and schema_version == 1
-    ):
+    if bundle_organization != expected_organization:
         raise ValueError("GCP bundle organization does not match mission")
 
 
@@ -218,7 +208,7 @@ def _validate_bundle_quality(payload: dict[str, Any]) -> None:
 def _validated_bundle_descriptor(
     payload: dict[str, Any],
     name: str,
-    bundle_organization: str | None,
+    bundle_organization: str,
 ) -> dict[str, Any]:
     descriptor = payload.get(name)
     if not isinstance(descriptor, dict) or set(descriptor) != {
@@ -248,18 +238,15 @@ def validate_gcp_bundle(
     payload: object,
     *,
     expected_organization_id: str | None = None,
-    allow_legacy_global: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Fail closed on a stage-supplied immutable GCP bundle descriptor."""
 
     if not isinstance(payload, dict):
         raise ValueError("GCP bundle fields are invalid")
-    schema_version, bundle_organization = _bundle_organization(payload)
+    bundle_organization = _bundle_organization(payload)
     _validate_bundle_tenant(
-        schema_version,
         bundle_organization,
         expected_organization_id,
-        allow_legacy_global=allow_legacy_global,
     )
     _validate_bundle_identity(payload)
     _validate_bundle_quality(payload)

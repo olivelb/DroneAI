@@ -1,4 +1,4 @@
-{{- if and .Values.colmapWorker.enabled .Values.colmapWorker.workVolume.persistentClaim.enabled }}
+{{- if and .Values.stageJobs.enabled .Values.colmapWorker.workVolume.persistentClaim.enabled }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

@@ -20,9 +20,7 @@ environment so local development follows the same catalogue-producing flow.
 Migration `0022` imports the newest completed upload session for each existing
 dataset prefix and links existing missions when owner and prefix both match.
 Raw S3 prefixes without a catalogue row are intentionally not assigned to a
-tenant. They must be re-ingested. Existing catalogue-backed legacy datasets
-can use the explicit audited workflow in
-[`legacy-adoption-v1.md`](legacy-adoption-v1.md).
+tenant. Historical datasets must be re-ingested; storage adoption is not supported.
 
 Every presigned part binds the exact expected `Content-Length`; the browser
 also checks its Blob slice against the signed size. Before completion, the API

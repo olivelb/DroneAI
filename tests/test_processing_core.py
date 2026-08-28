@@ -1,17 +1,14 @@
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
-APP3_ROOT = Path(__file__).resolve().parents[1] / "app3-processing"
-sys.path.insert(0, str(APP3_ROOT))
+from shared import detection_geometry
+from shared import detection_products as processing_core
 
-import processing_core  # noqa: E402
-from shared import detection_geometry  # noqa: E402
-from processing_core import (  # noqa: E402
+from shared.detection_products import (  # noqa: E402
     build_tile_starts,
     dedupe_mission_detections,
     detections_to_geojson,
@@ -73,6 +70,24 @@ def test_overlapping_detections_are_deduplicated():
 
     assert len(deduped) == 2
     assert {item["confidence"] for item in deduped} == {0.8, 0.9}
+
+
+def test_configured_deduplication_preserves_defaults_and_deployment_overrides(monkeypatch):
+    detections = [
+        _detection(100, 100, 0.80),
+        _detection(102, 100, 0.70, offset=1),
+        _detection(300, 300, 0.90),
+    ]
+    monkeypatch.delenv("UNTILER_DEDUPE_CENTER_THRESHOLD", raising=False)
+    monkeypatch.delenv("UNTILER_DEDUPE_IOU_THRESHOLD", raising=False)
+    assert processing_core.dedupe_configured(detections) == dedupe_mission_detections(
+        detections, center_threshold=40, iou_threshold=0.05
+    )
+    monkeypatch.setenv("UNTILER_DEDUPE_CENTER_THRESHOLD", "0.5")
+    monkeypatch.setenv("UNTILER_DEDUPE_IOU_THRESHOLD", "0.99")
+    assert processing_core.dedupe_configured(detections) == dedupe_mission_detections(
+        detections, center_threshold=0.5, iou_threshold=0.99
+    )
 
 
 def test_spatial_dedupe_avoids_comparing_unrelated_detections(monkeypatch):

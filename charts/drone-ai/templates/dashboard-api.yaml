@@ -1,6 +1,4 @@
-{{- if and .Values.stageJobs.artifactSelectiveRestoreEnabled (not .Values.stageJobs.artifactManifestV2WriteEnabled) }}
-{{- fail "stageJobs.artifactSelectiveRestoreEnabled requires stageJobs.artifactManifestV2WriteEnabled=true" }}
-{{- end }}
+{{- include "colmap.assertWorkDriveConfig" . }}
 {{- if and .Values.stageJobs.detectionFanout.enabled (not .Values.stageJobs.artifactSelectiveRestoreEnabled) }}
 {{- fail "stageJobs.detectionFanout.enabled requires stageJobs.artifactSelectiveRestoreEnabled=true" }}
 {{- end }}
@@ -30,16 +28,16 @@
 {{- fail "dashboardApi.controlWorker.leaderElection.enabled must be true in staging and production" }}
 {{- end }}
 {{- if and $protectedStageJobEnvironment (not .Values.stageJobs.enabled) }}
-{{- fail "stageJobs.enabled must be true in staging and production; fused Kafka compute is development-only" }}
+{{- fail "stageJobs.enabled must be true in staging and production" }}
 {{- end }}
-{{- if and $protectedStageJobEnvironment .Values.colmapWorker.enabled }}
-{{- fail "colmapWorker.enabled must be false in staging and production; use bounded stage Jobs" }}
+{{- if .Values.colmapWorker.enabled }}
+{{- fail "colmapWorker.enabled must be false; fused workers have been retired" }}
 {{- end }}
-{{- if and $protectedStageJobEnvironment .Values.iaWorker.enabled }}
-{{- fail "iaWorker.enabled must be false in staging and production; use bounded stage Jobs" }}
+{{- if hasKey .Values "iaWorker" }}
+{{- fail "iaWorker has been retired; use stageJobs.sam3 and bounded detection Jobs" }}
 {{- end }}
-{{- if and $protectedStageJobEnvironment (gt (int .Values.processingWorker.replicaCount) 0) }}
-{{- fail "processingWorker.replicaCount must be 0 in staging and production; use bounded stage Jobs" }}
+{{- if hasKey .Values "processingWorker" }}
+{{- fail "processingWorker has been retired; use bounded detection Jobs" }}
 {{- end }}
 {{- if and .Values.stageJobs.enabled $protectedStageJobEnvironment }}
 {{- if eq .Values.stageJobs.databaseUrlSecretKey .Values.storage.databaseUrlSecretKey }}
@@ -204,8 +202,6 @@ spec:
           value: {{ .Values.dashboardApi.cors.origins | quote }}
         - name: DRONEAI_EMBED_CONTROL_LOOPS
           value: {{ (not .Values.dashboardApi.controlWorker.enabled) | quote }}
-        - name: DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED
-          value: {{ .Values.dashboardApi.qualityProfileCandidatesEnabled | quote }}
         - name: DRONEAI_AUTH_DISABLED
           value: {{ .Values.dashboardApi.auth.disabled | quote }}
         - name: DRONEAI_DATABASE_AUTH_ENABLED

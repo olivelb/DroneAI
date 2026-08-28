@@ -28,7 +28,7 @@ postgres:
 # install. The fused Kafka worker remains development-only.
 colmapWorker:
   enabled: false
-  tag: "REPLACE_GIT_SHA"
+  # Workspace configuration for Stage Jobs.
   workVolume:
     drives:
       - name: cloud-workspace
@@ -40,7 +40,6 @@ dashboardApi:
   replicaCount: 2
   tag: "REPLACE_GIT_SHA"
   environment: production
-  qualityProfileCandidatesEnabled: false
   databaseUrlSecretKey: api-database-url
   rowLevelSecurityRequired: true
   observability:
@@ -73,7 +72,6 @@ dashboardFrontend:
 
 stageJobs:
   enabled: true
-  artifactManifestV2WriteEnabled: true
   executors:
     reconstruction:
       image: "registry.example.com/drone-colmap@sha256:REPLACE_OCI_DIGEST"
@@ -105,14 +103,6 @@ stageJobs:
     rasterization: drone-ai-stage-rasterization-production
     detection: drone-ai-stage-detection-production
     gaussian_viewer: drone-ai-stage-gaussian-viewer-production
-
-iaWorker:
-  enabled: false
-  tag: "REPLACE_GIT_SHA"
-
-processingWorker:
-  replicaCount: 0
-  tag: "REPLACE_GIT_SHA"
 
 ingress:
   enabled: true

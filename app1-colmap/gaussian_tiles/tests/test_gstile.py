@@ -18,7 +18,6 @@ from gaussian_tiles import (
     GsTileBuildOptions,
     build_gstile_bundle,
     decode_pack,
-    repack_gstile_bundle,
     tiler,
     validate_manifest,
 )
@@ -28,7 +27,7 @@ from gaussian_tiles.tiler import (
     _adaptive_moment_lod_proxy,
     _gaussian_render_bounds,
     _invisible_giant_mask,
-    _moment_matched_lod_proxy,
+    _moment_match_ordered_groups,
     _opacity_design_matrix,
     _proxy_support_error,
     _split_work_file,
@@ -96,15 +95,13 @@ def _sha256(path: Path) -> str:
 
 
 @pytest.mark.parametrize("workers", [2, 4])
-@pytest.mark.parametrize("aggregate", [None, 256 * 1024])
-@pytest.mark.parametrize("strategy", [None, "adaptive-moment"])
-def test_parallel_preparation_keeps_complete_bundle_identical(tmp_path, workers, aggregate, strategy):
+@pytest.mark.parametrize("aggregate", [256 * 1024, 2 * 1024**2])
+def test_parallel_preparation_keeps_complete_bundle_identical(tmp_path, workers, aggregate):
     from dataclasses import replace
     source = tmp_path / "input.ply"
     _write_ply(source, _records(8192))
     options = GsTileBuildOptions(leaf_size=2048, chunk_records=2048,
-                               pack_target_bytes=aggregate, lod_proxy_size=1024 if strategy else None,
-                               lod_proxy_strategy=strategy or "moment-matched")
+                               pack_target_bytes=aggregate, lod_proxy_size=1024)
     serial = tmp_path / "serial"
     parallel = tmp_path / "parallel"
     a = build_gstile_bundle(source, serial, options=options)
@@ -163,7 +160,7 @@ def test_parallel_failure_never_publishes_and_joins_workers(tmp_path, monkeypatc
     with pytest.raises((ValueError, OSError, RuntimeError), match="failed|disk full|cancelled"):
         build_gstile_bundle(source, target, options=GsTileBuildOptions(
             leaf_size=2048, chunk_records=2048, pack_workers=4,
-            lod_proxy_size=None, pack_target_bytes=None,
+            lod_proxy_size=1024, pack_target_bytes=256 * 1024,
             progress_callback=progress, cancellation_check=cancel))
     assert not target.exists()
     assert not (tmp_path / ".bundle.partial").exists()
@@ -180,7 +177,7 @@ def test_parallel_queue_telemetry_and_oversize_keep_bundle_identical(tmp_path):
         events = []
         results.append(build_gstile_bundle(source, tmp_path / str(cap), options=GsTileBuildOptions(
             leaf_size=4096, chunk_records=4096, pack_workers=4,
-            lod_proxy_size=None, pack_target_bytes=None,
+            lod_proxy_size=1024, pack_target_bytes=256 * 1024,
             pack_pending_bytes=cap, progress_callback=events.append)))
         telemetry = next(event for event in events if event["event"] == "pack_preparation")
         assert telemetry["peakPendingBytes"] <= cap
@@ -296,7 +293,7 @@ def test_bundle_filters_only_invisible_giants_before_partition(tmp_path: Path) -
             leaf_size=1_024,
             chunk_records=1_024,
             invisible_gaussian_scale_threshold=0.05,
-            lod_proxy_size=None,
+            lod_proxy_size=1024,
             visibility_opacity_threshold=0.05,
         ),
     )
@@ -354,7 +351,7 @@ def test_tiler_is_deterministic_and_spatially_bounded(tmp_path: Path) -> None:
         leaf_size=1_024,
         chunk_records=1_024,
         progress_callback=events.append,
-        lod_proxy_size=None, pack_target_bytes=None,
+        lod_proxy_size=1024, pack_target_bytes=256 * 1024,
     )
     first = build_gstile_bundle(source, tmp_path / "first", options=options)
     second = build_gstile_bundle(source, tmp_path / "second", options=options)
@@ -366,7 +363,7 @@ def test_tiler_is_deterministic_and_spatially_bounded(tmp_path: Path) -> None:
     assert first.gaussian_count == 2_500
     assert first.leaf_count >= 3
     assert first_manifest["source"]["sha256"] == _sha256(source)
-    assert sum(pack["recordCount"] for pack in first_manifest["packs"]) == 2_500
+    assert sum(node["tile"]["recordCount"] for node in first_manifest["nodes"] if "tile" in node) == 2_500
     for left, right in zip(first_manifest["packs"], second_manifest["packs"]):
         assert left["sha256"] == right["sha256"]
         assert _sha256(first.output / left["path"]) == _sha256(second.output / right["path"])
@@ -400,7 +397,7 @@ def test_tiler_aggregates_adjacent_tiles_losslessly_and_deterministically(
         leaf_size=1_024,
         chunk_records=1_024,
         pack_target_bytes=220_000,
-        lod_proxy_size=None,
+        lod_proxy_size=1024,
     )
     first = build_gstile_bundle(source, tmp_path / "first", options=options)
     second = build_gstile_bundle(source, tmp_path / "second", options=options)
@@ -412,10 +409,10 @@ def test_tiler_aggregates_adjacent_tiles_losslessly_and_deterministically(
     for node in manifest["nodes"]:
         if tile := node.get("tile"):
             tiles_by_pack.setdefault(tile["pack"], []).append(tile)
-    assert len(manifest["packs"]) < sum(len(tiles) for tiles in tiles_by_pack.values())
+    assert len(tiles_by_pack) < sum(len(tiles) for tiles in tiles_by_pack.values())
     assert any(len(tiles) > 1 for tiles in tiles_by_pack.values())
     assert manifest["statistics"]["packCount"] == len(manifest["packs"])
-    assert manifest["statistics"]["representationCount"] == first.leaf_count
+    assert manifest["statistics"]["representationCount"] == first.leaf_count + manifest["statistics"]["proxyCount"]
     assert manifest["statistics"]["packTargetBytes"] == 220_000
     assert first.bundle_id == second.bundle_id
     assert [pack["sha256"] for pack in manifest["packs"]] == [
@@ -424,6 +421,8 @@ def test_tiler_aggregates_adjacent_tiles_losslessly_and_deterministically(
 
     source_ids: list[int] = []
     for pack in manifest["packs"]:
+        if pack["id"] not in tiles_by_pack:
+            continue
         content = (first.output / pack["path"]).read_bytes()
         assert len(content) == pack["byteLength"]
         assert hashlib.sha256(content).hexdigest() == pack["sha256"]
@@ -455,7 +454,7 @@ def test_manifest_rejects_overlapping_aggregate_tile_ranges(tmp_path: Path) -> N
             leaf_size=1_024,
             chunk_records=1_024,
             pack_target_bytes=220_000,
-            lod_proxy_size=None,
+            lod_proxy_size=1024,
         ),
     )
     manifest = json.loads(result.manifest_path.read_text("ascii"))
@@ -536,68 +535,20 @@ def _representation_payloads(
     return payloads
 
 
-def test_repack_preserves_every_canonical_tile_payload(tmp_path: Path) -> None:
-    source = tmp_path / "source.ply"
-    _write_ply(source, _records(5_000))
-    original = build_gstile_bundle(
-        source,
-        tmp_path / "original",
-        options=GsTileBuildOptions(
-            leaf_size=1_024,
-            chunk_records=1_024,
-            lod_proxy_size=1_024,
-            pack_target_bytes=None,
-        ),
-    )
-    first = repack_gstile_bundle(
-        original.output,
-        tmp_path / "first",
-        pack_target_bytes=220_000,
-    )
-    second = repack_gstile_bundle(
-        original.output,
-        tmp_path / "second",
-        pack_target_bytes=220_000,
-    )
-    original_manifest = json.loads(original.manifest_path.read_text("ascii"))
-    first_manifest = json.loads(first.manifest_path.read_text("ascii"))
-    second_manifest = json.loads(second.manifest_path.read_text("ascii"))
-    validate_manifest(first_manifest)
-
-    assert first.pack_count < first.source_pack_count
-    assert first.bundle_id == second.bundle_id
-    assert first_manifest["source"] == original_manifest["source"]
-    assert first_manifest["statistics"]["packGrouping"] == "depth-spatial-v1"
-    depths_by_pack: dict[str, set[int]] = {}
-    for node in first_manifest["nodes"]:
-        for field in ("tile", "lodTile"):
-            if tile := node.get(field):
-                depths_by_pack.setdefault(tile["pack"], set()).add(len(node["id"]) - 1)
-    assert all(len(depths) == 1 for depths in depths_by_pack.values())
-    assert _representation_payloads(original.output, original_manifest) == (
-        _representation_payloads(first.output, first_manifest)
-    )
-    assert [pack["sha256"] for pack in first_manifest["packs"]] == [
-        pack["sha256"] for pack in second_manifest["packs"]
-    ]
-
-
-def test_repack_rejects_corrupt_canonical_source_pack(tmp_path: Path) -> None:
+@pytest.mark.parametrize("profile", [
+    "dronegs-sh3-opacity-sh3-q96",
+    "dronegs-sh3-opacity-sh3-q96-minhash-lod-v1",
+    "dronegs-sh3-opacity-sh3-q96-stratified-lod-v2",
+    "dronegs-sh3-opacity-sh3-q96-moment-lod-v3",
+])
+def test_manifest_rejects_retired_profiles(tmp_path: Path, profile: str) -> None:
     source = tmp_path / "source.ply"
     _write_ply(source, _records(1_024))
-    original = build_gstile_bundle(source, tmp_path / "original")
-    manifest = json.loads(original.manifest_path.read_text("ascii"))
-    pack_path = original.output / manifest["packs"][0]["path"]
-    corrupted = bytearray(pack_path.read_bytes())
-    corrupted[-1] ^= 1
-    pack_path.write_bytes(corrupted)
-
-    with pytest.raises(ValueError, match="SHA-256 mismatch"):
-        repack_gstile_bundle(
-            original.output,
-            tmp_path / "repacked",
-            pack_target_bytes=220_000,
-        )
+    result = build_gstile_bundle(source, tmp_path / "bundle")
+    manifest = json.loads(result.manifest_path.read_text("ascii"))
+    manifest["profile"] = profile
+    with pytest.raises(ValueError, match="Unsupported GSTile profile"):
+        validate_manifest(manifest)
 
 
 def test_manifest_rejects_pack_path_traversal(tmp_path: Path) -> None:
@@ -618,83 +569,6 @@ def test_manifest_rejects_zstd_path_traversal(tmp_path: Path) -> None:
     manifest["packs"][0]["encodings"]["zstd"]["path"] = "../secret.zst"
     with pytest.raises(ValueError, match="escapes"):
         validate_manifest(manifest)
-
-
-def test_stratified_lod_profile_is_deterministic_and_preserves_exact_leaves(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "source.ply"
-    _write_ply(source, _records(5_000))
-    options = GsTileBuildOptions(
-        leaf_size=1_024,
-        chunk_records=1_024,
-        lod_proxy_size=1_024,
-        lod_proxy_strategy="spatial-stratified",
-        pack_target_bytes=None,
-    )
-    first = build_gstile_bundle(source, tmp_path / "first", options=options)
-    second = build_gstile_bundle(source, tmp_path / "second", options=options)
-    legacy = build_gstile_bundle(
-        source,
-        tmp_path / "legacy",
-        options=GsTileBuildOptions(
-            leaf_size=1_024,
-            chunk_records=1_024,
-            lod_proxy_size=1_024,
-            lod_proxy_strategy="minhash",
-            pack_target_bytes=None,
-        ),
-    )
-    first_manifest = json.loads(first.manifest_path.read_text("ascii"))
-    second_manifest = json.loads(second.manifest_path.read_text("ascii"))
-    legacy_manifest = json.loads(legacy.manifest_path.read_text("ascii"))
-
-    validate_manifest(first_manifest)
-    validate_manifest(legacy_manifest)
-    assert first.bundle_id == second.bundle_id
-    assert first_manifest["profile"].endswith("stratified-lod-v2")
-    assert first_manifest["statistics"]["lod"] == (
-        "deterministic-morton-stratified-replacement-v2"
-    )
-    assert legacy_manifest["profile"].endswith("minhash-lod-v1")
-    assert legacy_manifest["statistics"]["lod"] == "deterministic-minhash-replacement-v1"
-    assert first_manifest["statistics"]["proxyCount"] > 0
-    assert sum(
-        node["tile"]["recordCount"]
-        for node in first_manifest["nodes"]
-        if "tile" in node
-    ) == 5_000
-
-    root = next(node for node in first_manifest["nodes"] if node["id"] == "r")
-    assert root["geometricError"] > 0
-    proxy_pack = next(
-        pack
-        for pack in first_manifest["packs"]
-        if pack["id"] == root["lodTile"]["pack"]
-    )
-    decoded = decode_pack(
-        (first.output / proxy_pack["path"]).read_bytes(),
-
-        root["lodTile"]["quantization"],
-    )
-    assert decoded["source_id"].shape == (1_024,)
-    assert np.unique(decoded["source_id"]).shape == (1_024,)
-    assert decoded["source_id"].min() < 100
-    assert decoded["source_id"].max() > 4_900
-    assert np.all(decoded["source_id"] < 5_000)
-
-    first_hashes = {pack["id"]: pack["sha256"] for pack in first_manifest["packs"]}
-    second_hashes = {
-        pack["id"]: pack["sha256"] for pack in second_manifest["packs"]
-    }
-    assert first_hashes == second_hashes
-    legacy_hashes = {
-        pack["id"]: pack["sha256"]
-        for pack in legacy_manifest["packs"]
-        if not pack["id"].startswith("lod-")
-    }
-    exact_hashes = {key: value for key, value in first_hashes.items() if not key.startswith("lod-")}
-    assert exact_hashes == legacy_hashes
 
 
 def test_moment_matched_proxy_conserves_mass_covariance_and_coefficients() -> None:
@@ -727,7 +601,7 @@ def test_moment_matched_proxy_conserves_mass_covariance_and_coefficients() -> No
         working[name] = records[name]
     working["source_id"] = (0, 1)
 
-    proxy = _moment_matched_lod_proxy(working, np.zeros(2), 1)
+    proxy = _moment_match_ordered_groups(working, np.zeros(2), np.array([0]), np.array([2]))
     merged = proxy.records[0]
 
     assert merged["x"] == pytest.approx(0.0, abs=1e-6)
@@ -746,21 +620,6 @@ def test_proxy_support_error_detects_covariance_blur_without_center_motion() -> 
     records["rot_1"] = records["rot_2"] = records["rot_3"] = 0.0
 
     assert _proxy_support_error(records) == pytest.approx(0.75, rel=1e-6)
-
-
-def test_moment_matched_lod_profile_is_explicit(tmp_path: Path) -> None:
-    source = tmp_path / "source.ply"
-    _write_ply(source, _records(2_500))
-    result = build_gstile_bundle(
-        source,
-        tmp_path / "moment",
-        options=GsTileBuildOptions(leaf_size=1_024, chunk_records=1_024, lod_proxy_size=1_024,
-                                  lod_proxy_strategy="moment-matched"),
-    )
-    manifest = json.loads(result.manifest_path.read_text("ascii"))
-    assert manifest["profile"].endswith("moment-lod-v3")
-    assert manifest["statistics"]["lod"] == "deterministic-morton-moment-matched-v3"
-    validate_manifest(manifest)
 
 
 def test_adaptive_v4_is_deterministic_and_has_conservative_render_bounds(
@@ -905,7 +764,7 @@ def test_adaptive_proxy_refits_directional_opacity_after_sigmoid() -> None:
     working["opacity_sh_2"] = (5.0, 0.5)
 
     adaptive = _adaptive_moment_lod_proxy(working, np.zeros(2), 1).records[0]
-    linear = _moment_matched_lod_proxy(working, np.zeros(2), 1).records[0]
+    linear = _moment_match_ordered_groups(working, np.zeros(2), np.array([0]), np.array([2])).records[0]
     design = _opacity_design_matrix(15)
     source_coefficients = np.column_stack(
         (working["opacity"], *(working[f"opacity_sh_{index}"] for index in range(15)))

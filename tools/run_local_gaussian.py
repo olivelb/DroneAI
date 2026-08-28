@@ -85,89 +85,34 @@ class GaussianProfile:
     opacity_sh_enabled: bool = False
 
 
+_PRODUCTION_DEFAULTS = GaussianProfile(
+    backend="dronegs",
+    iterations=15_000,
+    cap_max=1_500_000,
+    sh_degree=3,
+    data_factor=4,
+    max_width=1600,
+    tile_mode=4,
+    resolution=0.05,
+    filter_enabled=True,
+    seed=42,
+    profile_id=DRONEGS_PRODUCTION_PROFILE_V1.profile_id,
+    optimizer_profile=(DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile),
+    pruning_policy=DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy,
+    raster_profile=DRONEGS_PRODUCTION_PROFILE_V1.raster_profile,
+    sh_degree_interval=(DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval),
+    topology_cooldown=(DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown),
+    photometric_finish=(DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish),
+    photometric_mse_percent=(DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent),
+    checkpoint_every=(DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every),
+    test_every=DRONEGS_PRODUCTION_PROFILE_V1.test_every,
+    test_split=DRONEGS_PRODUCTION_PROFILE_V1.test_split,
+    test_guard_percent=(DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent),
+    canary_min_psnr=(DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr),
+    canary_min_ssim=(DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim),
+)
+
 PROFILES: dict[str, GaussianProfile] = {
-    # Fast integration check. The result demonstrates the complete path but is
-    # not intended for visual assessment.
-    "smoke": GaussianProfile(
-        backend="dronegs",
-        iterations=500,
-        cap_max=100_000,
-        sh_degree=0,
-        data_factor=8,
-        max_width=1024,
-        tile_mode=4,
-        resolution=0.25,
-        filter_enabled=False,
-        seed=42,
-        profile_id="dronegs-smoke-v1",
-        optimizer_profile="reference-absolute",
-        pruning_policy="spatial-bounds",
-        raster_profile="bounded",
-        sh_degree_interval=1_000,
-        topology_cooldown=100,
-        photometric_finish=100,
-        photometric_mse_percent=100,
-        checkpoint_every=100,
-        test_every=8,
-        test_split="modulo",
-        test_guard_percent=0,
-        canary_min_psnr=0.0,
-        canary_min_ssim=0.0,
-    ),
-    # Conservative default for the RTX 4070 Laptop GPU used for validation.
-    "low-memory": GaussianProfile(
-        backend="dronegs",
-        iterations=5_000,
-        cap_max=500_000,
-        sh_degree=1,
-        data_factor=4,
-        max_width=1600,
-        tile_mode=4,
-        resolution=0.10,
-        filter_enabled=True,
-        seed=42,
-        profile_id="dronegs-low-memory-v1",
-        optimizer_profile="reference-absolute",
-        pruning_policy="spatial-bounds",
-        raster_profile="bounded",
-        sh_degree_interval=1_000,
-        topology_cooldown=1_000,
-        photometric_finish=1_000,
-        photometric_mse_percent=100,
-        checkpoint_every=1_000,
-        test_every=8,
-        test_split="spatial-block",
-        test_guard_percent=25,
-        canary_min_psnr=15.0,
-        canary_min_ssim=0.10,
-    ),
-    # A follow-up profile for better quality once the low-memory run is stable.
-    "balanced": GaussianProfile(
-        backend="dronegs",
-        iterations=15_000,
-        cap_max=1_500_000,
-        sh_degree=3,
-        data_factor=4,
-        max_width=1600,
-        tile_mode=4,
-        resolution=0.05,
-        filter_enabled=True,
-        seed=42,
-        profile_id=DRONEGS_PRODUCTION_PROFILE_V1.profile_id,
-        optimizer_profile=(DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile),
-        pruning_policy=DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy,
-        raster_profile=DRONEGS_PRODUCTION_PROFILE_V1.raster_profile,
-        sh_degree_interval=(DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval),
-        topology_cooldown=(DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown),
-        photometric_finish=(DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish),
-        photometric_mse_percent=(DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent),
-        checkpoint_every=(DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every),
-        test_every=DRONEGS_PRODUCTION_PROFILE_V1.test_every,
-        test_split=DRONEGS_PRODUCTION_PROFILE_V1.test_split,
-        test_guard_percent=(DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent),
-        canary_min_psnr=(DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr),
-        canary_min_ssim=(DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim),
-    ),
     # Close-range facade production profile. Full 4K training detail is kept
     # and the capacity can retain a coverage-balanced 1.7M-point COLMAP
     # initialization while leaving 15% headroom on an 8 GB RTX GPU.
@@ -214,7 +159,7 @@ def versioned_quality_profile(profile_id: str) -> GaussianProfile:
 
     parameters = quality_profile(profile_id).parameters
     return replace(
-        PROFILES["balanced"],
+        _PRODUCTION_DEFAULTS,
         iterations=int(parameters["gs_iterations"]),
         cap_max=int(parameters["gs_cap_max"]),
         data_factor=int(parameters["gs_data_factor"]),
@@ -231,18 +176,7 @@ def versioned_quality_profile(profile_id: str) -> GaussianProfile:
     )
 
 
-PROFILES["fast"] = versioned_quality_profile("fast-v1")
-PROFILES["fast-resident"] = replace(
-    versioned_quality_profile("fast-v2"),
-    # Qualification-only preview of the production core/buffer path. The
-    # public Fast profile remains monolithic; this local recipe deliberately
-    # trades density for enough resident cells to expose crop and seam defects.
-    capacity_mode="adaptive",
-    capacity_floor=1_500_000,
-    target_gaussian_spacing_pixels=8.0,
-    resident_partitioning=True,
-    resolution=0.05,
-)
+PROFILES["fast"] = versioned_quality_profile("fast-v2")
 PROFILES["normal"] = replace(
     versioned_quality_profile("normal-v3"),
     resolution=0.02,
@@ -259,7 +193,7 @@ PROFILES["high-quality"] = replace(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workspace", type=Path)
-    parser.add_argument("--profile", choices=sorted(PROFILES), default="low-memory")
+    parser.add_argument("--profile", choices=sorted(PROFILES), default="normal")
     parser.add_argument(
         "--run-label",
         type=validated_run_label,
@@ -274,14 +208,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tile-mode", type=int, choices=(1, 2, 4))
     parser.add_argument("--resolution", type=float)
     parser.add_argument("--seed", type=int)
-    parser.add_argument("--optimizer-profile")
+    parser.add_argument("--optimizer-profile", choices=("reference-absolute",))
     parser.add_argument(
         "--pruning-policy",
-        choices=("original", "spatial-bounds"),
+        choices=("spatial-bounds",),
     )
     parser.add_argument(
         "--raster-profile",
-        choices=("auto", "bounded", "fastgs"),
+        choices=("fastgs",),
     )
     parser.add_argument("--sh-degree-interval", type=int)
     parser.add_argument("--topology-cooldown", type=int)
@@ -475,10 +409,7 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
         raise ValueError("sh-degree-interval must be positive")
     if resolved.checkpoint_every <= 0:
         raise ValueError("checkpoint-every must be positive")
-    if (
-        resolved.host_image_cache_mib != 0
-        and not 256 <= resolved.host_image_cache_mib <= 65_536
-    ):
+    if resolved.host_image_cache_mib != 0 and not 256 <= resolved.host_image_cache_mib <= 65_536:
         raise ValueError("host-image-cache-mib must be 0 (auto) or between 256 and 65536")
     if not 0 <= resolved.photometric_mse_percent <= 100:
         raise ValueError("photometric-mse-percent must be between 0 and 100")
@@ -633,7 +564,9 @@ def main() -> int:
     unified_ply_path = (
         args.unified_ply.resolve()
         if args.unified_ply is not None
-        else ortho_path.with_suffix(".gaussians.ply") if resume_filtered else None
+        else ortho_path.with_suffix(".gaussians.ply")
+        if resume_filtered
+        else None
     )
     if unified_ply_path is not None:
         try:

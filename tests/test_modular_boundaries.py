@@ -88,53 +88,6 @@ def test_storage_delegates_immutable_publication_algorithms():
     assert "boto3.client" not in immutable_source
 
 
-def test_processing_worker_delegates_long_running_workflows():
-    main_source = _source("app3-processing/main.py")
-    workflow_source = _source("app3-processing/analysis_workflow.py")
-    publication_source = _source("app3-processing/analysis_publication.py")
-    recovery_source = _source("app3-processing/analysis_recovery.py")
-    tiler_source = _source("app3-processing/orthomosaic_tiler.py")
-    dispatcher_source = _source("app3-processing/processing_dispatcher.py")
-    legacy_source = _source("app3-processing/legacy_aggregation.py")
-
-    assert _line_count("app3-processing/main.py") < 200
-    assert _line_count("app3-processing/analysis_workflow.py") < 750
-    assert _line_count("app3-processing/analysis_publication.py") < 350
-    assert _line_count("app3-processing/analysis_recovery.py") < 250
-    assert "AnalysisWorkflow(" in main_source
-    assert "OrthomosaicTiler(" in main_source
-    assert "ProcessingDispatcher(" in main_source
-    assert "LegacyAggregationWorkflow(" in main_source
-    assert "def recover_analysis_runs" not in main_source
-    assert "def slice_orthomosaic" not in main_source
-    assert "geoalchemy2" not in main_source
-    assert "shared.database" not in main_source
-    assert "import cv2" not in main_source
-    assert "import main" not in workflow_source
-    assert "publication.load_tile_payloads(" in workflow_source
-    assert "recovery.plan_recovery(" in workflow_source
-    assert "analysis_workflow" not in publication_source
-    assert "analysis_workflow" not in recovery_source
-    assert "confluent_kafka" not in publication_source
-    assert "confluent_kafka" not in recovery_source
-    assert "import main" not in tiler_source
-    assert "import main" not in dispatcher_source
-    assert "import main" not in legacy_source
-    assert "confluent_kafka" not in dispatcher_source
-    assert "confluent_kafka" not in legacy_source
-
-    workflow_tree = ast.parse(workflow_source)
-    write_calls = [
-        node
-        for node in ast.walk(workflow_tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_write_verified_json"
-    ]
-    assert write_calls
-    assert all(len(call.args) == 3 for call in write_calls)
-
-
 def test_dataset_uploads_separate_contract_storage_and_recovery_boundaries():
     commands = "app4-dashboard/api/dataset_uploads.py"
     contracts = "app4-dashboard/api/dataset_upload_contracts.py"
@@ -210,43 +163,9 @@ def test_database_facade_loads_models_from_bounded_contexts():
     assert database.OutboxEvent.__module__ == "shared.database_delivery_models"
 
 
-def test_ai_worker_keeps_model_and_tile_workflow_out_of_composition_root():
-    composition = "app2-ia/main.py"
-    sam_backend = "app2-ia/sam3_backend.py"
-    tile_workflow = "app2-ia/tile_detection_workflow.py"
-    source = _source(composition)
-
-    assert _line_count(composition) < 180
-    assert "TileDetectionWorkflow(" in source
-    assert "Sam3Backend(" in source
-    assert "def run_sam3_detection" not in source
-    assert "def transform_detection_coordinates" not in source
-    assert "import cv2" not in source
-    assert "import torch" not in source
-    assert "import main" not in _source(sam_backend)
-    assert "import main" not in _source(tile_workflow)
-    assert "confluent_kafka" not in _source(sam_backend)
-    assert "confluent_kafka" not in _source(tile_workflow)
-
-
-def test_long_running_workers_use_the_shared_durable_inbox_boundary():
-    worker_entrypoints = [
-        "app1-colmap/colmap_worker/worker.py",
-        "app2-ia/main.py",
-        "app3-processing/main.py",
-    ]
-
-    for entrypoint in worker_entrypoints:
-        source = _source(entrypoint)
-        assert "make_inbox_work_handler" in source
-        assert "shared.database" not in source
-
-
 def test_every_worker_uses_shared_durable_cancellation():
     cancellation_roots = [
         "app1-colmap/colmap_worker/runtime.py",
-        "app2-ia/main.py",
-        "app3-processing/main.py",
     ]
 
     assert all(
@@ -255,15 +174,12 @@ def test_every_worker_uses_shared_durable_cancellation():
     )
 
 
-def test_colmap_worker_keeps_a_small_side_effect_free_composition_root():
-    composition = "app1-colmap/main.py"
-    worker = "app1-colmap/colmap_worker/worker.py"
-    runner = "app1-colmap/colmap_worker/mission_runner.py"
+def test_colmap_stages_keep_a_small_side_effect_free_composition_root():
+    composition = "app1-colmap/stage_executor.py"
     stage_modules = [
         "app1-colmap/colmap_worker/stages/alignment.py",
         "app1-colmap/colmap_worker/stages/gaussian.py",
         "app1-colmap/colmap_worker/stages/preparation.py",
-        "app1-colmap/colmap_worker/stages/publication.py",
         "app1-colmap/colmap_worker/stages/reconstruction.py",
         "app1-colmap/colmap_worker/stages/rtk.py",
     ]
@@ -273,18 +189,13 @@ def test_colmap_worker_keeps_a_small_side_effect_free_composition_root():
     ]
 
     composition_source = _source(composition)
-    worker_source = _source(worker)
-    runner_source = _source(runner)
 
     assert _line_count(composition) < 120
-    assert _line_count(runner) < 120
     assert all(_line_count(module) < 700 for module in stage_modules)
     assert all(_line_count(module) < 350 for module in helper_modules)
     assert "create_producer(" not in composition_source
     assert "basicConfig(" not in composition_source
-    assert "run_colmap_pipeline(" in runner_source
-    assert "configure_worker_runtime(" in worker_source
-    assert "create_producer(" in worker_source
+    assert "execute_one_shot_stage(" in composition_source
     assert all("confluent_kafka" not in _source(module) for module in stage_modules)
     assert all("import main" not in _source(module) for module in stage_modules)
     assert all("confluent_kafka" not in _source(module) for module in helper_modules)
@@ -430,3 +341,13 @@ def test_frontend_workspace_cache_is_separate_from_local_editing_state():
     assert "selectedPath" in store_source
     assert "<AppProviders>" in page_source
     assert "<WorkspaceDataProvider>" in providers_source
+
+
+def test_analysis_api_uses_bounded_detection_without_kafka_compute():
+    routes = _source("app4-dashboard/api/routers/map_analyses.py")
+    executor = _source("app2-ia/stage_executor.py")
+    assert "queue_analysis_stage(" in routes
+    assert "enqueue_outbox" not in routes
+    assert "execute_one_shot_stage" in executor
+    assert not (ROOT / "app2-ia/main.py").exists()
+    assert not (ROOT / "app3-processing/main.py").exists()

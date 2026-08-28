@@ -14,8 +14,7 @@ from sqlalchemy import func, or_
 from starlette.background import BackgroundTask
 
 from shared import storage
-from shared.database import AIAnalysisRun, Detection, MapFeature, get_session
-from shared.geospatial_assets import detections_feature_collection
+from shared.database import AIAnalysisRun, MapFeature, get_session
 from shared.qgis_crs import (
     ExportCrsError,
     reproject_features,
@@ -28,7 +27,7 @@ from ..map_support import (
     MissionRecord,
     RouteSession,
     get_mission,
-    mission_key,
+    validate_map_layer,
     pipeline_detection_features,
     resolve_raster_product,
     stored_map_feature_geojson,
@@ -38,7 +37,7 @@ from ..security import Principal, require_authenticated
 router = APIRouter()
 
 VectorFormat = Literal["gpkg", "geojson"]
-VectorScope = Literal["all", "manual", "ai", "legacy"]
+VectorScope = Literal["all", "manual", "ai", "pipeline"]
 RasterFormat = Literal["cog", "geotiff"]
 
 VECTOR_MEDIA_TYPES = {
@@ -47,10 +46,10 @@ VECTOR_MEDIA_TYPES = {
 }
 VECTOR_EXTENSIONS = {"gpkg": "gpkg", "geojson": "geojson"}
 SCOPE_SOURCES = {
-    "all": {"legacy", "manual", "ai"},
+    "all": {"pipeline", "manual", "ai"},
     "manual": {"manual"},
     "ai": {"ai"},
-    "legacy": {"legacy"},
+    "pipeline": {"pipeline"},
 }
 
 
@@ -71,7 +70,7 @@ def _stream_object(
         body.close()
 
 
-def _legacy_features(
+def _pipeline_features(
     session: RouteSession,
     mission: MissionRecord,
     vol_id: str,
@@ -86,48 +85,6 @@ def _legacy_features(
     if immutable is not None:
         yield from immutable[0]
         return
-    metadata = mission.tiling_metadata or {}
-    records = cast(
-        Iterator[Detection],
-        session.query(Detection)
-        .filter(Detection.mission_id == mission.id)
-        .order_by(Detection.id)
-        .yield_per(1_000),
-    )
-    batch: list[Detection] = []
-    for record in records:
-        batch.append(record)
-        if len(batch) < 1_000:
-            continue
-        yield from _legacy_batch(batch, metadata, vol_id)
-        batch = []
-    if batch:
-        yield from _legacy_batch(batch, metadata, vol_id)
-
-
-def _legacy_batch(
-    records: list[Detection],
-    metadata: JsonObject,
-    vol_id: str,
-) -> Iterator[JsonObject]:
-    collection = detections_feature_collection(
-        records,
-        geotransform=metadata.get("transform"),
-        source_crs=metadata.get("crs"),
-        vol_id=vol_id,
-    )
-    features = cast(list[JsonObject], collection["features"])
-    for feature in features:
-        properties = feature.setdefault("properties", {})
-        properties.update(
-            {
-                "source": "legacy",
-                "name": properties.get("class_name"),
-                "description": "Détection du pipeline initial",
-                "color": "#f43f5e",
-            }
-        )
-        yield feature
 
 
 def _stored_features(
@@ -172,8 +129,8 @@ def _export_features(
     run_ids: set[str],
 ) -> Iterator[JsonObject]:
     sources = SCOPE_SOURCES[scope]
-    if "legacy" in sources:
-        yield from _legacy_features(session, mission, vol_id)
+    if "pipeline" in sources:
+        yield from _pipeline_features(session, mission, vol_id)
     stored_sources = sources.intersection({"manual", "ai"})
     if stored_sources:
         yield from _stored_features(session, mission.id, stored_sources, run_ids)
@@ -230,7 +187,7 @@ def export_vectors(
         Query(alias="crs", max_length=32),
     ] = "raster",
 ) -> FileResponse:
-    mission_key(vol_id, "ortho")
+    validate_map_layer(vol_id, "ortho")
     requested_runs = {value.strip() for value in (run_ids or "").split(",") if value.strip()}
     suffix = VECTOR_EXTENSIONS[output_format]
     descriptor, temporary_name = tempfile.mkstemp(

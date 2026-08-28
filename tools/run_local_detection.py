@@ -17,8 +17,7 @@ from pyproj import Transformer
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP2_ROOT = REPO_ROOT / "app2-ia"
-APP3_ROOT = REPO_ROOT / "app3-processing"
-for import_path in (REPO_ROOT, APP2_ROOT, APP3_ROOT):
+for import_path in (REPO_ROOT, APP2_ROOT):
     if str(import_path) not in sys.path:
         sys.path.insert(0, str(import_path))
 
@@ -27,7 +26,7 @@ from detection_core import (  # noqa: E402
     resolve_yolo_model_file,
     run_yolo_detection,
 )
-from processing_core import (  # noqa: E402
+from shared.detection_products import (  # noqa: E402
     dedupe_mission_detections,
     detections_to_geojson,
     geolocate_detection,

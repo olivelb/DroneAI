@@ -11,6 +11,8 @@ backend_bucket="${TERRAFORM_BACKEND_BUCKET:-droneai-preprod-tfstate-fe7dc125}"
 backend_key="${TERRAFORM_BACKEND_KEY:-preprod/terraform.tfstate}"
 aws_cli_image="${AWS_CLI_IMAGE:-amazon/aws-cli:2.27.49}"
 
+: "${DRONEAI_QUALIFICATION_ORGANIZATION_ID:?Set the organization owning the temporary CAS probe}"
+
 test -x "${python_bin}"
 
 if test -x "${terraform_bin}" || command -v "${terraform_bin}" >/dev/null; then
@@ -55,4 +57,4 @@ else
 fi
 
 cd "${repo_root}"
-"${python_bin}" tools/qualify_s3_conditional_multipart.py --size-mib 6
+"${python_bin}" tools/qualify_s3_conditional_multipart.py --size-mib 6 --organization-id "${DRONEAI_QUALIFICATION_ORGANIZATION_ID}"

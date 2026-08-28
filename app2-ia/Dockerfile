@@ -16,6 +16,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
+    libssl3t64 openssl \
     python3 \
     python3-venv \
     && rm -rf /var/lib/apt/lists/*
@@ -57,4 +58,4 @@ COPY --chown=10001:10001 app2-ia/ /app/app2-ia/
 
 USER 10001:10001
 
-CMD ["python3", "app2-ia/main.py"]
+CMD ["python3", "app2-ia/stage_executor.py"]

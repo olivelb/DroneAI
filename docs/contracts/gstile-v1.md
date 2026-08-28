@@ -1,8 +1,9 @@
-# GSTile v1 — baseline interchange contract
+# GSTile v1 — current Q96/V4 interchange contract
 
 Status: **implementation baseline**. The normative implementation lives in
 `app1-colmap/gaussian_tiles` and the browser decoder must reject incompatible
-major versions.
+major versions and retired profiles. The sole supported profile is
+`dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4`; the binary pack version stays 1.
 
 ## 1. Scope and invariants
 
@@ -53,7 +54,7 @@ Required top-level fields:
 {
   "schema": "droneai-gstile",
   "version": 1,
-  "profile": "dronegs-sh3-opacity-sh3-q96",
+  "profile": "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4",
   "bundleId": "sha256:<hex>",
   "source": {
     "sha256": "<hex>",
@@ -77,8 +78,7 @@ Each node has `id`, `bounds.min`, `bounds.max`, `gaussianCount`, and either
 `pack`, `byteOffset`, `byteLength`, `recordCount`, `sha256` and `quantization`.
 The [production policy](gstile-production-defaults-v1.md) defaults to a 2 MiB
 `pack_target_bytes` target, grouping exact tiles and proxies into separate,
-bounded packs. Explicit `None` (CLI `--individual-packs`) retains individual
-representation packs. Aggregated
+bounded packs. Absent LOD or pack sizes are rejected. Aggregated
 representations use the `depth-spatial-v1` layout: a pack contains one
 representation kind at one tree depth, ordered by spatial node identifier.
 A LOD cut normally selects a parent or its descendants, not both; mixing
@@ -96,17 +96,12 @@ Aggregating writers report `statistics.packCount`,
 `statistics.packGrouping` so request reduction and overfetch experiments remain
 reproducible from the manifest.
 
-Existing immutable bundles can be migrated without decoding or requantizing
-their Q96 records:
-
-```bash
-python tools/repack_gstiles.py SOURCE_BUNDLE OUTPUT_BUNDLE \
-  --pack-target-bytes 2097152 --progress-jsonl
-```
-
-The repacker verifies every source pack SHA-256, header and payload CRC before
-copying its declared tile ranges. Publication is atomic and the output receives
-a new content-derived bundle identifier.
+Old bundles are not migrated or replayed. The historical repacker has been
+removed. New V4 builds include conservative `renderBounds` and non-negative
+`geometricError` on every node, plus `lodTile` on every internal node.
+Parent render bounds contain every child's support. Statistics declare
+`deterministic-adaptive-cost-moment-opacity-refit-v4` and matching
+`proxyCount`/`proxyRecords`.
 
 A pack may expose an additive `encodings.zstd` object containing `path`,
 `byteLength` and `sha256`. It is a lossless transport representation of the
@@ -199,6 +194,5 @@ leave the last complete representation visible.
 6. Corruption, traversal, oversize-count and incompatible-version rejection.
 7. Browser range, cancellation, cache and device-loss tests.
 
-Hierarchical replacement LOD, codebook compression, geospatial collision data
-and edit overlays are compatible extensions, but are not silently inferred by
-baseline readers.
+Hierarchical adaptive replacement LOD is required. Other representation
+profiles need a separate contract and qualification; readers do not infer them.

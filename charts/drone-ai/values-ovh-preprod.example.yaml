@@ -58,13 +58,7 @@ storage:
 
 colmapWorker:
   enabled: false
-  tag: "REPLACE_GIT_SHA"
-  resources:
-    limits:
-      nvidia.com/gpu: "1"
-      memory: 32Gi
-    requests:
-      memory: 16Gi
+  # Workspace configuration for Stage Jobs.
   workVolume:
     persistentClaim:
       enabled: true
@@ -77,30 +71,12 @@ colmapWorker:
         label: "OVHcloud persistent workspace"
     default: cloud-workspace
 
-iaWorker:
-  enabled: false
-  tag: "REPLACE_GIT_SHA"
-  modelCache:
-    hostPath: ""
-    storageClass: csi-cinder-high-speed
-    size: 30Gi
-
-processingWorker:
-  replicaCount: 0
-  tag: "REPLACE_GIT_SHA"
-  resources:
-    limits:
-      memory: 4Gi
-    requests:
-      memory: 2Gi
-
 dashboardApi:
   replicaCount: 2
   tag: "REPLACE_GIT_SHA"
   environment: staging
   # Set true only for a controlled Dashboard qualification before a candidate
   # quality profile is promoted to the public catalog.
-  qualityProfileCandidatesEnabled: false
   databaseUrlSecretKey: api-database-url
   rowLevelSecurityRequired: true
   observability:
@@ -133,7 +109,6 @@ dashboardFrontend:
 
 stageJobs:
   enabled: true
-  artifactManifestV2WriteEnabled: true
   executors:
     reconstruction:
       image: "REPLACE_REGISTRY_URL/droneai/drone-colmap@sha256:REPLACE_OCI_DIGEST"

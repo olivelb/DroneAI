@@ -10,8 +10,8 @@ tag. The registry project must already exist and `docker login REGISTRY` must
 have succeeded.
 
 GPU images are excluded by default. Set INCLUDE_GPU_IMAGES=1 only for an
-explicit GPU deployment. The existing local drone-colmap-base:latest is then
-reused; a missing base is an error. Set both INCLUDE_GPU_IMAGES=1 and
+explicit GPU deployment. The local drone-colmap-base:GIT_SHA is then
+reused; a missing revision-specific base is an error. Set both INCLUDE_GPU_IMAGES=1 and
 REBUILD_COLMAP_BASE=1 to explicitly authorize the long CUDA/COLMAP base build.
 EOF
 }
@@ -35,6 +35,7 @@ export DOCKER_BUILDKIT=1
 
 readonly INCLUDE_GPU_IMAGES="${INCLUDE_GPU_IMAGES:-0}"
 readonly REBUILD_COLMAP_BASE="${REBUILD_COLMAP_BASE:-0}"
+readonly COLMAP_BASE_IMAGE="drone-colmap-base:$IMAGE_TAG"
 
 if [[ "$REBUILD_COLMAP_BASE" == "1" && "$INCLUDE_GPU_IMAGES" != "1" ]]; then
     printf 'REBUILD_COLMAP_BASE=1 requires INCLUDE_GPU_IMAGES=1.\n' >&2
@@ -47,14 +48,14 @@ if [[ "$INCLUDE_GPU_IMAGES" == "1" ]]; then
         docker build \
             --network=host \
             --progress=plain \
-            --tag drone-colmap-base:latest \
+            --tag "$COLMAP_BASE_IMAGE" \
             --file app1-colmap/Dockerfile.base \
             .
-    elif docker image inspect drone-colmap-base:latest >/dev/null 2>&1; then
-        printf 'Reusing local drone-colmap-base:latest.\n'
+    elif docker image inspect "$COLMAP_BASE_IMAGE" >/dev/null 2>&1; then
+        printf 'Reusing local %s.\n' "$COLMAP_BASE_IMAGE"
     else
         printf '%s\n' \
-            'GPU publication refused: drone-colmap-base:latest is missing.' \
+            "GPU publication refused: $COLMAP_BASE_IMAGE is missing." \
             'Set REBUILD_COLMAP_BASE=1 only when the long CUDA/COLMAP build is explicitly required.' >&2
         exit 1
     fi
@@ -63,13 +64,11 @@ fi
 declare -A DOCKERFILES=(
     [drone-colmap]=app1-colmap/Dockerfile
     [drone-ia]=app2-ia/Dockerfile
-    [drone-processing]=app3-processing/Dockerfile
     [drone-dashboard-api]=app4-dashboard/api/Dockerfile
     [drone-dashboard-frontend]=app4-dashboard/frontend/Dockerfile
 )
 
 images=(
-    drone-processing
     drone-dashboard-api
     drone-dashboard-frontend
 )
@@ -80,7 +79,11 @@ fi
 
 for image in "${images[@]}"; do
     reference="$REGISTRY_PROJECT/$image:$IMAGE_TAG"
-    docker build \
+    build_args=()
+    if [[ "$image" == "drone-colmap" ]]; then
+        build_args+=(--build-arg "COLMAP_BASE_IMAGE=$COLMAP_BASE_IMAGE")
+    fi
+    docker build "${build_args[@]}" \
         --network=host \
         --progress=plain \
         --tag "$reference" \

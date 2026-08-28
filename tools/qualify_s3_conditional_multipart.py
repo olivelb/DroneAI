@@ -95,7 +95,7 @@ def _conditional_overwrite_probe(key: str) -> str:
             )
 
 
-def qualify(probe_path: Path) -> dict[str, Any]:
+def qualify(probe_path: Path, *, organization_id: str) -> dict[str, Any]:
     """Publish, challenge, verify, reuse and remove one random CAS probe."""
 
     size = probe_path.stat().st_size
@@ -105,7 +105,7 @@ def qualify(probe_path: Path) -> dict[str, Any]:
             f"{MAXIMUM_PROBE_BYTES} bytes"
         )
     digest = sha256_file(probe_path)
-    key = content_addressed_blob_key(digest)
+    key = content_addressed_blob_key(digest, organization_id=organization_id)
     if storage.file_exists(key):
         raise RuntimeError("Random qualification object unexpectedly existed")
     created = False
@@ -114,6 +114,7 @@ def qualify(probe_path: Path) -> dict[str, Any]:
         first = storage.publish_content_addressed_file(
             probe_path,
             force_multipart=True,
+            organization_id=organization_id,
         )
         if first.reused:
             raise RuntimeError("Qualification publication unexpectedly reported reuse")
@@ -125,6 +126,7 @@ def qualify(probe_path: Path) -> dict[str, Any]:
         second = storage.publish_content_addressed_file(
             probe_path,
             force_multipart=True,
+            organization_id=organization_id,
         )
         if not second.reused or second.transferred_bytes != 0:
             raise RuntimeError("Second CAS publication did not reuse the verified object")
@@ -152,6 +154,7 @@ def main() -> int:
         default=6,
         help="Random multipart probe size in MiB (default: 6, maximum: 64)",
     )
+    parser.add_argument("--organization-id", required=True, help="Organization owning the temporary CAS probe")
     arguments = parser.parse_args()
     size_bytes = arguments.size_mib * 1024**2
     if not MINIMUM_PROBE_BYTES <= size_bytes <= MAXIMUM_PROBE_BYTES:
@@ -159,7 +162,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="droneai-s3-qualification-") as directory:
         probe_path = Path(directory) / "multipart-probe.bin"
         _write_probe(probe_path, size_bytes)
-        result = qualify(probe_path)
+        result = qualify(probe_path, organization_id=arguments.organization_id)
     print(json.dumps(result, sort_keys=True))
     return 0
 

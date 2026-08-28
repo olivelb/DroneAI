@@ -84,18 +84,18 @@ jobs:
             --volume "$PWD/.trivy-cache:/root/.cache" \
             --volume "$PWD/supply-chain:/output" \
             aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c \
-            image --image-src docker --scanners vuln --ignore-unfixed \
+            image --image-src docker --scanners vuln \
             --severity HIGH,CRITICAL --format json \
             --output "/output/${{ matrix.artifact }}.trivy.json" \
             "${{ matrix.image }}"
-      - name: Reject fixed CRITICAL image vulnerabilities
+      - name: Reject fixed HIGH and CRITICAL image vulnerabilities
         run: >-
           docker run --rm
           --volume /var/run/docker.sock:/var/run/docker.sock
           --volume "$PWD/.trivy-cache:/root/.cache"
           aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
           image --image-src docker --scanners vuln --ignore-unfixed
-          --severity CRITICAL --exit-code 1
+          --severity HIGH,CRITICAL --exit-code 1
           "${{ matrix.image }}"
       - name: Upload CUDA image supply-chain evidence
         if: always()

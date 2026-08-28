@@ -429,11 +429,11 @@ def test_content_addressed_publish_uploads_once_then_reuses(tmp_path, monkeypatc
     client = _CasClient()
     monkeypatch.setattr(storage, "_get_client", lambda: client)
 
-    first = storage.publish_content_addressed_file(artifact)
-    second = storage.publish_content_addressed_file(artifact)
+    first = storage.publish_content_addressed_file(artifact, organization_id="acme")
+    second = storage.publish_content_addressed_file(artifact, organization_id="acme")
 
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-    assert first.key == f"blobs/sha256/{digest[:2]}/{digest}"
+    assert first.key == f"organizations/acme/blobs/sha256/{digest[:2]}/{digest}"
     assert first.reused is False
     assert first.transferred_bytes == artifact.stat().st_size
     assert second.reused is True
@@ -477,13 +477,13 @@ def test_content_addressed_publish_rejects_conflicting_existing_object(
     artifact = tmp_path / "model.ply"
     artifact.write_bytes(b"expected-content")
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-    key = f"blobs/sha256/{digest[:2]}/{digest}"
+    key = f"organizations/acme/blobs/sha256/{digest[:2]}/{digest}"
     client = _CasClient()
     client.objects[key] = (b"wrong", {"sha256": "f" * 64})
     monkeypatch.setattr(storage, "_get_client", lambda: client)
 
     with pytest.raises(OSError, match="Content-addressed object conflict"):
-        storage.publish_content_addressed_file(artifact)
+        storage.publish_content_addressed_file(artifact, organization_id="acme")
 
     assert client.put_calls == []
 
@@ -559,6 +559,7 @@ def test_content_addressed_multipart_publish_is_conditional_and_verified(
     result = storage.publish_content_addressed_file(
         artifact,
         cancellation_check=lambda: cancellations.append(True),
+        organization_id="acme",
     )
 
     assert result.reused is False
@@ -585,6 +586,7 @@ def test_content_addressed_publish_can_force_provider_qualification_multipart(
     result = storage.publish_content_addressed_file(
         artifact,
         force_multipart=True,
+        organization_id="acme",
     )
 
     assert result.reused is False
@@ -603,7 +605,7 @@ def test_content_addressed_multipart_conflict_verifies_winner_and_aborts(
     monkeypatch.setattr(storage, "_get_client", lambda: client)
     _force_test_multipart(monkeypatch)
 
-    result = storage.publish_content_addressed_file(artifact)
+    result = storage.publish_content_addressed_file(artifact, organization_id="acme")
 
     assert result.reused is True
     assert result.transferred_bytes == 0
@@ -622,7 +624,7 @@ def test_content_addressed_multipart_failure_aborts_without_publication(
     _force_test_multipart(monkeypatch)
 
     with pytest.raises(ClientError):
-        storage.publish_content_addressed_file(artifact)
+        storage.publish_content_addressed_file(artifact, organization_id="acme")
 
     assert len(client.abort_calls) == 1
     assert client.objects == {}
@@ -640,7 +642,7 @@ def test_content_addressed_multipart_unsupported_condition_fails_closed(
     _force_test_multipart(monkeypatch)
 
     with pytest.raises(ClientError) as error:
-        storage.publish_content_addressed_file(artifact)
+        storage.publish_content_addressed_file(artifact, organization_id="acme")
 
     assert error.value.response["Error"]["Code"] == "NotImplemented"
     assert len(client.abort_calls) == 1
@@ -660,7 +662,7 @@ def test_content_addressed_multipart_missing_conflict_winner_retries_bounded(
     monkeypatch.setattr(storage, "S3_CAS_MULTIPART_MAX_ATTEMPTS", 2)
 
     with pytest.raises(OSError, match="did not create"):
-        storage.publish_content_addressed_file(artifact)
+        storage.publish_content_addressed_file(artifact, organization_id="acme")
 
     assert len(client.complete_calls) == 2
     assert len(client.abort_calls) == 2
@@ -686,7 +688,7 @@ def test_content_addressed_publish_rejects_above_s3_object_limit(
     monkeypatch.setattr(storage, "S3_CAS_MAX_OBJECT_BYTES", 3)
 
     with pytest.raises(ValueError, match="5 TiB"):
-        storage.publish_content_addressed_file(artifact)
+        storage.publish_content_addressed_file(artifact, organization_id="acme")
 
     assert client.uploads == {}
 
@@ -728,7 +730,7 @@ def test_concurrent_content_addressed_publishers_converge_on_one_blob(
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(
             executor.map(
-                storage.publish_content_addressed_file,
+                lambda path: storage.publish_content_addressed_file(path, organization_id="acme"),
                 (artifact, artifact),
             )
         )

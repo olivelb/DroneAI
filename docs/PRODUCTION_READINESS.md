@@ -1,6 +1,6 @@
 # DroneAI production readiness
 
-Last structurally verified: 2026-08-20
+Last structurally verified: 2026-08-28
 
 
 This date records repository-level control-plane, migration, security and
@@ -8,7 +8,9 @@ CPU-test verification. It is not a scientific promotion of a Gaussian profile
 and does not claim current-head CUDA/GPU, full-scene resident, OVH interruption
 or dataset-backed E2E qualification. Those evidence classes remain separate
 and must be attached to the release candidate that was actually executed.
-The current audit disposition is recorded in
+The current cleanup and review disposition is recorded in
+[`audits/2026-08-28-current-production-cleanup.md`](audits/2026-08-28-current-production-cleanup.md).
+Earlier control-plane audit evidence remains in
 [`audit-remediation-2026-08-20.md`](audit-remediation-2026-08-20.md).
 ## Supported deployment boundary
 
@@ -280,7 +282,7 @@ explicit WGS84 fallback header.
 The facade process is a different product contract. It writes
 `facade_orthophoto.tif`, `facade_orthophoto.height.tif`,
 `facade_frame.json` and `facade_selection_report.json` in a local wall frame
-with no CRS. It never publishes `images-ortho`, so TILER and IA are not
+with no CRS. It never releases aerial detection, so IA stages are not
 required for terminal success. Releases must verify that the RGB/depth COG
 metadata remains `coordinate_space=local`, that the manifest records
 `FACADE_HD_V4` (with earlier facade profiles retained for historical identification), and that
@@ -353,7 +355,7 @@ Required on every candidate:
 2. Native DroneGS CPU and CUDA tests on a real GPU.
 3. Frontend unit tests, lint, production build and Playwright mission journeys.
 4. CycloneDX SBOM and Trivy report for each CI-built runtime image, with no
-   fixable CRITICAL vulnerability.
+   fixable HIGH or CRITICAL vulnerability.
 5. Helm lint with the production overlay.
 6. One complete RTK preparation run and one non-RTK regression scene.
 7. Immutable benchmark bundle with binary/dataset/artifact hashes.
@@ -369,7 +371,7 @@ SAVERES repetitions before creating `DRONEGS_PRODUCTION_PROFILE_V2`.
 The hosted supply-chain gates cover the dashboard API and processing worker in
 `.github/workflows/ci.yml`, plus both final CUDA runtimes in
 `.github/workflows/cuda-containers.yml`. They emit commit-scoped, 30-day Syft
-CycloneDX and Trivy HIGH/CRITICAL evidence and block fixable CRITICAL findings.
+CycloneDX and Trivy HIGH/CRITICAL evidence and block fixable HIGH and CRITICAL findings.
 The CUDA workflow prepares every external COLMAP/ONNX dependency from pinned,
 SHA-256-verified sources before building; real-GPU execution remains a distinct,
 change-gated qualification in `dronegs-gpu-qualification.yml`. It has no schedule:

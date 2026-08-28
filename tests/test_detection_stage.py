@@ -255,7 +255,7 @@ def test_detection_config_rejects_unbounded_prompt_and_confidence():
         detection_stage.DetectionStageConfig.from_context(
             replace(
                 context,
-                parameters={"ai": {"sam_prompt": "x" * 129}},
+                parameters={"ai": {"sam_prompt": "x" * 257}},
             )
         )
     with pytest.raises(ValueError, match="confidence"):
@@ -299,15 +299,13 @@ def test_detection_config_enforces_sam3_effective_input_limit():
     assert yolo.tile_size == 2048
 
 
-@pytest.mark.parametrize(
-    ("v2_enabled", "selective_restore"),
-    [(False, False), (True, False), (True, True)],
-)
+@pytest.mark.parametrize("selective_restore", [False, True])
+@pytest.mark.parametrize("analysis", [False, True])
 def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
     tmp_path,
     monkeypatch,
-    v2_enabled,
     selective_restore,
+    analysis,
 ):
     monkeypatch.setenv("DRONEAI_STAGE_WORK_ROOT", str(tmp_path / "work"))
 
@@ -366,14 +364,13 @@ def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
         raw = Path(workspace, ".droneai", "detection", "detections.json")
         inspected["geojson"] = geojson.read_text(encoding="utf-8")
         inspected["raw"] = raw.read_text(encoding="utf-8")
-        if v2_enabled:
-            assert kwargs["default_role"] == "detection-workspace"
-            assert kwargs["role_overrides"] == {
-                ".droneai/detection/detections.json": "detection-records",
-                ".droneai/detection/detections.geojson": "detection-features",
-            }
-            assert kwargs["parents"][0].artifact_id == "raster-1"
-            assert kwargs["allow_partial_workspace"] is selective_restore
+        assert kwargs["default_role"] == "detection-workspace"
+        assert kwargs["role_overrides"] == {
+            ".droneai/detection/detections.json": "detection-records",
+            ".droneai/detection/detections.geojson": "detection-features",
+        }
+        assert kwargs["parents"][0].artifact_id == "raster-1"
+        assert kwargs["allow_partial_workspace"] is selective_restore
         return PublishedWorkspace(
             manifest_key=f"{prefix}/manifest.json",
             uri=f"s3://drone-ai/{prefix}/manifest.json",
@@ -384,18 +381,25 @@ def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
 
     monkeypatch.setattr(
         detection_stage,
-        "artifact_manifest_v2_write_enabled",
-        lambda: v2_enabled,
-    )
-    monkeypatch.setattr(
-        detection_stage,
         "artifact_selective_restore_enabled",
         lambda: selective_restore,
     )
     monkeypatch.setattr(detection_stage, "publish_workspace", publish)
-    monkeypatch.setattr(detection_stage, "publish_workspace_v2", publish)
 
-    result = detection_stage.run_detection_stage(_context(), FakeControl())
+    context = _context()
+    if analysis:
+        context = replace(context, analysis={
+            "run_id": "analysis-current", "name": "Vehicles", "color": "#f43f5e",
+            "description": "", "tags": [], "persist_results": True,
+        })
+    result = detection_stage.run_detection_stage(context, FakeControl())
+    if analysis:
+        assert result.metadata["analysis_run_id"] == "analysis-current"
+        assert result.analysis_features[0]["properties"]["source"] == "ai"
+        assert result.metadata["geojson_object_key"].startswith("organizations/acme-survey/blobs/sha256/")
+    else:
+        assert result.analysis_features is None
+
 
     assert result.kind == "detection_workspace"
     assert result.metadata["feature_count"] == 1

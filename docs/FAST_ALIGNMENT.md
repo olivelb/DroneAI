@@ -28,17 +28,19 @@ From the cloned DroneAI repository:
 
 ```bash
 bash setup_deps.sh
+IMAGE_TAG="$(git rev-parse HEAD)"
 docker build --network=host --progress=plain \
-  -t drone-colmap-base:latest \
+  -t "drone-colmap-base:$IMAGE_TAG" \
   -f app1-colmap/Dockerfile.base .
 docker build --network=host --progress=plain \
-  -t drone-colmap:latest \
+  --build-arg "COLMAP_BASE_IMAGE=drone-colmap-base:$IMAGE_TAG" \
+  -t "drone-colmap:$IMAGE_TAG" \
   -f app1-colmap/Dockerfile .
 ```
 
-The `latest` tags above are local build dependencies for this workstation
-workflow only. A deployed executor must use the resulting image under the
-reviewed Git-SHA tag or OCI digest.
+The application consumes the base built from the same reviewed revision.
+A deployed executor must use the resulting image under its Git-SHA tag or OCI
+digest.
 
 `setup_deps.sh` pins and checksum-verifies COLMAP, PoseLib, faiss, ONNX Runtime,
 ALIKED and LightGlue. The ONNX models are embedded in the image, so production

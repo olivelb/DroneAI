@@ -88,12 +88,6 @@ def test_scheduler_changes_run_postgres_locking_contract() -> None:
         "python",
         "migrations",
     }
-    assert _enabled("tools/adopt_legacy_storage.py") == {
-        "python",
-        "duplication",
-        "migrations",
-        "integration",
-    }
 
 
 def test_platform_composition_changes_run_real_service_integration() -> None:
@@ -122,7 +116,7 @@ def test_native_dronegs_change_runs_python_and_native_jobs_when_relevant() -> No
 
 def test_ia_changes_run_python_duplication_and_runtime_image_validation() -> None:
     expected = {"python", "duplication", "containers"}
-    assert _enabled("app2-ia/tile_detection_workflow.py") == expected
+    assert _enabled("app2-ia/detection_stage.py") == expected
     assert _enabled("app2-ia/Dockerfile") == {"containers"}
     assert _enabled("requirements/ia-extra.txt") == {"python", "containers"}
 
@@ -132,7 +126,7 @@ def test_duplication_tooling_changes_run_the_dedicated_gate() -> None:
 
 
 def test_chart_change_only_runs_helm_job() -> None:
-    assert _enabled("charts/drone-ai/templates/colmap-worker.yaml") == {"helm"}
+    assert _enabled("charts/drone-ai/templates/colmap-work-pvc.yaml") == {"helm"}
 
 
 def test_ovh_terraform_change_only_runs_infrastructure_validation() -> None:
@@ -167,3 +161,14 @@ def test_python_baseline_is_312_across_tooling_and_ci() -> None:
     for lock_name in ("api.txt", "processing.txt", "dev.txt", "colmap.txt"):
         lock_header = (ROOT / "requirements" / lock_name).read_text(encoding="utf-8")[:160]
         assert "pip-compile with Python 3.12" in lock_header
+
+
+def test_every_database_model_and_migration_verifier_runs_real_migration_gate():
+    paths = [
+        path.relative_to(ROOT).as_posix()
+        for pattern in ("shared/database*.py", "scripts/ci/verify_*migration.py")
+        for path in ROOT.glob(pattern)
+    ]
+    assert paths
+    for path in paths:
+        assert "migrations" in _enabled(path), path

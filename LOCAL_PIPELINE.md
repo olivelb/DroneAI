@@ -47,7 +47,7 @@ Profiles:
 - `smoke`: 25 contiguous images, sequential matching, Gaussian `smoke`,
   one-tile YOLO smoke detection; this only checks integration and is not a
   user-facing quality profile
-- `fast`: all readable images with the versioned `fast-v1` envelope: SIFT CUDA
+- `fast`: all readable images with the versioned `fast-v2` envelope: SIFT CUDA
   at 1600 px and 2048 features, 7500 iterations, 1.5M Gaussian cap, image
   factor 8, and full YOLO detection
 - `normal`: all readable images with the versioned `normal-v3` envelope: SIFT
@@ -336,7 +336,7 @@ The portable CUDA build contains runtime-selected cubins for recent NVIDIA
 architectures. LichtFeld and vcpkg are not cloned or compiled, and no alternate
 Gaussian backend is packaged in the image.
 
-First undistort the small workspace, then run the complete smoke path:
+First undistort the small workspace, then exercise the current Fast v2 path:
 
 ```bash
 ./tools/run_local_colmap.sh \
@@ -351,44 +351,28 @@ First undistort the small workspace, then run the complete smoke path:
 
 ./tools/run_local_gaussian.sh \
   "$HOME/droneAI-workspaces/gajan-r2s-smoke" \
-  --profile smoke
+  --profile fast
 ```
 
-Once that succeeds, the conservative RTX 4070 Laptop / 8 GiB profile is:
+For the default Normal v3 profile, use a workspace and GPU capacity suitable for its resident plan:
 
 ```bash
 ./tools/run_local_gaussian.sh \
   "$HOME/droneAI-workspaces/gajan-r2s-full" \
-  --profile low-memory
+  --profile normal
 ```
 
 | Profile | Iterations | Gaussian cap | SH | Image factor | Max dimension | Tile mode | GSD |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `smoke` | 500 | 100,000 | 0 | 8 | 1,024 px | auto (1/2/4) | 0.25 m |
-| `fast` (`fast-v1`) | 7,500 | 1,500,000 | 3 | 8 | 1,600 px | auto (1/2/4) | 0.05 m |
-| `fast-resident` (qualification locale) | 7,500 | adaptive, floor 1.5 M | 3 | 8 | 1,600 px | auto (1/2/4) | 0.05 m |
-| `normal` (`normal-v3`) | 15,000 | adaptive 3–8 M | 3 | 4 | 2,400 px | auto (1/2/4) | 0.05 m |
-| `high-quality` (`high-quality-v4`) | 30,000 | adaptive 5–6 M | 3 | 1 | 4,096 px | auto (1/2/4) | 0.015 m |
-| `low-memory` | 5,000 | 500,000 | 1 | 4 | 1,600 px | auto (1/2/4) | 0.10 m |
-| `balanced` | 15,000 | 1,500,000 | 3 | 4 | 1,600 px | auto (1/2/4) | 0.05 m |
+| `fast` (`fast-v2`) | 7,500 | 1,500,000 | 3 | 8 | 1,600 px | auto (1/2/4) | 0.05 m |
+| `normal` (`normal-v3`) | 15,000 | adaptive 3–8 M | 3 | 4 | 2,400 px | auto (1/2/4) | 0.02 m |
+| `high-quality` (`high-quality-v4`) | 30,000 | adaptive 5–6 M | 3 | 1 | 4,096 px | auto (1/2/4) | 0.02 m |
 
-`smoke` exercises checkpoint/resume and modulo held-out evaluation but uses a
-zero-threshold operational canary. `low-memory` uses the spatial-block canary
-with a 25% guard ring and gates at 15 dB / 0.10 SSIM; `balanced` preserves the
-immutable modulo production baseline at 18 dB / 0.25 SSIM.
+Only Fast v2, Normal v3, HQ v4 and facade v3 are selectable. The default is
+Normal v3. The old smoke, low-memory, balanced and fast-resident presets have
+been removed. Current profiles use reference-absolute, FastGS and spatial
+pruning. Directional opacity SH remains available with `--opacity-sh`.
 
-`fast-resident` is intentionally exposed only by the local runner. It keeps
-the Fast 7,500-step, factor-8 and 1.5 M-per-cell budget, but enables adaptive
-resident partitions with an 8 px target spacing and core/buffer aggregation.
-Use it to qualify full-dataset cell coverage, crop selection and mosaic seams;
-it does not replace the public `fast-v1` preview profile or constitute an
-image-quality release gate.
-
-The `balanced` preset applies immutable `DRONEGS_PRODUCTION_PROFILE_V1` with
-the dev.47 trainer:
-FastGS structural rasterization, bounded spatial pruning,
-progressive SH3, a 1,000-step topology cooldown, and a 1,000-step finish to
-100% MSE gradient. All presets use seed 42 and select DroneGS explicitly.
 Every profile writes separate checkpoints, GeoTIFFs, height maps, and a
 `gaussian_run.<profile>.json` manifest. Interrupted native training resumes
 from `training.ckpt`; completed models must pass the configured held-out

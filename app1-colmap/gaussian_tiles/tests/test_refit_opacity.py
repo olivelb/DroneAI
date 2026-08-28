@@ -118,7 +118,7 @@ def test_multigeneration_proxy_bytes_match_original(monkeypatch, width, mode):
 
 
 @pytest.mark.parametrize("workers", [1, 2])
-@pytest.mark.parametrize("aggregate", [None, 256 * 1024])
+@pytest.mark.parametrize("aggregate", [256 * 1024, 2 * 1024**2])
 def test_full_bundle_matches_original_refit(monkeypatch, tmp_path, workers, aggregate):
     source = tmp_path / "source.ply"
     _write_ply(source, _records(8193))

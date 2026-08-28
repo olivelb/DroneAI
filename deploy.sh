@@ -7,20 +7,16 @@ DEPLOY_LIB="$REPO_ROOT/scripts/deploy"
 usage() {
     cat <<'EOF'
 Usage:
-  ./deploy.sh local [options]
   ./deploy.sh distributed [options]
 
 Modes:
-  local         Docker Compose deployment with the complete dashboard,
-                Kafka, MinIO, PostgreSQL and all pipeline workers.
   distributed   Single-node K3s deployment through Helm, including the
                 NVIDIA device plugin and the complete dashboard.
 
 Options:
   --base                    Rebuild the COLMAP base and every service without cache.
   --no-build                Reuse already-built Docker images.
-  --stage-jobs GIT_SHA      Qualify the five bounded Jobs with immutable images
-                            (distributed mode only; disables fused workers).
+  --stage-jobs GIT_SHA      Required immutable image tag for bounded Stage Jobs.
   --skip-host-setup         Do not install missing host packages or runtimes.
   --data-root PATH          Persistent runtime root (distributed mode).
   --dashboard-port PORT     Dashboard port (default: 30000).
@@ -38,10 +34,8 @@ Environment:
 Examples:
   git clone https://github.com/olivelb/DroneAI.git
   cd DroneAI
-  ./deploy.sh local
-
-  ./deploy.sh distributed
-  ./deploy.sh distributed --base
+  ./deploy.sh distributed --stage-jobs abc1234
+  ./deploy.sh distributed --base --stage-jobs abc1234
   ./deploy.sh distributed --no-build --stage-jobs abc1234
 EOF
 }
@@ -54,7 +48,7 @@ fi
 MODE="$1"
 shift
 case "$MODE" in
-    local|distributed) ;;
+    distributed) ;;
     --help|-h)
         usage
         exit 0
@@ -136,9 +130,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+[[ -n "$STAGE_JOBS_IMAGE_TAG" ]] \
+    || { echo "--stage-jobs GIT_SHA is required; fused workers have been retired" >&2; exit 2; }
 if [[ -n "$STAGE_JOBS_IMAGE_TAG" ]]; then
-    [[ "$MODE" == "distributed" ]] \
-        || { echo "--stage-jobs is supported only in distributed mode" >&2; exit 2; }
     [[ "$STAGE_JOBS_IMAGE_TAG" =~ ^[0-9a-f]{7,40}$ ]] \
         || { echo "--stage-jobs requires a 7-40 character lower-case Git SHA" >&2; exit 2; }
 fi
@@ -163,13 +157,8 @@ fi
 
 # shellcheck source=scripts/deploy/common.sh
 source "$DEPLOY_LIB/common.sh"
-if [[ "$MODE" == "local" ]]; then
-    # shellcheck source=scripts/deploy/local.sh
-    source "$DEPLOY_LIB/local.sh"
-else
-    # shellcheck source=scripts/deploy/distributed.sh
-    source "$DEPLOY_LIB/distributed.sh"
-fi
+# shellcheck source=scripts/deploy/distributed.sh
+source "$DEPLOY_LIB/distributed.sh"
 
 trap 'deployment_failed "$LINENO"' ERR
 

@@ -17,12 +17,6 @@ export type GsTileRangeAvailabilityRequest = {
 };
 
 export const DEFAULT_GSTILE_MEMORY_CACHE_BYTES = 1536 * 1024 * 1024;
-/** Qualified bounded default, with an explicit smaller rollback; no eager allocation. */
-export const gstileMemoryCacheBytes = (profile?: string | null): number =>
-  profile === "standard"
-    ? 768 * 1024 * 1024
-    : DEFAULT_GSTILE_MEMORY_CACHE_BYTES;
-
 export const DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS = 300;
 export const DEFAULT_GSTILE_PERSISTENT_READ_CONCURRENCY = 2;
 

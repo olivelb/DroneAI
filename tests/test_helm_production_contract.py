@@ -17,7 +17,7 @@ def test_production_overlay_requires_immutable_application_images() -> None:
 
     assert "requireImmutableImages: false" in defaults
     assert "requireImmutableImages: true" in values
-    assert values.count('tag: "REPLACE_GIT_SHA"') == 5
+    assert values.count('tag: "REPLACE_GIT_SHA"') == 2
     assert 'regexMatch "^[0-9a-f]{7,40}$" $tag' in helpers
     assert 'regexMatch "@sha256:[0-9a-f]{64}$" .image' in helpers
     assert "Mutable application image tag found in the production render" in ci
@@ -28,7 +28,7 @@ def test_production_overlay_requires_immutable_application_images() -> None:
 def test_browser_upload_cors_exposes_multipart_etag() -> None:
     defaults = _read(CHART / "values.yaml")
     minio = _read(CHART / "templates" / "minio.yaml")
-    compose = _read(ROOT / "compose.local.yaml")
+    compose = _read(ROOT / "compose.test.yaml")
     external_script = _read(ROOT / "scripts" / "deploy" / "configure-s3-upload-cors.sh")
 
     assert "browserUploadCors:" in defaults
@@ -141,17 +141,6 @@ def test_production_api_uses_a_distinct_rls_database_role() -> None:
     assert "key: {{ .Values.dashboardApi.databaseUrlSecretKey }}" in deployment
 
 
-def test_tile_result_size_limit_is_shared_by_producer_and_consumer() -> None:
-    defaults = _read(CHART / "values.yaml")
-    ia_deployment = _read(CHART / "templates" / "ia-worker.yaml")
-    processing_deployment = _read(CHART / "templates" / "processing-worker.yaml")
-    compose = _read(ROOT / "compose.local.yaml")
-
-    assert 'maximumBytes: "10485760"' in defaults
-    assert ".Values.tileResults.maximumBytes" in ia_deployment
-    assert ".Values.tileResults.maximumBytes" in processing_deployment
-    assert compose.count('ANALYSIS_MAX_TILE_RESULT_BYTES: "10485760"') == 2
-
 
 def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
     defaults = _read(CHART / "values.yaml")
@@ -182,7 +171,6 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
     assert "DRONEAI_STAGE_HF_TOKEN_SECRET_NAME" in control_env
     assert "DRONEAI_STAGE_HF_TOKEN_SECRET_KEY" in control_env
     assert "DRONEAI_STAGE_SAM3_MODEL_REVISION" in control_env
-    assert "artifactManifestV2WriteEnabled: false" in defaults
     assert "artifactSelectiveRestoreEnabled: false" in defaults
     assert "detectionFanout:" in defaults
     assert "DRONEAI_DETECTION_FANOUT_ENABLED" in control_env
@@ -190,9 +178,6 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
     assert "DRONEAI_DETECTION_SHARD_PARALLELISM" in control_env
     assert "DRONEAI_DETECTION_MAXIMUM_TILES" in control_env
     assert "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED" in control_env
-    assert (
-        "artifactSelectiveRestoreEnabled requires stageJobs.artifactManifestV2WriteEnabled=true"
-    ) in deployment
     assert (
         "detectionFanout.enabled requires stageJobs.artifactSelectiveRestoreEnabled=true"
     ) in deployment
@@ -208,7 +193,6 @@ def test_protected_overlays_exclusively_use_complete_bounded_compute() -> None:
     for values in (production, preproduction):
         stage_values = values.split("\nstageJobs:\n", 1)[1]
         assert stage_values.startswith("  enabled: true\n")
-        assert "  artifactManifestV2WriteEnabled: true\n" in stage_values
         for stage in (
             "reconstruction",
             "gaussian_training",
@@ -221,13 +205,11 @@ def test_protected_overlays_exclusively_use_complete_bounded_compute() -> None:
         assert stage_values.count("gpu_architecture: REPLACE_GPU_ARCHITECTURE") == 5
         assert stage_values.count("@sha256:REPLACE_OCI_DIGEST") == 6
         assert "colmapWorker:\n  enabled: false" in values
-        assert "iaWorker:\n  enabled: false" in values
-        assert "processingWorker:\n  replicaCount: 0" in values
 
     assert "stageJobs.enabled must be true in staging and production" in deployment
     assert "colmapWorker.enabled must be false" in deployment
-    assert "iaWorker.enabled must be false" in deployment
-    assert "processingWorker.replicaCount must be 0" in deployment
+    assert "iaWorker has been retired" in deployment
+    assert "processingWorker has been retired" in deployment
     assert "stageJobs.executors.%s.image is required" in deployment
     assert "stageJobs.executors.%s.image must use an OCI digest" in deployment
     assert "Git-SHA tag" not in deployment
@@ -240,7 +222,7 @@ def test_control_worker_is_separate_from_http_api_and_probes_are_meaningful() ->
     defaults = _read(CHART / "values.yaml")
     api = _read(CHART / "templates" / "dashboard-api.yaml")
     worker = _read(CHART / "templates" / "dashboard-control-worker.yaml")
-    compose = _read(ROOT / "compose.local.yaml")
+    compose = _read(ROOT / "compose.test.yaml")
 
     assert "controlWorker:" in defaults
     assert "DRONEAI_EMBED_CONTROL_LOOPS" in api

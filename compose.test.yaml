@@ -1,9 +1,8 @@
-name: droneai-local
+# Test dependencies and HTTP control plane only. Compute runs as Kubernetes Stage Jobs.
+name: droneai-test
 
 x-common-environment: &common-environment
   KAFKA_BROKER: kafka:9092
-  INBOX_LEASE_SECONDS: "300"
-  INBOX_BUSY_RETRY_SECONDS: "5"
   CANCELLATION_POLL_SECONDS: "2"
   S3_ENDPOINT: http://minio:9000
   S3_PUBLIC_ENDPOINT: http://${DRONEAI_ACCESS_HOST:-localhost}:${DRONEAI_MINIO_API_PORT:-30091}
@@ -20,14 +19,6 @@ x-worker-dependencies: &worker-dependencies
     condition: service_completed_successfully
   db-migrate:
     condition: service_completed_successfully
-
-x-gpu-reservation: &gpu-reservation
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          count: all
-          capabilities: [gpu]
 
 services:
   postgres:
@@ -75,8 +66,6 @@ services:
   kafka-init:
     image: apache/kafka:3.7.0
     restart: "no"
-    environment:
-      KAFKA_WORK_TOPIC_PARTITIONS: "${KAFKA_WORK_TOPIC_PARTITIONS:-4}"
     depends_on:
       kafka:
         condition: service_healthy
@@ -85,12 +74,8 @@ services:
       - -ec
       - |
         for topic_spec in \
-          vols-bruts:1 \
-          images-ortho:1 \
           pipeline-status:1 \
           pipeline-control:1 \
-          image-tiles:$${KAFKA_WORK_TOPIC_PARTITIONS} \
-          tile-detections:$${KAFKA_WORK_TOPIC_PARTITIONS} \
           pipeline-dead-letter:1
         do
           topic="$${topic_spec%%:*}"
@@ -163,58 +148,6 @@ services:
       <<: *common-environment
     command: [alembic, upgrade, head]
 
-  colmap-worker:
-    image: drone-colmap:latest
-    user: "10001:10001"
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:rw,nosuid,size=4g
-    restart: unless-stopped
-    depends_on: *worker-dependencies
-    environment:
-      <<: *common-environment
-      QT_QPA_PLATFORM: offscreen
-      WORK_DRIVES: '${DRONEAI_WORK_DRIVES_JSON:-[{"name":"local","label":"Local persistent workspace","mount":"/work/local"}]}'
-      WORK_DRIVE_DEFAULT: ${DRONEAI_WORK_DRIVE_DEFAULT:-local}
-      DRONEAI_GAUSSIAN_BACKEND: dronegs
-    volumes:
-      - ${DRONEAI_DATA_ROOT:-./.droneai-data}/colmap-work:/work/local
-    deploy: *gpu-reservation
-
-  ia-worker:
-    image: drone-ia:latest
-    restart: unless-stopped
-    depends_on: *worker-dependencies
-    environment:
-      <<: *common-environment
-      HF_TOKEN: ${HF_TOKEN:-}
-      HF_HOME: /cache/huggingface
-      HF_HUB_CACHE: /cache/huggingface/hub
-      TRANSFORMERS_CACHE: /cache/huggingface/transformers
-      ANALYSIS_MAX_TILE_RESULT_BYTES: "10485760"
-    volumes:
-      - model-cache:/cache/huggingface
-    deploy: *gpu-reservation
-
-  processing-worker:
-    image: drone-processing:latest
-    restart: unless-stopped
-    depends_on: *worker-dependencies
-    environment:
-      <<: *common-environment
-      UNTILER_DEDUPE_CENTER_THRESHOLD: "40"
-      UNTILER_DEDUPE_IOU_THRESHOLD: "0.05"
-      ANALYSIS_MAX_TILE_ATTEMPTS: "5"
-      ANALYSIS_FINALIZATION_LEASE_SECONDS: "1800"
-      ANALYSIS_MAX_TILE_RESULT_BYTES: "10485760"
-      ANALYSIS_MAX_AGGREGATE_RESULT_BYTES: "268435456"
-      ANALYSIS_MAX_RAW_DETECTIONS: "100000"
-      ANALYSIS_MAX_FINAL_DETECTIONS: "50000"
-
   dashboard-api:
     image: drone-dashboard-api:latest
     restart: unless-stopped
@@ -276,4 +209,3 @@ volumes:
   postgres-data:
   kafka-data:
   minio-data:
-  model-cache:

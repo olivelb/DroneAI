@@ -18,6 +18,9 @@ class _Query:
     def filter(self, *_criteria: object) -> _Query:
         return self
 
+    def join(self, *_criteria: object) -> _Query:
+        return self
+
     def order_by(self, *_criteria: object) -> _Query:
         return self
 
@@ -49,8 +52,8 @@ def _mission(vol_id: str, mission_id: int) -> SimpleNamespace:
     return SimpleNamespace(
         id=mission_id,
         vol_id=vol_id,
-        organization_id="legacy-unassigned",
-        workspace_prefix=f"missions/{vol_id}",
+        organization_id="tenant-a",
+        workspace_prefix=f"organizations/tenant-a/missions/{vol_id}",
     )
 
 
@@ -59,8 +62,8 @@ def test_raster_product_resolves_content_addressed_ortho(monkeypatch):
         map_support,
         "_workspace_object_keys",
         lambda _key, _checksum, _organization: {
-            "orthomosaic.tif": "blobs/sha256/aa/ortho",
-            "orthomosaic.tif.cog.json": "blobs/sha256/bb/sidecar",
+            "orthomosaic.tif": "organizations/tenant-a/blobs/sha256/aa/ortho",
+            "orthomosaic.tif.cog.json": "organizations/tenant-a/blobs/sha256/bb/sidecar",
         },
     )
     monkeypatch.setattr(map_support.storage, "file_exists", lambda _key: True)
@@ -72,8 +75,8 @@ def test_raster_product_resolves_content_addressed_ortho(monkeypatch):
         "ortho",
     )
 
-    assert product.key == "blobs/sha256/aa/ortho"
-    assert product.sidecar_key == "blobs/sha256/bb/sidecar"
+    assert product.key == "organizations/tenant-a/blobs/sha256/aa/ortho"
+    assert product.sidecar_key == "organizations/tenant-a/blobs/sha256/bb/sidecar"
     assert product.artifact_id == "raster-artifact-id"
     assert product.default_colormap == ""
 
@@ -83,7 +86,7 @@ def test_raster_product_resolves_height_layer_without_sidecar(monkeypatch):
         map_support,
         "_workspace_object_keys",
         lambda _key, _checksum, _organization: {
-            "orthomosaic.height.tif": "blobs/sha256/cc/height",
+            "orthomosaic.height.tif": "organizations/tenant-a/blobs/sha256/cc/height",
         },
     )
     monkeypatch.setattr(map_support.storage, "file_exists", lambda _key: True)
@@ -95,32 +98,22 @@ def test_raster_product_resolves_height_layer_without_sidecar(monkeypatch):
         "depth",
     )
 
-    assert product.key == "blobs/sha256/cc/height"
+    assert product.key == "organizations/tenant-a/blobs/sha256/cc/height"
     assert product.sidecar_key is None
     assert product.default_colormap == "depth"
 
 
-def test_raster_product_keeps_legacy_mission_compatibility(monkeypatch):
-    existing = {
-        "missions/legacy/orthomosaic.tif",
-        "missions/legacy/orthomosaic.tif.cog.json",
-    }
+def test_raster_product_rejects_historical_root_without_artifact(monkeypatch):
     monkeypatch.setattr(
         map_support.storage,
         "file_exists",
-        lambda key: key in existing,
+        lambda _key: pytest.fail("historical root object must not be probed"),
     )
-
-    product = map_support.resolve_raster_product(
-        _Session(None),
-        _mission("legacy", 8),
-        "legacy",
-        "ortho",
-    )
-
-    assert product.key == "missions/legacy/orthomosaic.tif"
-    assert product.sidecar_key == "missions/legacy/orthomosaic.tif.cog.json"
-    assert product.artifact_id is None
+    with pytest.raises(HTTPException) as error:
+        map_support.resolve_raster_product(
+            _Session(None), _mission("mission-1", 8), "mission-1", "ortho"
+        )
+    assert error.value.status_code == 404
 
 
 def test_raster_product_fails_closed_for_incomplete_versioned_artifact(
@@ -130,7 +123,7 @@ def test_raster_product_fails_closed_for_incomplete_versioned_artifact(
         map_support,
         "_workspace_object_keys",
         lambda _key, _checksum, _organization: {
-            "unrelated.txt": "blobs/sha256/dd/other"
+            "unrelated.txt": "organizations/tenant-a/blobs/sha256/dd/other"
         },
     )
 
@@ -151,7 +144,7 @@ def test_pipeline_detection_features_are_scoped_and_decorated(monkeypatch):
         map_support,
         "resolve_detection_product",
         lambda _session, _mission: map_support.DetectionProductObject(
-            key="blobs/sha256/ee/detections",
+            key="organizations/tenant-a/blobs/sha256/ee/detections",
             artifact_id="detections-artifact-id",
         ),
     )
@@ -187,7 +180,7 @@ def test_pipeline_detection_features_are_scoped_and_decorated(monkeypatch):
     features, truncated = result
     assert truncated is False
     assert len(features) == 1
-    assert features[0]["properties"]["source"] == "legacy"
+    assert features[0]["properties"]["source"] == "pipeline"
     assert features[0]["properties"]["name"] == "car"
 
 
@@ -196,7 +189,7 @@ def test_pipeline_detection_features_reject_cross_mission_artifact(monkeypatch):
         map_support,
         "resolve_detection_product",
         lambda _session, _mission: map_support.DetectionProductObject(
-            key="blobs/sha256/ff/detections",
+            key="organizations/tenant-a/blobs/sha256/ff/detections",
             artifact_id="detections-artifact-id",
         ),
     )
@@ -232,7 +225,7 @@ def test_pipeline_artifact_search_applies_operator_filters(monkeypatch):
                 "class_name": "car",
                 "name": "car",
                 "confidence": 0.91,
-                "source": "legacy",
+                "source": "pipeline",
             },
         },
         {
@@ -242,7 +235,7 @@ def test_pipeline_artifact_search_applies_operator_filters(monkeypatch):
                 "class_name": "building",
                 "name": "building",
                 "confidence": 0.7,
-                "source": "legacy",
+                "source": "pipeline",
             },
         },
     ]
@@ -266,3 +259,66 @@ def test_pipeline_artifact_search_applies_operator_filters(monkeypatch):
     )
 
     assert selected == ([features[0]], False)
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_pipeline_vector_and_export_consumers_never_query_retired_rows(monkeypatch, published):
+    rasters = importlib.import_module("app4-dashboard.api.routers.map_rasters")
+    exports = importlib.import_module("app4-dashboard.api.routers.map_exports")
+    features = [{
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [3.1, 42.4]},
+        "properties": {"source": "pipeline", "class_name": "car"},
+    }]
+    result = (features, False) if published else None
+
+    class ArtifactOnlySession:
+        def query(self, *_entities):
+            pytest.fail("pipeline consumers must not query historical Detection rows")
+
+    session = ArtifactOnlySession()
+    for module in (rasters, exports):
+        monkeypatch.setattr(module, "pipeline_detection_features", lambda *_args: result)
+    expected = features if published else []
+    assert rasters._pipeline_features(
+        session, _mission("mission-1", 7), "mission-1", None, 10
+    ) == (expected, False)
+    assert list(exports._pipeline_features(
+        session, _mission("mission-1", 7), "mission-1"
+    )) == expected
+
+
+def test_vector_export_all_keeps_pipeline_manual_and_analysis_layers(monkeypatch):
+    exports = importlib.import_module("app4-dashboard.api.routers.map_exports")
+    calls = []
+    monkeypatch.setattr(exports, "_pipeline_features", lambda *_args: iter([{"id": "pipeline"}]))
+
+    def stored(_session, mission_id, sources, runs):
+        calls.append((mission_id, sources, runs))
+        return iter([{"id": "manual"}, {"id": "ai"}])
+
+    monkeypatch.setattr(exports, "_stored_features", stored)
+    result = list(exports._export_features(
+        _Session(None), _mission("mission-1", 7), "mission-1", "all", {"run-1"}
+    ))
+    assert result == [{"id": "pipeline"}, {"id": "manual"}, {"id": "ai"}]
+    assert calls == [(7, {"manual", "ai"}, {"run-1"})]
+
+
+def test_vector_layer_rejects_retired_source_before_storage_access():
+    rasters = importlib.import_module("app4-dashboard.api.routers.map_rasters")
+    with pytest.raises(HTTPException) as error:
+        rasters.vector_layer(
+            "mission-1", None, bbox=None, sources="legacy", run_ids=None, limit=10
+        )
+    assert error.value.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("vol_id", "layer", "status_code"),
+    [("../escape", "ortho", 400), ("mission-1", "missing", 404)],
+)
+def test_map_layer_validation_preserves_identity_and_layer_guards(vol_id, layer, status_code):
+    with pytest.raises(HTTPException) as error:
+        map_support.validate_map_layer(vol_id, layer)
+    assert error.value.status_code == status_code

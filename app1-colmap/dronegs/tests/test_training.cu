@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -515,7 +516,7 @@ int main() {
         }
         dronegs::OrderedAlphaTrainingContext progressive_sh_context(
             rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::dronegs_dev16,
+            dronegs::MrnfOptimizerProfile::reference_absolute,
             2U, 1U);
         if (progressive_sh_context.active_sh_degree() != 0U) {
             throw std::runtime_error(
@@ -536,21 +537,22 @@ int main() {
         dronegs::OrderedAlphaTrainingContext rate_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::reference_absolute);
-        auto noise_parent = split_parent;
-        noise_parent.opacity_logit = -4.0F;
-        auto noise_neighbor = noise_parent;
-        noise_neighbor.xyz[0] += 0.1F;
+        // The production percentile scale needs a non-degenerate population.
+        auto noise_fixture = rate_fixture;
+        for (auto& gaussian : noise_fixture) {
+            gaussian.opacity_logit = -4.0F;
+        }
         dronegs::OrderedAlphaTrainingContext noise_first(
-            {noise_parent, noise_neighbor}, 32U * 32U, 1'000U, 2U,
-            dronegs::MrnfOptimizerProfile::dronegs_dev16,
+            noise_fixture, 32U * 32U, 1'000U, noise_fixture.size(),
+            dronegs::MrnfOptimizerProfile::reference_absolute,
             0U, 1000U, 42U);
         dronegs::OrderedAlphaTrainingContext noise_repeat(
-            {noise_parent, noise_neighbor}, 32U * 32U, 1'000U, 2U,
-            dronegs::MrnfOptimizerProfile::dronegs_dev16,
+            noise_fixture, 32U * 32U, 1'000U, noise_fixture.size(),
+            dronegs::MrnfOptimizerProfile::reference_absolute,
             0U, 1000U, 42U);
         dronegs::OrderedAlphaTrainingContext noise_other(
-            {noise_parent, noise_neighbor}, 32U * 32U, 1'000U, 2U,
-            dronegs::MrnfOptimizerProfile::dronegs_dev16,
+            noise_fixture, 32U * 32U, 1'000U, noise_fixture.size(),
+            dronegs::MrnfOptimizerProfile::reference_absolute,
             0U, 1000U, 43U);
         static_cast<void>(noise_first.train_step(
             quality_camera, split_target.data(), split_target.size()));
@@ -611,371 +613,10 @@ int main() {
         require_rate(
             initial_rates.rotation_epsilon,
             1.0e-15F, 1.0e-20F, "rotation epsilon");
-        const auto require_reference_absgrad_parity =
-            [&](dronegs::MrnfOptimizerProfile profile,
-                float expected_absgrad_weight,
-                const char* label) {
-                dronegs::OrderedAlphaTrainingContext context(
-                    rate_fixture, 32U * 32U, 2U, 8U, profile);
-                const auto rates = context.current_learning_rates();
-                require_rate(
-                    rates.position, initial_rates.position,
-                    1.0e-10F, label);
-                require_rate(
-                    rates.dc, initial_rates.dc, 1.0e-8F, label);
-                require_rate(
-                    rates.opacity, initial_rates.opacity,
-                    1.0e-8F, label);
-                require_rate(
-                    rates.scale, initial_rates.scale,
-                    1.0e-8F, label);
-                require_rate(
-                    rates.rotation, initial_rates.rotation,
-                    1.0e-8F, label);
-                require_rate(
-                    dronegs::mrnf_absgrad_score_weight(profile),
-                    expected_absgrad_weight, 1.0e-8F, label);
-            };
-        require_reference_absgrad_parity(
-            dronegs::MrnfOptimizerProfile::
-                reference_absolute_absgrad025,
-            0.25F, "reference AbsGrad 0.25");
-        require_reference_absgrad_parity(
-            dronegs::MrnfOptimizerProfile::
-                reference_absolute_absgrad050,
-            0.50F, "reference AbsGrad 0.50");
-        dronegs::OrderedAlphaTrainingContext native_rate_context(
-            rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::dronegs_dev16);
-        const auto native_rates =
-            native_rate_context.current_learning_rates();
-        const float native_diagonal = std::sqrt(
-            0.07F * 0.07F +
-            0.14F * 0.14F +
-            0.21F * 0.21F);
-        require_rate(
-            native_rates.position,
-            native_diagonal * 1.6e-4F,
-            1.0e-9F, "dev16 position");
-        require_rate(native_rates.dc, 5.0e-2F, 1.0e-8F, "dev16 dc");
-        require_rate(
-            native_rates.opacity, 1.0e-2F,
-            1.0e-8F, "dev16 opacity");
-        require_rate(
-            native_rates.scale, 5.0e-3F,
-            1.0e-8F, "dev16 scale");
-        require_rate(
-            native_rates.rotation, 1.0e-3F,
-            1.0e-8F, "dev16 rotation");
-        require_rate(
-            native_rates.position_epsilon, 1.0e-8F,
-            1.0e-12F, "dev16 position epsilon");
-        require_rate(
-            native_rates.dc_epsilon, 1.0e-8F,
-            1.0e-12F, "dev16 dc epsilon");
-        require_rate(
-            native_rates.opacity_epsilon, 1.0e-8F,
-            1.0e-12F, "dev16 opacity epsilon");
-        require_rate(
-            native_rates.scale_epsilon, 1.0e-8F,
-            1.0e-12F, "dev16 scale epsilon");
-        require_rate(
-            native_rates.rotation_epsilon, 1.0e-8F,
-            1.0e-12F, "dev16 rotation epsilon");
-        dronegs::OrderedAlphaTrainingContext dc_only_context(
-            rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::reference_dc_only);
-        const auto dc_only_rates =
-            dc_only_context.current_learning_rates();
-        require_rate(
-            dc_only_rates.position, native_rates.position,
-            1.0e-9F, "DC-only position isolation");
-        require_rate(
-            dc_only_rates.dc, initial_rates.dc,
-            1.0e-8F, "DC-only DC");
-        require_rate(
-            dc_only_rates.opacity, native_rates.opacity,
-            1.0e-8F, "DC-only opacity isolation");
-        require_rate(
-            dc_only_rates.scale, native_rates.scale,
-            1.0e-8F, "DC-only scale isolation");
-        require_rate(
-            dc_only_rates.rotation, native_rates.rotation,
-            1.0e-8F, "DC-only rotation isolation");
-        require_rate(
-            dc_only_rates.dc_epsilon, 1.0e-15F,
-            1.0e-20F, "DC-only DC epsilon");
-        require_rate(
-            dc_only_rates.position_epsilon, 1.0e-8F,
-            1.0e-12F, "DC-only position epsilon isolation");
-        dronegs::OrderedAlphaTrainingContext position_only_context(
-            rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::reference_position_only);
-        const auto position_only_rates =
-            position_only_context.current_learning_rates();
-        require_rate(
-            position_only_rates.position, initial_rates.position,
-            1.0e-10F, "position-only position");
-        require_rate(
-            position_only_rates.dc, native_rates.dc,
-            1.0e-8F, "position-only DC isolation");
-        require_rate(
-            position_only_rates.opacity, native_rates.opacity,
-            1.0e-8F, "position-only opacity isolation");
-        require_rate(
-            position_only_rates.scale, native_rates.scale,
-            1.0e-8F, "position-only scale isolation");
-        require_rate(
-            position_only_rates.rotation, native_rates.rotation,
-            1.0e-8F, "position-only rotation isolation");
-        require_rate(
-            position_only_rates.position_epsilon, 1.0e-15F,
-            1.0e-20F, "position-only position epsilon");
-        require_rate(
-            position_only_rates.dc_epsilon, 1.0e-8F,
-            1.0e-12F, "position-only DC epsilon isolation");
-        dronegs::OrderedAlphaTrainingContext opacity_only_context(
-            rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::reference_opacity_only);
-        const auto opacity_only_rates =
-            opacity_only_context.current_learning_rates();
-        require_rate(
-            opacity_only_rates.opacity, initial_rates.opacity,
-            1.0e-8F, "opacity-only opacity");
-        require_rate(
-            opacity_only_rates.opacity_epsilon, 1.0e-15F,
-            1.0e-20F, "opacity-only epsilon");
-        require_rate(
-            opacity_only_rates.dc, native_rates.dc,
-            1.0e-8F, "opacity-only DC isolation");
-        dronegs::OrderedAlphaTrainingContext dc_opacity_context(
-            rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::reference_dc_opacity);
-        const auto dc_opacity_rates =
-            dc_opacity_context.current_learning_rates();
-        require_rate(
-            dc_opacity_rates.dc, initial_rates.dc,
-            1.0e-8F, "DC-opacity DC");
-        require_rate(
-            dc_opacity_rates.opacity, initial_rates.opacity,
-            1.0e-8F, "DC-opacity opacity");
-        require_rate(
-            dc_opacity_rates.position, native_rates.position,
-            1.0e-9F, "DC-opacity position isolation");
-        require_rate(
-            dc_opacity_rates.scale, native_rates.scale,
-            1.0e-8F, "DC-opacity scale isolation");
-        require_rate(
-            dc_opacity_rates.rotation, native_rates.rotation,
-            1.0e-8F, "DC-opacity rotation isolation");
-        require_rate(
-            dc_opacity_rates.dc_epsilon, 1.0e-15F,
-            1.0e-20F, "DC-opacity DC epsilon");
-        require_rate(
-            dc_opacity_rates.opacity_epsilon, 1.0e-15F,
-            1.0e-20F, "DC-opacity opacity epsilon");
-        require_rate(
-            dc_opacity_rates.position_epsilon, 1.0e-8F,
-            1.0e-12F, "DC-opacity position epsilon isolation");
-        const auto require_calibrated_dc =
-            [&](dronegs::MrnfOptimizerProfile profile,
-                float expected_dc, const char* label) {
-                dronegs::OrderedAlphaTrainingContext context(
-                    rate_fixture, 32U * 32U, 2U, 8U, profile);
-                const auto rates = context.current_learning_rates();
-                require_rate(
-                    rates.dc, expected_dc, 1.0e-8F, label);
-                require_rate(
-                    rates.opacity, initial_rates.opacity,
-                    1.0e-8F, "calibrated opacity");
-                require_rate(
-                    rates.position, native_rates.position,
-                    1.0e-9F, "calibrated position isolation");
-                require_rate(
-                    rates.scale, native_rates.scale,
-                    1.0e-8F, "calibrated scale isolation");
-                require_rate(
-                    rates.rotation, native_rates.rotation,
-                    1.0e-8F, "calibrated rotation isolation");
-                require_rate(
-                    rates.dc_epsilon, 1.0e-15F,
-                    1.0e-20F, "calibrated DC epsilon");
-                require_rate(
-                    rates.opacity_epsilon, 1.0e-15F,
-                    1.0e-20F, "calibrated opacity epsilon");
-                require_rate(
-                    rates.position_epsilon, 1.0e-8F,
-                    1.0e-12F, "calibrated position epsilon");
-            };
-        require_calibrated_dc(
-            dronegs::MrnfOptimizerProfile::calibrated_dc_005_opacity,
-            5.0e-3F, "calibrated DC 0.005");
-        require_calibrated_dc(
-            dronegs::MrnfOptimizerProfile::calibrated_dc_010_opacity,
-            1.0e-2F, "calibrated DC 0.010");
-        require_calibrated_dc(
-            dronegs::MrnfOptimizerProfile::calibrated_dc_020_opacity,
-            2.0e-2F, "calibrated DC 0.020");
-        const auto require_opacity_candidate =
-            [&](dronegs::MrnfOptimizerProfile profile,
-                float expected_opacity, const char* label) {
-                dronegs::OrderedAlphaTrainingContext context(
-                    rate_fixture, 32U * 32U, 2U, 8U, profile);
-                const auto rates = context.current_learning_rates();
-                require_rate(rates.dc, 1.0e-2F, 1.0e-8F, label);
-                require_rate(
-                    rates.opacity, expected_opacity,
-                    1.0e-8F, label);
-                require_rate(
-                    rates.position, native_rates.position,
-                    1.0e-9F, "opacity candidate position isolation");
-                require_rate(
-                    rates.scale, native_rates.scale,
-                    1.0e-8F, "opacity candidate scale isolation");
-                require_rate(
-                    rates.rotation, native_rates.rotation,
-                    1.0e-8F, "opacity candidate rotation isolation");
-                require_rate(
-                    rates.dc_epsilon, 1.0e-15F,
-                    1.0e-20F, "opacity candidate DC epsilon");
-                require_rate(
-                    rates.opacity_epsilon, 1.0e-15F,
-                    1.0e-20F, "opacity candidate opacity epsilon");
-            };
-        require_opacity_candidate(
-            dronegs::MrnfOptimizerProfile::
-                calibrated_dc_010_opacity_024,
-            2.4e-2F, "opacity 0.024");
-        require_opacity_candidate(
-            dronegs::MrnfOptimizerProfile::
-                calibrated_dc_010_opacity_048,
-            4.8e-2F, "opacity 0.048");
-        require_opacity_candidate(
-            dronegs::MrnfOptimizerProfile::
-                calibrated_dc_010_opacity_096,
-            9.6e-2F, "opacity 0.096");
-        const auto require_geometry_candidate =
-            [&](dronegs::MrnfOptimizerProfile profile,
-                bool use_reference_scale, bool use_reference_rotation,
-                const char* label) {
-                dronegs::OrderedAlphaTrainingContext context(
-                    rate_fixture, 32U * 32U, 2U, 8U, profile);
-                const auto rates = context.current_learning_rates();
-                require_rate(rates.dc, 1.0e-2F, 1.0e-8F, label);
-                require_rate(
-                    rates.opacity, 9.6e-2F, 1.0e-8F, label);
-                require_rate(
-                    rates.position, native_rates.position,
-                    1.0e-9F, "geometry candidate position isolation");
-                require_rate(
-                    rates.scale,
-                    use_reference_scale
-                        ? initial_rates.scale
-                        : native_rates.scale,
-                    1.0e-8F, "geometry candidate scale");
-                require_rate(
-                    rates.rotation,
-                    use_reference_rotation
-                        ? initial_rates.rotation
-                        : native_rates.rotation,
-                    1.0e-8F, "geometry candidate rotation");
-                require_rate(
-                    rates.scale_epsilon,
-                    use_reference_scale ? 1.0e-15F : 1.0e-8F,
-                    1.0e-12F, "geometry candidate scale epsilon");
-                require_rate(
-                    rates.rotation_epsilon,
-                    use_reference_rotation ? 1.0e-15F : 1.0e-8F,
-                    1.0e-12F, "geometry candidate rotation epsilon");
-                require_rate(
-                    rates.dc_epsilon, 1.0e-15F,
-                    1.0e-20F, "geometry candidate DC epsilon");
-                require_rate(
-                    rates.opacity_epsilon, 1.0e-15F,
-                    1.0e-20F, "geometry candidate opacity epsilon");
-            };
-        require_geometry_candidate(
-            dronegs::MrnfOptimizerProfile::dev34_opacity096_reference_scale,
-            true, false, "dev34 scale");
-        require_geometry_candidate(
-            dronegs::MrnfOptimizerProfile::dev34_opacity096_reference_rotation,
-            false, true, "dev34 rotation");
-        require_geometry_candidate(
-            dronegs::MrnfOptimizerProfile::
-                dev34_opacity096_reference_scale_rotation,
-            true, true, "dev34 scale rotation");
-        const auto require_staged_rotation =
-            [&](dronegs::MrnfOptimizerProfile profile,
-                float expected_final_rotation,
-                const char* label) {
-                dronegs::OrderedAlphaTrainingContext context(
-                    rate_fixture, 32U * 32U, 10U, 8U, profile);
-                auto rates = context.current_learning_rates();
-                require_rate(
-                    rates.dc, 1.0e-2F, 1.0e-8F, label);
-                require_rate(
-                    rates.opacity, 9.6e-2F, 1.0e-8F, label);
-                require_rate(
-                    rates.scale, initial_rates.scale,
-                    1.0e-8F, "staged rotation scale");
-                require_rate(
-                    rates.rotation, 1.0e-3F,
-                    1.0e-8F, "staged rotation initial");
-                for (std::size_t step = 0U; step < 4U; ++step) {
-                    static_cast<void>(context.train_step(
-                        quality_camera, split_target.data(),
-                        split_target.size()));
-                }
-                rates = context.current_learning_rates();
-                require_rate(
-                    rates.rotation, 1.0e-3F,
-                    1.0e-8F, "staged rotation before switch");
-                static_cast<void>(context.train_step(
-                    quality_camera, split_target.data(),
-                    split_target.size()));
-                rates = context.current_learning_rates();
-                require_rate(
-                    rates.rotation, expected_final_rotation,
-                    1.0e-8F, "staged rotation after switch");
-                require_rate(
-                    rates.scale_epsilon, 1.0e-15F,
-                    1.0e-20F, "staged rotation scale epsilon");
-                require_rate(
-                    rates.rotation_epsilon, 1.0e-15F,
-                    1.0e-20F, "staged rotation epsilon");
-            };
-        require_staged_rotation(
-            dronegs::MrnfOptimizerProfile::
-                dev35_opacity096_reference_scale_staged_rotation004,
-            4.0e-3F, "dev35 staged rotation 0.004");
-        require_staged_rotation(
-            dronegs::MrnfOptimizerProfile::
-                dev35_opacity096_reference_scale_staged_rotation008,
-            8.0e-3F, "dev35 staged rotation 0.008");
-        require_staged_rotation(
-            dronegs::MrnfOptimizerProfile::
-                dev36_staged_rotation008_absgrad025,
-            8.0e-3F, "dev36 AbsGrad 0.25");
-        require_staged_rotation(
-            dronegs::MrnfOptimizerProfile::
-                dev36_staged_rotation008_absgrad050,
-            8.0e-3F, "dev36 AbsGrad 0.50");
-        require_staged_rotation(
-            dronegs::MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa005,
-            8.0e-3F, "dev37 antialias 0.05");
-        require_staged_rotation(
-            dronegs::MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa030,
-            8.0e-3F, "dev37 antialias 0.30");
-        require_staged_rotation(
-            dronegs::MrnfOptimizerProfile::
-                dev38_staged_rotation008_absgrad050_fastgs,
-            8.0e-3F, "dev38 FastGS compatibility");
         dronegs::OrderedAlphaTrainingContext fastgs_context(
             rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::
-                dev38_staged_rotation008_absgrad050_fastgs);
+            dronegs::MrnfOptimizerProfile::reference_absolute,
+            0U, 1000U, 0U, true);
         const auto fastgs_quality = fastgs_context.evaluate_quality(
             quality_camera, split_target.data(), split_target.size());
         const auto fastgs_objective =
@@ -1114,7 +755,7 @@ int main() {
             fastgs_sh_fixture, 32U * 32U, 2U,
             fastgs_sh_fixture.size(),
             dronegs::MrnfOptimizerProfile::
-                dev38_staged_rotation008_absgrad050_fastgs,
+                reference_absolute,
             3U, 1000U, 123U, true, 54.59815F, true);
         fastgs_sh_context.set_active_sh_degree(3U);
         static_cast<void>(fastgs_sh_context.train_step(
@@ -1158,34 +799,6 @@ int main() {
             throw std::runtime_error(
                 "structural FastGS active-only SH expansion mismatch");
         }
-        dronegs::OrderedAlphaTrainingContext scale_only_context(
-            rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::reference_scale_only);
-        const auto scale_only_rates =
-            scale_only_context.current_learning_rates();
-        require_rate(
-            scale_only_rates.scale, initial_rates.scale,
-            1.0e-8F, "scale-only scale");
-        require_rate(
-            scale_only_rates.scale_epsilon, 1.0e-15F,
-            1.0e-20F, "scale-only epsilon");
-        require_rate(
-            scale_only_rates.position, native_rates.position,
-            1.0e-9F, "scale-only position isolation");
-        dronegs::OrderedAlphaTrainingContext rotation_only_context(
-            rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::reference_rotation_only);
-        const auto rotation_only_rates =
-            rotation_only_context.current_learning_rates();
-        require_rate(
-            rotation_only_rates.rotation, initial_rates.rotation,
-            1.0e-8F, "rotation-only rotation");
-        require_rate(
-            rotation_only_rates.rotation_epsilon, 1.0e-15F,
-            1.0e-20F, "rotation-only epsilon");
-        require_rate(
-            rotation_only_rates.scale, native_rates.scale,
-            1.0e-8F, "rotation-only scale isolation");
         static_cast<void>(rate_context.train_step(
             quality_camera, split_target.data(), split_target.size()));
         const auto first_telemetry =
@@ -1412,15 +1025,15 @@ int main() {
         dronegs::OrderedAlphaTrainingContext seeded_first(
             gumbel_parents, 32U * 32U, 2U, 10U,
             dronegs::MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa005);
+                reference_absolute);
         dronegs::OrderedAlphaTrainingContext seeded_repeat(
             gumbel_parents, 32U * 32U, 2U, 10U,
             dronegs::MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa005);
+                reference_absolute);
         dronegs::OrderedAlphaTrainingContext seeded_other(
             gumbel_parents, 32U * 32U, 2U, 10U,
             dronegs::MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa005);
+                reference_absolute);
         static_cast<void>(seeded_first.train_step(
             quality_camera, split_target.data(), split_target.size()));
         static_cast<void>(seeded_repeat.train_step(
@@ -1480,12 +1093,12 @@ int main() {
         dronegs::OrderedAlphaTrainingContext uninterrupted(
             rate_fixture, 32U * 32U, 10U, 8U,
             dronegs::MrnfOptimizerProfile::
-                dev38_staged_rotation008_absgrad050_fastgs,
+                reference_absolute,
             2U, 2U, 123U, true);
         dronegs::OrderedAlphaTrainingContext interrupted(
             rate_fixture, 32U * 32U, 10U, 8U,
             dronegs::MrnfOptimizerProfile::
-                dev38_staged_rotation008_absgrad050_fastgs,
+                reference_absolute,
             2U, 2U, 123U, true);
         for (std::uint64_t step = 0U; step < 5U; ++step) {
             static_cast<void>(uninterrupted.train_step(
@@ -1511,10 +1124,34 @@ int main() {
         interrupted.save_checkpoint(
             checkpoint_path, saved_progress,
             "test-dataset", "test-configuration");
+        const auto retired_checkpoint = root / "retired-v4.ckpt";
+        std::filesystem::copy_file(checkpoint_path, retired_checkpoint);
+        {
+            std::fstream stream(
+                retired_checkpoint,
+                std::ios::binary | std::ios::in | std::ios::out);
+            stream.seekp(16);
+            const std::uint32_t retired_version = 4U;
+            stream.write(
+                reinterpret_cast<const char*>(&retired_version),
+                sizeof(retired_version));
+        }
+        bool retired_checkpoint_rejected = false;
+        try {
+            static_cast<void>(interrupted.load_checkpoint(
+                retired_checkpoint, "test-dataset", "test-configuration"));
+        } catch (const std::runtime_error& error) {
+            retired_checkpoint_rejected =
+                std::string(error.what()).find("unsupported DroneGS checkpoint format")
+                != std::string::npos;
+        }
+        if (!retired_checkpoint_rejected) {
+            throw std::runtime_error("retired checkpoint version was accepted");
+        }
         dronegs::OrderedAlphaTrainingContext resumed(
             rate_fixture, 32U * 32U, 10U, 8U,
             dronegs::MrnfOptimizerProfile::
-                dev38_staged_rotation008_absgrad050_fastgs,
+                reference_absolute,
             2U, 2U, 123U, true);
         const auto loaded_progress = resumed.load_checkpoint(
             checkpoint_path, "test-dataset",
@@ -1805,7 +1442,11 @@ int main() {
         options.output_path = root.parent_path() / "unused-output";
         options.run_manifest =
             root.parent_path() / "unused-output" / "trainer_run.json";
-        options.iterations = 30U;
+        // Stay below the first topology window, with enough steps for the
+        // qualified 0.002 DC rate (the removed dev16 fixture used 0.05).
+        options.iterations = 150U;
+        options.raster_profile = "fastgs";
+        options.pruning_policy = "spatial-bounds";
         options.strategy = "mrnf";
         options.sh_degree = 0U;
         options.max_cap = 100U;

@@ -4,7 +4,7 @@ import { Database, Download, MapPinned, Tags } from "lucide-react";
 import { useI18n } from "../../lib/i18n/provider";
 
 export type VectorFormat = "gpkg" | "geojson";
-export type VectorScope = "all" | "ai" | "legacy";
+export type VectorScope = "all" | "ai" | "pipeline";
 
 export default function VectorExportCards({
   vectorFormat,
@@ -60,7 +60,7 @@ export default function VectorExportCards({
           >
             <option value="all">{t("export.allSources")}</option>
             <option value="ai">{t("export.aiAnalyses")}</option>
-            <option value="legacy">{t("export.initialPipeline")}</option>
+            <option value="pipeline">{t("export.initialPipeline")}</option>
           </select>
           <select
             value={vectorFormat}
@@ -73,7 +73,7 @@ export default function VectorExportCards({
             <option value="geojson">GeoJSON</option>
           </select>
         </div>
-        {visibleRunIds.length > 0 && vectorScope !== "legacy" && (
+        {visibleRunIds.length > 0 && vectorScope !== "pipeline" && (
           <label className="mt-2.5 flex items-start gap-2 rounded-xl bg-[#f7f9f8] p-2.5 text-[11px] leading-4 text-[#61706b]">
             <input
               type="checkbox"

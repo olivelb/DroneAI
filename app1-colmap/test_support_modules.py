@@ -1,10 +1,8 @@
-import json
 import os
 import sys
 import tempfile
 import types
 import unittest
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 
@@ -37,10 +35,11 @@ except ImportError:
 else:
     previous_rasterio_modules = None
 
-import main as app1_main
+from colmap_worker import artifacts as worker_artifacts
+from colmap_worker.stages.alignment import undistort_and_align_colmap
+from colmap_worker.stages.reconstruction import prepare_sparse_bootstrap
 import pipeline_support
 import worker_support
-from colmap_worker import mission_runner
 from colmap_worker import runtime as worker_runtime
 from colmap_worker.stages import gaussian as gaussian_stage
 from colmap_worker.stages import reconstruction as reconstruction_stage
@@ -61,17 +60,6 @@ def session_context(session):
 
 
 class TestWorkerSupport(unittest.TestCase):
-    def test_colmap_consumer_replays_uncommitted_initial_work(self):
-        consumer = MagicMock()
-        with patch.object(worker_support, "Consumer", return_value=consumer) as factory:
-            result = worker_support.create_consumer("kafka:9092", "vols-bruts")
-
-        self.assertIs(result, consumer)
-        config = factory.call_args.args[0]
-        self.assertEqual(config["auto.offset.reset"], "earliest")
-        self.assertFalse(config["enable.auto.commit"])
-        self.assertFalse(config["enable.auto.offset.store"])
-        consumer.subscribe.assert_called_once_with(["vols-bruts"])
 
     def test_worker_cancellation_state_lifecycle(self):
         state = worker_support.WorkerCancellationState()
@@ -87,188 +75,12 @@ class TestWorkerSupport(unittest.TestCase):
         state.clear()
         state.ensure_not_cancelled()
         self.assertFalse(state.should_cancel("vol-1"))
-    def test_runtime_dependencies_are_lazy_and_explicit(self):
-        worker_runtime.reset_worker_runtime()
-        self.addCleanup(worker_runtime.reset_worker_runtime)
-
-        with self.assertRaisesRegex(RuntimeError, "runtime is not configured"):
-            worker_runtime.require_producer()
-
-        reporter = MagicMock()
-        producer = object()
-        worker_runtime.configure_worker_runtime(producer, reporter)
-
-        self.assertIs(worker_runtime.require_producer(), producer)
-        with patch.object(worker_runtime.mission_state_tracker, "record_progress") as record:
-            worker_runtime.report_mission_progress(
-                "vol-runtime",
-                "TESTING",
-                42,
-                details={"source": "unit-test"},
-            )
-
-        record.assert_called_once_with(
-            "vol-runtime",
-            "TESTING",
-            42,
-            status="processing",
-            log=None,
-            details={"source": "unit-test"},
-        )
-        reporter.assert_called_once_with(
-            "vol-runtime",
-            "TESTING",
-            42,
-            status="processing",
-            log=None,
-            details={"source": "unit-test"},
-            organization_id="legacy-unassigned",
-        )
-
-    def test_build_mission_context_uses_s3_input_and_contained_work_path(self):
-        drives = '[{"name":"system"},{"name":"fast-storage"}]'
-        with patch.dict(
-            os.environ,
-            {"WORK_DRIVES": drives, "WORK_DRIVE_DEFAULT": "system"},
-            clear=False,
-        ):
-            with patch("pathlib.Path.is_dir", return_value=True):
-                mission_context = worker_support.build_mission_context(
-                    {
-                        "vol_id": "vol-007",
-                        "input_dataset": "datasets/banyuls",
-                        "pipeline": "modern",
-                        "work_drive": "fast-storage",
-                    }
-                )
-
-        self.assertEqual(mission_context.vol_id, "vol-007")
-        self.assertEqual(mission_context.input_dir, "datasets/banyuls")
-        self.assertEqual(mission_context.work_dir, "/work/fast-storage/vol-007")
-
-    def test_build_mission_context_rejects_disappeared_work_drive(self):
-        drives = '[{"name":"fast-storage"}]'
-        with patch.dict(
-            os.environ,
-            {"WORK_DRIVES": drives, "WORK_DRIVE_DEFAULT": "fast-storage"},
-            clear=False,
-        ):
-            with patch("pathlib.Path.is_dir", return_value=False):
-                with self.assertRaisesRegex(RuntimeError, "is not mounted"):
-                    worker_support.build_mission_context(
-                        {
-                            "vol_id": "vol-008",
-                            "input_dataset": "datasets/banyuls",
-                        }
-                    )
-
-    def test_publish_next_stage_message_uses_current_contract(self):
-        producer = MagicMock()
-
-        def confirm_delivery(_timeout):
-            producer.produce.call_args.kwargs["on_delivery"](None, None)
-            return 0
-
-        producer.poll.side_effect = confirm_delivery
-
-        worker_support.publish_next_stage_message(
-            producer,
-            "topic-out",
-            "vol-3",
-            "missions/vol-3/orthomosaic.tif",
-            {
-                "ai_backend": "sam-3",
-                "classes": ["truck"],
-                "ai_confidence": 0.8,
-                "sam_prompt": "vehicle",
-                "tile_size": 2048,
-                "attempt": 3,
-            },
-            lambda value: "sam3" if value == "sam-3" else value,
-        )
-
-        kwargs = producer.produce.call_args.kwargs
-        payload = json.loads(kwargs["value"])
-        self.assertEqual(kwargs["key"], "legacy-unassigned:vol-3")
-        self.assertEqual(payload["vol_id"], "vol-3")
-        self.assertEqual(payload["ortho_s3_key"], "missions/vol-3/orthomosaic.tif")
-        self.assertEqual(payload["classes"], ["truck"])
-        self.assertEqual(payload["ai_confidence"], 0.8)
-        self.assertEqual(payload["ai_backend"], "sam3")
-        self.assertEqual(payload["ai_model_variant"], "yolo26l")
-        self.assertEqual(payload["sam_prompt"], "vehicle")
-        self.assertEqual(payload["tile_size"], 2048)
-        self.assertEqual(payload["attempt"], 3)
-        self.assertEqual(payload["schema_version"], 1)
-        self.assertEqual(payload["event_type"], "orthomosaic")
-        self.assertEqual(payload["correlation_id"], "legacy-unassigned:vol-3")
-        self.assertTrue(payload["event_id"].startswith("orthomosaic:"))
-        producer.poll.assert_called_once()
-        producer.flush.assert_not_called()
-
-    def test_mission_state_tracker_loads_database_state(self):
-        mission = MagicMock(
-            vol_id="vol-11",
-            status="processing",
-            current_step="MATCHING",
-            progress=30,
-            updated_at=datetime(2026, 3, 26, tzinfo=timezone.utc),
-            error_message=None,
-            params={"pipeline": "modern"},
-            resume_info={"copy_progress": {"processed": 10}},
-        )
-        session = MagicMock()
-        session.query.return_value.filter.return_value.first.return_value = mission
-
-        with patch.object(worker_support, "get_session", return_value=session_context(session)):
-            state = worker_support.MissionStateTracker().load_state("vol-11")
-
-        self.assertEqual(state["vol_id"], "vol-11")
-        self.assertEqual(state["step"], "MATCHING")
-        self.assertEqual(state["resume_info"]["copy_progress"]["processed"], 10)
-
-    def test_mission_state_tracker_preserves_resume_metadata(self):
-        previous_state = {
-            "status": "processing",
-            "step": "FUSION",
-            "progress": 90,
-            "updated_at": "2026-03-26T00:00:00+00:00",
-            "last_log": "Fusion interrupted",
-        }
-        mission = MagicMock(
-            resume_info={},
-            vol_id="vol-012",
-            organization_id="legacy-unassigned",
-            workspace_prefix="missions/vol-012",
-        )
-        tracker = worker_support.MissionStateTracker()
-        mission_context = worker_support.MissionContext(
-            mission={
-                "pipeline": "modern",
-                "input_dataset": "datasets/banyuls",
-            },
-            vol_id="vol-012",
-            input_dir="datasets/banyuls",
-            work_dir="/work/system/vol-012",
-        )
-
-        with patch.object(tracker, "load_state", return_value=previous_state):
-            with patch.object(worker_support, "get_session", return_value=session_context(MagicMock())):
-                with patch.object(worker_support, "get_or_create_mission", return_value=mission):
-                    result = tracker.start_mission(mission_context)
-
-        self.assertEqual(result, previous_state)
-        self.assertEqual(mission.status, "processing")
-        self.assertEqual(mission.current_step, "STARTING")
-        self.assertEqual(mission.resume_info["resumed_from"]["step"], "FUSION")
 
 
 class TestPipelineSupport(unittest.TestCase):
     def test_merge_pipeline_params_has_expected_defaults(self):
-        legacy = pipeline_support.merge_pipeline_params("legacy", {})
         modern = pipeline_support.merge_pipeline_params("modern", {})
 
-        self.assertEqual(legacy["mvs_max_image_size"], "4000")
         self.assertEqual(modern["feature_max_image_size"], "2400")
         self.assertEqual(modern["feature_max_num_features"], "4096")
         self.assertEqual(modern["sift_first_octave"], "-1")
@@ -281,7 +93,6 @@ class TestPipelineSupport(unittest.TestCase):
             "15.0",
         )
         self.assertEqual(modern["mvs_max_image_size"], "2400")
-        self.assertFalse(legacy["rtk_refinement_enabled"])
         self.assertTrue(modern["rtk_refinement_enabled"])
         self.assertEqual(modern["rtk_refinement_iterations"], "25")
         self.assertEqual(modern["rtk_refinement_loss_scale"], "7.82")
@@ -484,7 +295,7 @@ class TestMainSupport(unittest.TestCase):
                 patch.object(reconstruction_stage, "sanitize_exif_for_colmap"),
                 patch.object(worker_runtime, "report_mission_progress"),
             ):
-                state = app1_main.prepare_sparse_bootstrap(
+                state = prepare_sparse_bootstrap(
                     preparation,
                     tmp_dir,
                     "vol-facade-cache",
@@ -515,7 +326,7 @@ class TestMainSupport(unittest.TestCase):
         )
 
         with patch.object(worker_runtime, "report_mission_progress"):
-            state = app1_main.undistort_and_align_colmap(
+            state = undistort_and_align_colmap(
                 preparation,
                 reconstruction,
                 rtk_state,
@@ -525,126 +336,6 @@ class TestMainSupport(unittest.TestCase):
 
         self.assertIsNone(state.alignment_transform_path)
 
-    def test_run_colmap_pipeline_cancellation_still_cleans_workspace(self):
-        cleanup = MagicMock(return_value=True)
-        with (
-            patch.object(
-                mission_runner,
-                "prepare_colmap_pipeline_run",
-                side_effect=worker_runtime.PipelineCancelledError("cancelled"),
-            ),
-            patch.object(worker_runtime, "report_mission_progress") as report,
-            patch.object(
-                mission_runner,
-                "cleanup_pipeline_workspace",
-                cleanup,
-            ),
-        ):
-            mission_runner.run_colmap_pipeline(
-                "/tmp/cancelled-workspace",
-                "datasets/mission",
-                "vol-cancelled",
-                {},
-            )
-
-        report.assert_called_once_with(
-            "vol-cancelled",
-            "CANCELLED",
-            0,
-            status="cancelled",
-            log="🚫 cancelled",
-            details={
-                "event": "mission_cancelled",
-                "terminal": True,
-                "workspace_cleanup_succeeded": True,
-            },
-        )
-        cleanup.assert_called_once_with(
-            "/tmp/cancelled-workspace",
-            "vol-cancelled",
-            final_pass=True,
-        )
-
-    def test_run_colmap_pipeline_preserves_modular_stage_order(self):
-        calls = []
-        states = {
-            "prepare": types.SimpleNamespace(facade_mode=False),
-            "reconstruct": types.SimpleNamespace(),
-            "rtk": types.SimpleNamespace(),
-            "align": types.SimpleNamespace(),
-            "gaussian": types.SimpleNamespace(),
-            "publish": types.SimpleNamespace(),
-        }
-
-        def stage(name):
-            def run(*_args, **_kwargs):
-                calls.append(name)
-                return states.get(name)
-
-            return run
-
-        with (
-            patch.object(
-                mission_runner,
-                "prepare_colmap_pipeline_run",
-                side_effect=stage("prepare"),
-            ),
-            patch.object(
-                mission_runner,
-                "reconstruct_colmap_sparse",
-                side_effect=stage("reconstruct"),
-            ),
-            patch.object(
-                mission_runner,
-                "refine_colmap_rtk",
-                side_effect=stage("rtk"),
-            ),
-            patch.object(
-                mission_runner,
-                "undistort_and_align_colmap",
-                side_effect=stage("align"),
-            ),
-            patch.object(
-                mission_runner,
-                "run_gaussian_product",
-                side_effect=stage("gaussian"),
-            ),
-            patch.object(
-                mission_runner,
-                "publish_colmap_products",
-                side_effect=stage("publish"),
-            ),
-            patch.object(
-                mission_runner,
-                "complete_colmap_pipeline",
-                side_effect=stage("complete"),
-            ),
-            patch.object(
-                mission_runner,
-                "cleanup_pipeline_workspace",
-                side_effect=stage("cleanup"),
-            ),
-        ):
-            mission_runner.run_colmap_pipeline(
-                "/tmp/mission-workspace",
-                "datasets/mission",
-                "vol-stage-order",
-                {"pipeline": "modern"},
-            )
-
-        self.assertEqual(
-            calls,
-            [
-                "prepare",
-                "reconstruct",
-                "rtk",
-                "align",
-                "gaussian",
-                "publish",
-                "complete",
-                "cleanup",
-            ],
-        )
 
     def test_dense_sparse_model_ready_requires_all_dense_sparse_files(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -652,25 +343,25 @@ class TestMainSupport(unittest.TestCase):
             sparse_dir = os.path.join(dense_path, "sparse")
             os.makedirs(sparse_dir, exist_ok=True)
 
-            self.assertFalse(app1_main.dense_sparse_model_ready(dense_path))
+            self.assertFalse(worker_artifacts.dense_sparse_model_ready(dense_path))
 
             for filename in ["cameras.bin", "images.bin", "points3D.bin"]:
                 with open(os.path.join(sparse_dir, filename), "wb") as handle:
                     handle.write(b"x")
 
-            self.assertTrue(app1_main.dense_sparse_model_ready(dense_path))
+            self.assertTrue(worker_artifacts.dense_sparse_model_ready(dense_path))
 
     def test_normalize_gpu_index_defaults_and_clamps_single_visible_device(self):
         with patch.dict(os.environ, {}, clear=False):
-            self.assertEqual(app1_main.normalize_gpu_index(None), "0")
-            self.assertEqual(app1_main.normalize_gpu_index("-1"), "0")
+            self.assertEqual(worker_artifacts.normalize_gpu_index(None), "0")
+            self.assertEqual(worker_artifacts.normalize_gpu_index("-1"), "0")
 
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1"}, clear=False):
-            self.assertEqual(app1_main.normalize_gpu_index("1"), "0")
-            self.assertEqual(app1_main.normalize_gpu_index("3"), "0")
+            self.assertEqual(worker_artifacts.normalize_gpu_index("1"), "0")
+            self.assertEqual(worker_artifacts.normalize_gpu_index("3"), "0")
 
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0,1"}, clear=False):
-            self.assertEqual(app1_main.normalize_gpu_index("1"), "1")
+            self.assertEqual(worker_artifacts.normalize_gpu_index("1"), "1")
 
     def test_invalidate_pipeline_artifacts_removes_cached_outputs(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -700,7 +391,7 @@ class TestMainSupport(unittest.TestCase):
                     handle.write("x")
 
             with patch.object(worker_runtime, "report_mission_progress") as report_mock:
-                removed_paths = app1_main.invalidate_pipeline_artifacts(
+                removed_paths = worker_artifacts.invalidate_pipeline_artifacts(
                     clean_images_dir,
                     tmp_dir,
                     db_path,

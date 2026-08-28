@@ -3,27 +3,16 @@
 readonly SERVICE_IMAGES=(
     drone-colmap
     drone-ia
-    drone-processing
-    drone-dashboard-api
-    drone-dashboard-frontend
-)
-readonly STAGE_JOB_SERVICE_IMAGES=(
-    drone-colmap
-    drone-ia
     drone-dashboard-api
     drone-dashboard-frontend
 )
 
 application_image_tag() {
-    printf '%s\n' "${STAGE_JOBS_IMAGE_TAG:-latest}"
+    printf '%s\n' "${STAGE_JOBS_IMAGE_TAG:?immutable Stage Job image tag required}"
 }
 
 active_service_images() {
-    if [[ -n "${STAGE_JOBS_IMAGE_TAG:-}" ]]; then
-        printf '%s\n' "${STAGE_JOB_SERVICE_IMAGES[@]}"
-    else
-        printf '%s\n' "${SERVICE_IMAGES[@]}"
-    fi
+    printf '%s\n' "${SERVICE_IMAGES[@]}"
 }
 
 SUDO=()
@@ -49,12 +38,7 @@ fatal() {
 deployment_failed() {
     local line="$1"
     printf '\n\033[1;31mDeployment failed near line %s.\033[0m\n' "$line" >&2
-    if [[ "${MODE:-}" == "local" ]] && ((${#DOCKER[@]})); then
-        "${DOCKER[@]}" compose \
-            --project-name droneai-local \
-            --file "$REPO_ROOT/compose.local.yaml" \
-            ps 2>/dev/null || true
-    elif [[ "${MODE:-}" == "distributed" ]] && command -v k3s >/dev/null 2>&1; then
+    if command -v k3s >/dev/null 2>&1; then
         "${SUDO[@]}" k3s kubectl get pods -n drone-ai 2>/dev/null || true
     fi
 }
@@ -240,6 +224,9 @@ docker_build() {
     if [[ -n "${STAGE_JOBS_IMAGE_TAG:-}" ]]; then
         flags+=(--label "org.opencontainers.image.revision=$image_tag")
     fi
+    if [[ "$image" == "drone-colmap" ]]; then
+        flags+=(--build-arg "COLMAP_BASE_IMAGE=drone-colmap-base:$image_tag")
+    fi
     if "$REBUILD_BASE"; then
         flags+=(--no-cache)
     fi
@@ -248,20 +235,14 @@ docker_build() {
 
 build_all_images() {
     export DOCKER_BUILDKIT=1
-    if "$REBUILD_BASE" \
-        || ! "${DOCKER[@]}" image inspect drone-colmap-base:latest >/dev/null 2>&1; then
-        info "Building COLMAP/CUDA base image"
-        docker_build drone-colmap-base app1-colmap/Dockerfile.base
-    else
-        info "Reusing drone-colmap-base:latest"
-    fi
+    # Re-evaluate all base inputs; Docker caches unchanged expensive layers.
+    # Bind the application to this revision, never to a stale mutable alias.
+    info "Building COLMAP/CUDA base image"
+    docker_build drone-colmap-base app1-colmap/Dockerfile.base
 
     info "Building DroneAI service images"
     docker_build drone-colmap app1-colmap/Dockerfile
     docker_build drone-ia app2-ia/Dockerfile
-    if [[ -z "${STAGE_JOBS_IMAGE_TAG:-}" ]]; then
-        docker_build drone-processing app3-processing/Dockerfile
-    fi
     docker_build drone-dashboard-api app4-dashboard/api/Dockerfile
     docker_build drone-dashboard-frontend app4-dashboard/frontend/Dockerfile
     validate_service_images

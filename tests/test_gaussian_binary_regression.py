@@ -33,7 +33,7 @@ def _manifest(
         "status": "completed",
         "dataset": {"fingerprint": "dataset"},
         "parameters": {
-            "profile_id": "high-quality-v3",
+            "profile_id": "high-quality-v4",
             "optimizer_profile": "reference-absolute",
             "pruning_policy": "spatial-bounds",
             "raster_profile": "fastgs",

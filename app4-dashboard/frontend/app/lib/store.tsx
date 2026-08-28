@@ -11,7 +11,6 @@ import { fetchParameters } from "./api";
 import { useAuth } from "./auth";
 import {
   initialParameterValues,
-  qualityProfileParameters,
   useQualityProfileState,
 } from "./quality-profile-state";
 
@@ -23,7 +22,6 @@ type StoreState = {
   selectedStages: MissionStageId[];
   setSelectedStages: (stages: MissionStageId[]) => void;
   pipeline: PipelineName;
-  setPipeline: (p: PipelineName) => void;
   parameterSchema: ParameterConfigResponse | null;
   parameterValues: Record<string, ParamValue>;
   setParameterValues: React.Dispatch<React.SetStateAction<Record<string, ParamValue>>>;
@@ -82,7 +80,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [selectedClasses, setSelectedClasses] = useState<string[]>(["car"]);
   const [tileSize, setTileSize] = useState(1024);
 
-  const [pipeline, setPipelineRaw] = useState<PipelineName>("modern");
+  const pipeline: PipelineName = "modern";
   const [parameterSchema, setParameterSchema] = useState<ParameterConfigResponse | null>(null);
   const [parameterValues, setParameterValues] = useState<Record<string, ParamValue>>({});
   const { qualityProfileId, setQualityProfile, synchronizeQualityProfile } =
@@ -130,23 +128,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, [synchronizeQualityProfile]);
 
-  const setPipeline = useCallback((p: PipelineName) => {
-    setPipelineRaw(p);
-    if (parameterSchema) {
-      setParameterValues((current) => {
-        const processId = current.orthophoto_mode === "facade" ? "facade" : "map";
-        const process = parameterSchema.processes.find(
-          (candidate) => candidate.id === processId,
-        );
-        return {
-          ...(parameterSchema.pipelines[p] ?? {}),
-          ...(process?.parameters ?? { orthophoto_mode: processId }),
-          ...qualityProfileParameters(parameterSchema, qualityProfileId),
-        };
-      });
-    }
-  }, [parameterSchema, qualityProfileId]);
-
   const updateParameter = useCallback((key: string, value: ParamValue) => {
     setParameterValues((prev) => ({ ...prev, [key]: value }));
   }, []);
@@ -170,7 +151,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     selectedPath, setSelectedPath,
     volId, setVolId,
     selectedStages, setSelectedStages,
-    pipeline, setPipeline, parameterSchema, parameterValues, setParameterValues, updateParameter,
+    pipeline, parameterSchema, parameterValues, setParameterValues, updateParameter,
     qualityProfileId, setQualityProfile,
     workDrive, setWorkDrive,
     aiConfidence, setAiConfidence, aiBackend, setAiBackend, aiModelVariant, setAiModelVariant,

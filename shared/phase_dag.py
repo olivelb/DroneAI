@@ -176,7 +176,10 @@ def project_status_to_stage_run(
     runs = cast(
         list[MissionStageRun],
         session.query(MissionStageRun)
-        .filter(MissionStageRun.mission_id == mission.id)
+        .filter(
+            MissionStageRun.mission_id == mission.id,
+            MissionStageRun.analysis_run_id.is_(None),
+        )
         .order_by(MissionStageRun.attempt.desc())
         .all(),
     )

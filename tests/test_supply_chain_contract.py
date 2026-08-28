@@ -61,13 +61,16 @@ def test_runtime_images_publish_pinned_sbom_and_vulnerability_evidence() -> None
     assert "${{ matrix.artifact }}.trivy.json" in workflow
     assert "supply-chain-${{ matrix.artifact }}-${{ github.sha }}" in workflow
     assert "retention-days: 30" in workflow
+    for marker in ("Record HIGH and CRITICAL image vulnerabilities", "Record frontend HIGH and CRITICAL vulnerabilities"):
+        report_step = workflow.split(marker, 1)[1].split("- name:", 1)[0]
+        assert "--ignore-unfixed" not in report_step
 
 
-def test_runtime_image_gate_rejects_fixable_critical_findings() -> None:
+def test_runtime_image_gate_rejects_fixable_high_and_critical_findings() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "Reject fixed CRITICAL image vulnerabilities" in workflow
-    assert "--severity CRITICAL --exit-code 1" in workflow
+    assert "Reject fixed HIGH and CRITICAL image vulnerabilities" in workflow
+    assert "--severity HIGH,CRITICAL --exit-code 1" in workflow
     assert workflow.count("--ignore-unfixed") >= 2
     assert workflow.count("--image-src docker") >= 2
     assert workflow.count("--scanners vuln") >= 2
@@ -85,7 +88,7 @@ def test_cuda_runtime_images_use_the_same_supply_chain_gate() -> None:
     assert "run: bash setup_deps.sh" in workflow
     assert "anchore/syft:v1.50.0@sha256:" in workflow
     assert "aquasec/trivy:0.73.0@sha256:" in workflow
-    assert "--severity CRITICAL --exit-code 1" in workflow
+    assert "--severity HIGH,CRITICAL --exit-code 1" in workflow
     assert "supply-chain-${{ matrix.artifact }}-${{ github.sha }}" in workflow
     assert "retention-days: 30" in workflow
 
@@ -114,7 +117,6 @@ def test_cuda_runtimes_refresh_fixable_openssl_packages() -> None:
 
 def test_python_runtime_bases_and_artifacts_are_immutable() -> None:
     runtime_dockerfiles = [
-        ROOT / "app3-processing" / "Dockerfile",
         ROOT / "app4-dashboard" / "api" / "Dockerfile",
     ]
     for path in runtime_dockerfiles:

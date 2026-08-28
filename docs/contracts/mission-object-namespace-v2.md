@@ -15,7 +15,7 @@ canonical rule and fails closed if the binding has been changed or corrupted.
 All mission-owned keys are derived through `MissionObjectNamespace`. This
 includes stage workspaces and manifests, GCP diagnostics and camera metadata,
 COLMAP products, orthomosaic tiles, AI tile results, analysis vectors, API map
-fallbacks, frontend browsing/downloads and mission deletion. A structural test
+artifact consumers, frontend browsing/downloads and mission deletion. A structural test
 rejects newly reconstructed `missions/{vol_id}` paths in production sources.
 
 ## Event boundary
@@ -37,10 +37,10 @@ from the same root, run and stage.
 
 ## Compatibility boundary
 
-This contract preserves v1 legacy mission roots and Artifact Manifest v1/v2
-reads. New organization-owned CAS writes are now isolated by
-[`Tenant content-addressed storage v3`](tenant-cas-v3.md); old global manifests
-remain readable during rollout.
+Historical mission roots remain represented by the database namespace
+contract. Current artifact reads/writes require
+[`Tenant content-addressed storage v3`](tenant-cas-v3.md); workspace manifests
+v1/v2 and global CAS replay are rejected. This does not migrate old rows.
 
 ## Verification
 

@@ -36,3 +36,21 @@ def test_markdown_link_checker_reports_missing_targets_outside_fenced_code(tmp_p
     assert broken_links[0].document == document
     assert broken_links[0].target == "missing.md"
     assert broken_links[1].target == "../outside.md"
+
+
+def test_markdown_inventory_handles_unstaged_deletion_without_hiding_broken_links(tmp_path):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    retained = tmp_path / "README.md"
+    retired = tmp_path / "retired.md"
+    retained.write_text("[old](retired.md)\n", encoding="utf-8")
+    retired.write_text("obsolete", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md", "retired.md"], cwd=tmp_path, check=True)
+    retired.unlink()
+
+    documents = check_markdown_links.tracked_markdown_documents(tmp_path)
+    assert documents == (retained,)
+    assert check_markdown_links.find_broken_links(documents, tmp_path) == (
+        check_markdown_links.BrokenLink(document=retained, target="retired.md"),
+    )

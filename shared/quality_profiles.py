@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -10,21 +9,13 @@ from typing import Any, Literal, cast
 from shared.dronegs_profile import checkpoint_interval_for_iterations
 
 QualityProfileId = Literal[
-    "fast-v1",
     "fast-v2",
-    "normal-v1",
-    "high-quality-v1",
-    "normal-v2",
-    "high-quality-v2",
     "normal-v3",
-    "normal-v4",
-    "high-quality-v3",
     "high-quality-v4",
 ]
 DEFAULT_QUALITY_PROFILE_ID: QualityProfileId = "normal-v3"
-QUALITY_PROFILE_CANDIDATES_FLAG = "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED"
 IMMUTABLE_PROFILE_OVERRIDE_KEYS = frozenset({"gs_production_profile"})
-QUALIFICATION_ONLY_PROFILE_OVERRIDE_KEYS = frozenset(
+PROFILE_INITIALIZATION_KEYS = frozenset(
     {
         "gs_initial_scale_policy",
         "gs_initial_max_projected_sigma_pixels",
@@ -103,80 +94,19 @@ def _profile(
     )
 
 
-_LEGACY_QUALITY_PROFILES: tuple[QualityProfile, ...] = (
-    _profile(
-        "normal-v1",
-        "Normal (legacy)",
-        "Original fixed-cap routine profile retained for mission replay.",
-        image_size=2_400,
-        features=4_096,
-        iterations=15_000,
-        gaussians=3_000_000,
-        data_factor="4",
-    ),
-    _profile(
-        "high-quality-v1",
-        "High Quality (legacy)",
-        "Original fixed-cap high-quality profile retained for mission replay.",
-        image_size=4_096,
-        features=16_384,
-        iterations=30_000,
-        gaussians=5_000_000,
-        data_factor="1",
-    ),
-    _profile(
-        "normal-v2",
-        "Normal (legacy)",
-        "Adaptive monolithic profile retained for mission replay.",
-        image_size=2_400,
-        features=4_096,
-        iterations=15_000,
-        gaussians=8_000_000,
-        data_factor="4",
-        capacity_mode="adaptive",
-        capacity_floor=3_000_000,
-        target_spacing_pixels=16.0,
-    ),
-    _profile(
-        "high-quality-v2",
-        "High Quality (legacy)",
-        "Qualified 12 M profile retained only for exact mission replay.",
-        image_size=4_096,
-        features=16_384,
-        iterations=30_000,
-        gaussians=12_000_000,
-        data_factor="1",
-        capacity_mode="adaptive",
-        capacity_floor=5_000_000,
-        target_spacing_pixels=8.0,
-    ),
-    _profile(
-        "high-quality-v3",
-        "High Quality (legacy resident candidate)",
-        "Historical 12 M resident candidate retained only for exact mission replay.",
-        image_size=4_096,
-        features=16_384,
-        iterations=30_000,
-        gaussians=12_000_000,
-        data_factor="1",
-        capacity_mode="adaptive",
-        capacity_floor=5_000_000,
-        target_spacing_pixels=3.6,
-        resident_partitioning=True,
-    ),
-)
-
-
 QUALITY_PROFILES: tuple[QualityProfile, ...] = (
     _profile(
-        "fast-v1",
+        "fast-v2",
         "Fast",
-        "Fast coverage and pipeline validation with a bounded compute budget.",
+        "Qualified projected initialization with exact capacity growth.",
         image_size=1_600,
         features=2_048,
         iterations=7_500,
         gaussians=1_500_000,
         data_factor="8",
+        initial_scale_policy="projected-knn",
+        initial_max_projected_sigma_pixels=8.0,
+        capacity_targeted_growth=True,
     ),
     _profile(
         "normal-v3",
@@ -192,43 +122,10 @@ QUALITY_PROFILES: tuple[QualityProfile, ...] = (
         target_spacing_pixels=8.0,
         resident_partitioning=True,
     ),
-)
-
-_CANDIDATE_QUALITY_PROFILES: tuple[QualityProfile, ...] = (
-    _profile(
-        "fast-v2",
-        "Fast (projected candidate)",
-        "Preview candidate with crop-aware projected initialization and exact capacity growth.",
-        image_size=1_600,
-        features=2_048,
-        iterations=7_500,
-        gaussians=1_500_000,
-        data_factor="8",
-        initial_scale_policy="projected-knn",
-        initial_max_projected_sigma_pixels=8.0,
-        capacity_targeted_growth=True,
-    ),
-    _profile(
-        "normal-v4",
-        "Normal (projected candidate)",
-        "8 GiB candidate with 3 M resident blocks and crop-aware projected initialization.",
-        image_size=2_400,
-        features=4_096,
-        iterations=15_000,
-        gaussians=3_000_000,
-        data_factor="4",
-        capacity_mode="adaptive",
-        capacity_floor=3_000_000,
-        target_spacing_pixels=8.0,
-        resident_partitioning=True,
-        initial_scale_policy="projected-knn",
-        initial_max_projected_sigma_pixels=8.0,
-        capacity_targeted_growth=True,
-    ),
     _profile(
         "high-quality-v4",
-        "High Quality (projected candidate)",
-        "Unqualified 30k candidate with 6 M resident blocks and projected initialization.",
+        "High Quality",
+        "Qualified 30k profile with 6 M resident blocks and projected initialization.",
         image_size=4_096,
         features=16_384,
         iterations=30_000,
@@ -246,11 +143,7 @@ _CANDIDATE_QUALITY_PROFILES: tuple[QualityProfile, ...] = (
 QUALITY_PROFILE_BY_ID = MappingProxyType(
     {
         profile.profile_id: profile
-        for profile in (
-            *_LEGACY_QUALITY_PROFILES,
-            *QUALITY_PROFILES,
-            *_CANDIDATE_QUALITY_PROFILES,
-        )
+        for profile in QUALITY_PROFILES
     }
 )
 
@@ -264,41 +157,13 @@ def quality_profile(profile_id: str) -> QualityProfile:
 
 
 def quality_profile_for_new_mission(profile_id: str) -> QualityProfile:
-    """Resolve only profiles explicitly exposed for a new mission.
-
-    The complete registry is intentionally broader because immutable historic
-    missions must remain replayable. It must not double as the create API's
-    allow-list: doing so makes replay-only and unqualified candidate profiles
-    reachable by posting their identifier directly.
-    """
-
-    selectable = selectable_quality_profiles(
-        include_candidates=quality_profile_candidates_enabled(),
-    )
-    for profile in selectable:
-        if profile.profile_id == profile_id:
-            return profile
-    supported = ", ".join(profile.profile_id for profile in selectable)
-    raise ValueError(
-        f"quality profile {profile_id!r} is not selectable for a new mission; expected one of: {supported}"
-    )
+    """Resolve a supported production profile; retired runs are not replayable."""
+    return quality_profile(profile_id)
 
 
-def selectable_quality_profiles(*, include_candidates: bool = False) -> tuple[QualityProfile, ...]:
-    """Return profiles offered for new missions in the operator catalog."""
-
-    if include_candidates:
-        return (*QUALITY_PROFILES, *_CANDIDATE_QUALITY_PROFILES)
+def selectable_quality_profiles() -> tuple[QualityProfile, ...]:
+    """Return the qualified profiles offered for new missions."""
     return QUALITY_PROFILES
-
-
-def quality_profile_candidates_enabled() -> bool:
-    """Resolve the strict opt-in for candidate catalog exposure."""
-
-    raw = os.getenv(QUALITY_PROFILE_CANDIDATES_FLAG, "false").strip().lower()
-    if raw not in {"true", "false"}:
-        raise RuntimeError(f"{QUALITY_PROFILE_CANDIDATES_FLAG} must be true or false")
-    return raw == "true"
 
 
 def profile_overrides(
@@ -325,10 +190,9 @@ def profile_overrides_for_new_mission(
     immutable = sorted(IMMUTABLE_PROFILE_OVERRIDE_KEYS.intersection(overrides))
     if immutable:
         raise ValueError("new missions cannot override immutable quality-profile identity: " + ", ".join(immutable))
-    qualification_only = sorted(QUALIFICATION_ONLY_PROFILE_OVERRIDE_KEYS.intersection(overrides))
-    if qualification_only and not quality_profile_candidates_enabled():
+    qualification_only = sorted(PROFILE_INITIALIZATION_KEYS.intersection(overrides))
+    if qualification_only:
         raise ValueError(
-            "quality-profile qualification overrides require "
-            f"{QUALITY_PROFILE_CANDIDATES_FLAG}=true in a non-production environment: " + ", ".join(qualification_only)
+            "qualified profile initialization cannot be overridden: " + ", ".join(qualification_only)
         )
     return overrides

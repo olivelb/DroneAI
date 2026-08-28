@@ -31,35 +31,29 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("source_ply", type=Path)
     parser.add_argument("output_directory", type=Path)
     parser.add_argument("--leaf-size", type=int, default=65_536)
-    lod = parser.add_mutually_exclusive_group()
-    lod.add_argument(
+    parser.add_argument(
         "--lod-proxy-size",
         type=int,
         default=GSTILE_LOD_PROXY_SIZE,
         help="hierarchical LOD proxy size (default: 16384); must not exceed leaf size",
     )
-    lod.add_argument("--no-lod", dest="lod_proxy_size", action="store_const", const=None,
-                     help="explicit leaf-only rollback; do not generate LOD proxies")
     parser.add_argument(
         "--lod-proxy-strategy",
-        choices=("adaptive-moment", "moment-matched", "spatial-stratified", "minhash"),
+        choices=("adaptive-moment",),
         default=GSTILE_LOD_PROXY_STRATEGY,
-        help="LOD proxy strategy; adaptive-moment enables V4, replacement modes preserve legacy bundles",
+        help="production adaptive-moment V4 strategy",
     )
     parser.add_argument("--chunk-records", type=int, default=131_072)
     parser.add_argument("--pack-workers", type=int, choices=(1, 2, 4), default=GSTILE_PACK_WORKERS,
                         help="bounded parallel pack preparation (default: 2); 1 keeps synchronous execution")
     parser.add_argument("--pack-pending-bytes", type=int, default=GSTILE_PACK_PENDING_BYTES,
                         help="queued input/output reservation cap, excluding encoder scratch (default 128 MiB)")
-    packs = parser.add_mutually_exclusive_group()
-    packs.add_argument(
+    parser.add_argument(
         "--pack-target-bytes",
         type=int,
         default=GSTILE_PACK_TARGET_BYTES,
         help="depth-spatial aggregate target (default: 2097152 bytes)",
     )
-    packs.add_argument("--individual-packs", dest="pack_target_bytes", action="store_const", const=None,
-                       help="explicit one-representation-per-pack rollback")
     parser.add_argument(
         "--filter-invisible-giant-scale",
         type=float,

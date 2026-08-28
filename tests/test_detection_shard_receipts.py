@@ -62,7 +62,7 @@ def _create_run(
     *,
     status="running",
     stage="detection",
-    organization_id="legacy-unassigned",
+    organization_id="acme",
 ):
     with scope() as session:
         mission = Mission(
@@ -161,7 +161,7 @@ def _record(session, plan, shard_index, *, checksum="a" * 64):
         run_id="d" * 32,
         plan=plan,
         shard_index=shard_index,
-        result_key=f"blobs/sha256/{checksum[:2]}/{checksum}",
+        result_key=f"organizations/acme/blobs/sha256/{checksum[:2]}/{checksum}",
         result_checksum_sha256=checksum,
         result_size_bytes=123,
     )

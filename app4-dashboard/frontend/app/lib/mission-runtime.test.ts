@@ -46,7 +46,7 @@ describe("mission runtime reconciliation", () => {
       current_step: "GAUSSIAN_TRAINING · EXECUTING",
       progress: 30,
       pipeline: "modern",
-      quality_profile: "normal-v1",
+      quality_profile: "normal-v3",
       attempt_count: 1,
       overall_status: "processing",
       is_stale: false,

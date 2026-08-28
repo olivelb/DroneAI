@@ -7,7 +7,6 @@ from shared.quality_profiles import QUALITY_PROFILE_BY_ID
 from shared.facade_process import (
     FACADE_DRONEGS_PROFILE_ID,
     FACADE_PARAMETER_DEFAULTS,
-    FACADE_PREVIOUS_DRONEGS_PROFILE_ID,
     FACADE_QUALIFICATION_POLICY_ID,
 )
 
@@ -118,7 +117,6 @@ _BASE_PIPELINE_DEFAULTS: dict[str, Any] = {
 # differences remain explicit below, which prevents the dashboard, worker and
 # local runners from drifting as the contract grows.
 PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
-    "legacy": dict(_BASE_PIPELINE_DEFAULTS),
     "modern": {
         **_BASE_PIPELINE_DEFAULTS,
         "feature_max_image_size": "2400",
@@ -822,7 +820,6 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "options": [
             "DRONEGS_PRODUCTION_PROFILE_V1",
             FACADE_DRONEGS_PROFILE_ID,
-            FACADE_PREVIOUS_DRONEGS_PROFILE_ID,
             *QUALITY_PROFILE_BY_ID,
             "custom",
         ],
@@ -1017,24 +1014,24 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         ),
         "type": "select",
         "group": "Orthomosaic",
-        "options": ["reference-absolute", "dev38-staged-rotation008-absgrad050-fastgs", "dronegs-dev16"],
+        "options": ["reference-absolute"],
     },
     "gs_pruning_policy": {
         "label": "Pruning Policy",
         "description": "spatial-bounds removes Gaussians outside the useful scene footprint.",
         "type": "select",
         "group": "Orthomosaic",
-        "options": ["spatial-bounds", "original"],
+        "options": ["spatial-bounds"],
     },
     "gs_raster_profile": {
         "label": "Rasterization Profile",
         "description": (
             "fastgs is the structural rasterizer measured by the accepted "
-            "production benchmark; bounded remains available for diagnostics."
+            "production benchmark and the only supported training path."
         ),
         "type": "select",
         "group": "Orthomosaic",
-        "options": ["bounded", "fastgs", "auto"],
+        "options": ["fastgs"],
     },
     "gs_sh_degree_interval": {
         "label": "SH Activation Interval",
@@ -1279,4 +1276,4 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     },
 }
 
-PARAM_OVERRIDE_KEYS = sorted(PIPELINE_DEFAULTS["legacy"].keys() | PIPELINE_DEFAULTS["modern"].keys())
+PARAM_OVERRIDE_KEYS = sorted(PIPELINE_DEFAULTS["modern"])

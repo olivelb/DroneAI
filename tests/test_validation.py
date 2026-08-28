@@ -10,8 +10,8 @@ from shared.dronegs_profile import (
 )
 from shared.pipeline_params import (
     PARAMETER_METADATA,
-    PIPELINE_DEFAULTS,
     merge_pipeline_params,
+    normalize_ai_backend,
 )
 from shared.validation import (
     configured_work_drives,
@@ -306,28 +306,20 @@ def test_dashboard_exposes_complete_dronegs_quality_configuration():
     assert all(PARAMETER_METADATA[key].get("description") for key in keys)
 
 
-def test_legacy_thread_default_is_allowed():
+def test_automatic_thread_default_is_allowed():
     assert validate_pipeline_overrides({"feature_num_threads": "-1"}) == {"feature_num_threads": "-1"}
 
 
-def test_map_profiles_share_one_contract_and_only_explicit_differences():
-    legacy = PIPELINE_DEFAULTS["legacy"]
-    modern = PIPELINE_DEFAULTS["modern"]
-    expected_differences = {
-        "alignment_engine",
-        "camera_model",
-        "feature_max_image_size",
-        "feature_max_num_features",
-        "mapper_cmd",
-        "mapping_timeout_seconds",
-        "matching_strategy",
-        "mvs_max_image_size",
-        "rtk_refinement_enabled",
-        "use_view_graph_calibrator",
-    }
-
-    assert legacy.keys() == modern.keys()
-    assert {key for key in legacy if legacy[key] != modern[key]} == expected_differences
+@pytest.mark.parametrize("pipeline", ["legacy", "unknown", ""])
+def test_retired_pipeline_is_rejected_at_api_and_worker_boundaries(pipeline):
+    with pytest.raises(ValueError, match="only modern is supported"):
+        merge_pipeline_params(pipeline)
+    with pytest.raises(ValueError):
+        MissionParams(
+            vol_id="mission-001",
+            input_dataset="datasets/banyuls",
+            pipeline=pipeline,
+        )
 
 
 def test_mission_schema_rejects_extra_fields_and_invalid_bounds(monkeypatch):
@@ -420,3 +412,10 @@ def test_sam3_schemas_reject_tiles_larger_than_effective_model_input():
         tile_size=2048,
     )
     assert yolo.tile_size == 2048
+
+
+def test_backend_normalization_has_one_shared_policy():
+    for alias in ("sam", "SAM3", "sam-3", "meta_sam_3", "segment-anything-3"):
+        assert normalize_ai_backend(alias) == "sam3"
+    assert normalize_ai_backend(None) == "yolo"
+    assert normalize_ai_backend("unknown") == "yolo"

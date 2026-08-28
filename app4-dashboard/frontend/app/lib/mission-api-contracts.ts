@@ -26,15 +26,8 @@ import {
 
 const stringOrBoolean = anyOf(stringValue, booleanValue);
 const qualityProfile = oneOf(
-  "fast-v1",
   "fast-v2",
-  "normal-v1",
-  "high-quality-v1",
-  "normal-v2",
-  "high-quality-v2",
   "normal-v3",
-  "normal-v4",
-  "high-quality-v3",
   "high-quality-v4",
 );
 const stageId = oneOf(
@@ -134,12 +127,6 @@ const missionSummary: Validator = objectWith(
   {
     workspace_dir: stringValue,
     workspace_state: nullish(recordValue),
-    colmap_resume: objectWith({
-      available: booleanValue,
-      state: nonEmptyString,
-      reason: stringValue,
-      downstream_processing: arrayOf(stringValue),
-    }),
     status: stringValue,
     current_step: nullish(stringValue),
     progress: numberValue,
@@ -158,7 +145,7 @@ const catalogItem: Validator = objectWith(
     owner_subject: nonEmptyString,
     status: nonEmptyString,
     progress: numberValue,
-    pipeline: oneOf("modern", "legacy"),
+    pipeline: oneOf("modern"),
     attempt_count: integerValue,
     overall_status: nonEmptyString,
     is_stale: booleanValue,
@@ -235,7 +222,6 @@ export const parseParameterConfig = decoder<ParameterConfigResponse>(
   objectWith({
     pipelines: objectWith({
       modern: recordOf(stringOrBoolean),
-      legacy: recordOf(stringOrBoolean),
     }),
     processes: arrayOf(processConfig),
     metadata: recordOf(objectWith({

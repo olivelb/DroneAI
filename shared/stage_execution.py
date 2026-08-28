@@ -18,6 +18,9 @@ from shared.database import (
     MissionStageRun,
     get_session,
 )
+from shared.analysis_stages import (
+    current_analysis_attempt, linked_analysis, publish_analysis_features, sync_analysis_stage,
+)
 from shared.organization_saas import reserve_stage_output_storage
 from shared.stage_artifacts import mark_stage_run_succeeded, release_ready_stage_runs
 from shared.stage_contracts import STAGE_ARTIFACT_KINDS, StageId
@@ -68,6 +71,7 @@ class StageExecutionContext:
     mission_parameters: dict[str, Any]
     inputs: tuple[StageArtifactInput, ...]
     run_provenance: dict[str, Any] = field(default_factory=dict)
+    analysis: dict[str, Any] | None = None
 
     @property
     def object_namespace(self) -> MissionObjectNamespace:
@@ -87,6 +91,7 @@ class StageExecutionResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     quality_metrics: dict[str, Any] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
+    analysis_features: tuple[dict[str, Any], ...] | None = None
 
     def __post_init__(self) -> None:
         if not self.kind or not self.uri:
@@ -122,6 +127,8 @@ _STAGE_RLS_TABLES = (
     "mission_artifacts",
     "mission_artifact_parents",
     "detection_shard_receipts",
+    "ai_analysis_runs",
+    "map_features",
 )
 
 
@@ -201,6 +208,11 @@ def load_stage_execution_context(
             raise ValueError(f"Stage run is not executable from status {run.status}")
         if mission.status == "cancelled":
             raise StageExecutionCancelled(f"Mission {mission.vol_id} is cancelled")
+        analysis = linked_analysis(session, run)
+        if analysis is not None and (
+            not current_analysis_attempt(analysis, run) or analysis.status == "cancelled"
+        ):
+            raise StageExecutionCancelled("Analysis attempt is no longer active")
         artifacts = cast(
             list[MissionArtifact],
             session.query(MissionArtifact).filter(
@@ -221,6 +233,7 @@ def load_stage_execution_context(
         record.heartbeat_at = now
         record.current_step = "EXECUTING"
         record.dispatch_error = None
+        sync_analysis_stage(session, run)
         return StageExecutionContext(
             run_id=cast(str, run.run_id),
             mission_id=cast(int, mission.id),
@@ -234,6 +247,11 @@ def load_stage_execution_context(
             parameters=cast(dict[str, Any], run.parameters or {}),
             mission_parameters=cast(dict[str, Any], mission.params or {}),
             run_provenance=cast(dict[str, Any], run.provenance or {}),
+            analysis=({
+                "run_id": analysis.run_id, "name": analysis.name,
+                "description": analysis.description or "", "color": analysis.color,
+                "tags": analysis.tags or [], "persist_results": analysis.persist_results,
+            } if analysis is not None else None),
             inputs=tuple(
                 StageArtifactInput(
                     artifact_id=artifact_id,
@@ -292,10 +310,28 @@ class StageExecutionControl:
                 record = cast(Any, run)
                 record.status = "cancelled"
                 record.completed_at = datetime.now(UTC)
+                sync_analysis_stage(session, run)
                 return False
             record = cast(Any, run)
             record.heartbeat_at = datetime.now(UTC)
+            sync_analysis_stage(session, run)
             return True
+
+    def report_progress(self, completed: int, total: int) -> None:
+        if not 0 <= completed <= total or total < 1:
+            raise ValueError("Invalid stage progress counters")
+        with get_session(organization_id=self.organization_id) as session:
+            run = session.query(MissionStageRun).filter(
+                MissionStageRun.run_id == self.run_id,
+            ).with_for_update().one()
+            if run.status != "running":
+                raise StageExecutionCancelled("Stage stopped before progress update")
+            run.progress = min(99, round(100 * completed / total))
+            run.quality_metrics = {
+                **(run.quality_metrics or {}), "tile_count": total, "tiles_completed": completed,
+            }
+            run.heartbeat_at = datetime.now(UTC)
+            sync_analysis_stage(session, run)
 
     def raise_if_cancelled(self) -> None:
         with self._failure_lock:
@@ -419,8 +455,11 @@ def _publish_result(
             **cast(dict[str, Any], run.provenance or {}),
             **result.provenance,
         }
+        publish_analysis_features(session, run, result.metadata, result.analysis_features)
         mark_stage_run_succeeded(run)
-        release_ready_stage_runs(session, mission)
+        sync_analysis_stage(session, run)
+        if run.analysis_run_id is None:
+            release_ready_stage_runs(session, mission)
     return artifact_id
 
 
@@ -457,6 +496,7 @@ def _mark_terminal(
             }
         record.heartbeat_at = datetime.now(UTC)
         record.completed_at = record.heartbeat_at
+        sync_analysis_stage(session, run)
         return effective_status
 
 

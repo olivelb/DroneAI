@@ -78,7 +78,7 @@ def _seed_mission(scope, *, vol_id: str, owner: str, run_digits: str) -> int:
             owner_subject=owner,
             workspace_prefix=f"missions/{vol_id}",
             status="pending",
-            params={"quality_profile": "normal-v1"},
+            params={"quality_profile": "normal-v3"},
         )
         session.add(mission)
         session.flush()

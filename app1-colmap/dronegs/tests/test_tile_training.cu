@@ -222,14 +222,14 @@ int main() {
         const auto checkpoint = root / "opacity-sh-v4.ckpt";
         dronegs::OrderedAlphaTrainingContext checkpoint_source(
             gaussians, 16U * 16U, 2U, 100U,
-            dronegs::MrnfOptimizerProfile::dronegs_dev16,
+            dronegs::MrnfOptimizerProfile::reference_absolute,
             1U, 1U, 17U);
         const dronegs::TrainingCheckpointProgress saved_progress{};
         checkpoint_source.save_checkpoint(
             checkpoint, saved_progress, "tile-dataset", "tile-config");
         dronegs::OrderedAlphaTrainingContext checkpoint_restored(
             gaussians, 16U * 16U, 2U, 100U,
-            dronegs::MrnfOptimizerProfile::dronegs_dev16,
+            dronegs::MrnfOptimizerProfile::reference_absolute,
             1U, 1U, 17U);
         const auto loaded_progress = checkpoint_restored.load_checkpoint(
             checkpoint, "tile-dataset", "tile-config");

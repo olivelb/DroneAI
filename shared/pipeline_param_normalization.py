@@ -58,8 +58,9 @@ def merge_pipeline_params(
     pipeline_mode: str,
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    pipeline_key = pipeline_mode if pipeline_mode in PIPELINE_DEFAULTS else "modern"
-    params = dict(PIPELINE_DEFAULTS[pipeline_key])
+    if pipeline_mode != "modern":
+        raise ValueError(f"Unsupported pipeline {pipeline_mode!r}; only modern is supported")
+    params = dict(PIPELINE_DEFAULTS["modern"])
     for key, value in (overrides or {}).items():
         if key in params and value is not None:
             params[key] = coerce_param_value(params[key], value)

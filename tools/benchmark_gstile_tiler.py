@@ -17,6 +17,18 @@ from typing import Any
 
 import numpy as np
 
+from gstile_cli_common import configure_repository_imports
+
+configure_repository_imports(__file__)
+
+from shared.gstile_defaults import (  # noqa: E402
+    GSTILE_LOD_PROXY_SIZE,
+    GSTILE_LOD_PROXY_STRATEGY,
+    GSTILE_PACK_PENDING_BYTES,
+    GSTILE_PACK_TARGET_BYTES,
+    GSTILE_PACK_WORKERS,
+)
+
 
 PROPERTY_NAMES = (
     "x",
@@ -112,12 +124,6 @@ def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         raise FileNotFoundError(source)
     if output.exists():
         raise FileExistsError(f"Benchmark output is immutable: {output}")
-    # Pin absence semantics across older and newly promoted CLI defaults.
-    # Capability discovery is outside the timed/resource interval.
-    cli_help = subprocess.run(
-        [sys.executable, str(implementation / "tools" / "build_gstiles.py"), "--help"],
-        cwd=implementation, capture_output=True, text=True, check=True, timeout=30,
-    ).stdout
     command = [
         sys.executable,
         str(implementation / "tools" / "build_gstiles.py"),
@@ -130,8 +136,6 @@ def _run(arguments: argparse.Namespace) -> dict[str, Any]:
     ]
     if arguments.pack_target_bytes is not None:
         command.extend(["--pack-target-bytes", str(arguments.pack_target_bytes)])
-    elif "--individual-packs" in cli_help:
-        command.append("--individual-packs")
     if arguments.pack_workers is not None:
         command.extend(["--pack-workers", str(arguments.pack_workers)])
     if arguments.pack_pending_bytes is not None:
@@ -147,8 +151,6 @@ def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 arguments.lod_proxy_strategy,
             ]
         )
-    elif "--no-lod" in cli_help:
-        command.append("--no-lod")
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     started = time.perf_counter()
     completed = subprocess.run(
@@ -228,15 +230,15 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--report", type=Path, required=True)
     run.add_argument("--leaf-size", type=int, default=65_536)
     run.add_argument("--chunk-records", type=int, default=131_072)
-    run.add_argument("--pack-target-bytes", type=int)
-    run.add_argument("--pack-workers", type=int, choices=(1, 2, 4))
-    run.add_argument("--pack-pending-bytes", type=int)
+    run.add_argument("--pack-target-bytes", type=int, default=GSTILE_PACK_TARGET_BYTES)
+    run.add_argument("--pack-workers", type=int, choices=(1, 2, 4), default=GSTILE_PACK_WORKERS)
+    run.add_argument("--pack-pending-bytes", type=int, default=GSTILE_PACK_PENDING_BYTES)
     run.add_argument("--progress-jsonl", action="store_true")
-    run.add_argument("--lod-proxy-size", type=int)
+    run.add_argument("--lod-proxy-size", type=int, default=GSTILE_LOD_PROXY_SIZE)
     run.add_argument(
         "--lod-proxy-strategy",
-        choices=("adaptive-moment", "moment-matched", "spatial-stratified", "minhash"),
-        default="moment-matched",
+        choices=("adaptive-moment",),
+        default=GSTILE_LOD_PROXY_STRATEGY,
     )
     return parser
 

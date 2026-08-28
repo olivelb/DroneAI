@@ -38,9 +38,31 @@ row. Reapplying an already-satisfied lifecycle action is a no-op.
 | `POST` | `/maps/{vol_id}/features/bulk` | `review`, `unreview`, `delete` or `restore` up to 500 UUIDs |
 | `GET` | `/maps/{vol_id}/features/{feature_id}/audit` | Read the append-only audit trail |
 
-Legacy detections that were not persisted as `map_features` stay read-only.
+Pipeline detections from the immutable detection artifact stay read-only.
 Reprocessing an AI campaign tombstones the previous persisted rows before
 publishing the replacement set, preserving their database history.
+
+## Current artifact sources
+
+Raster metadata, tiles and exports resolve the latest
+`raster_product_workspace` using the organization-scoped
+[Artifact Manifest v3](artifact-manifest-v3.md). A missing artifact returns 404;
+root-level mission files are never a fallback. The frontend discovers ortho
+and height layers from that artifact's metadata.
+
+Vector selectors use `pipeline`, `manual` and `ai`; export `scope=all`
+combines the three. The `pipeline` layer comes from the immutable
+`detection_workspace` and is empty when it is absent. Historical SQL Detection
+rows and the old `legacy` source selector are no longer supported.
+
+Standalone analyses use bounded detection Stage Jobs pinned to the selected
+raster artifact. Their output is a separate `detection_workspace` with an
+organization-scoped Manifest v3; it never replaces the pipeline layer.
+Non-persisted analyses read this immutable GeoJSON. When PostGIS indexing is
+enabled, the features and artifact commit atomically. Manual annotations and
+persisted analysis rows remain editable under the lifecycle rules above.
+Retries allocate a new Stage Job on the original raster; cancellation does not
+cancel the mission. Download through the analysis vectors API, not a raw CAS URL.
 
 ## Raster display recipes
 

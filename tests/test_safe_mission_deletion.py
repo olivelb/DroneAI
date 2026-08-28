@@ -77,15 +77,11 @@ def test_manual_delete_cancels_compute_without_deleting_storage(monkeypatch):
         session.add(analysis)
         session.flush()
         session.add(
-            AIAnalysisTile(
-                analysis_run_id=analysis.id,
-                tile_index=0,
-                status="queued",
-                tile_s3_key="organizations/tenant-a/missions/mission-delete/tile-0.png",
-                offset_x=0,
-                offset_y=0,
-                width=1024,
-                height=1024,
+            MissionStageRun(
+                run_id="analysis-delete-stage", mission_id=mission.id, analysis_run_id=analysis.id,
+                stage="detection", attempt=1, status="running", idempotency_key="b" * 64,
+                parameters={"analysis_generation": 1},
+                executor="kubernetes-job", job_name="droneai-analysis-delete-stage",
             )
         )
 
@@ -105,13 +101,10 @@ def test_manual_delete_cancels_compute_without_deleting_storage(monkeypatch):
     assert repeated["deletion_pending"] is True
     with scope() as session:
         mission = session.query(Mission).one()
-        run = session.query(MissionStageRun).one()
+        runs = session.query(MissionStageRun).all()
         analysis = session.query(AIAnalysisRun).one()
-        tile = session.query(AIAnalysisTile).one()
         assert mission.status == "cancelled"
         assert mission.current_step == "DELETION_REQUESTED"
-        assert run.status == "cancelled"
+        assert all(run.status == "cancelled" for run in runs)
         assert analysis.status == "cancelled"
-        assert analysis.finalization_owner is None
-        assert tile.status == "dead"
-        assert session.query(OutboxEvent).count() == 2
+        assert session.query(OutboxEvent).count() == 1

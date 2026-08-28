@@ -1,20 +1,13 @@
 export type ServiceName = "COLMAP" | "TILER" | "IA";
 export type PipelineStatus = "processing" | "success" | "error" | "cancelled";
-export type PipelineName = "modern" | "legacy";
+export type PipelineName = "modern";
 export type AIBackend = "yolo" | "sam3";
 export type YOLOModelVariant =
   | "yolo26l" | "yolo26m" | "yolo26s" | "yolo26n"
   | "yolo11l" | "yolo11m" | "yolo11s" | "yolo11n";
 export type QualityProfileId =
-  | "fast-v1"
   | "fast-v2"
-  | "normal-v1"
-  | "high-quality-v1"
-  | "normal-v2"
-  | "high-quality-v2"
   | "normal-v3"
-  | "normal-v4"
-  | "high-quality-v3"
   | "high-quality-v4";
 export type ParamValue = string | boolean;
 export type ParameterOption = string | {
@@ -107,18 +100,10 @@ export type WorkspaceMissionState = {
   resume_info?: WorkspaceResumeInfo | null;
 };
 
-export type ColmapResumeState = {
-  available: boolean;
-  state: "running" | "completed" | "resumable" | "checkpointed" | "cancelled" | "unavailable";
-  reason: string;
-  downstream_processing: string[];
-};
-
 export type MissionSummary = {
   vol_id: string;
   workspace_dir?: string;
   workspace_state?: WorkspaceMissionState | null;
-  colmap_resume?: ColmapResumeState;
   services: Record<string, StatusPayload>;
   logs: MissionLog[];
   updated_at: number;

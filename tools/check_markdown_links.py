@@ -87,7 +87,13 @@ def tracked_markdown_documents(root: Path = ROOT) -> tuple[Path, ...]:
         capture_output=True,
         text=True,
     )
-    return tuple(root / relative_path for relative_path in result.stdout.split("\0") if relative_path)
+    # Unstaged deletions still appear in the index. Check the working tree;
+    # links from retained documents to deleted targets remain errors.
+    return tuple(
+        root / relative_path
+        for relative_path in result.stdout.split("\0")
+        if relative_path and (root / relative_path).is_file()
+    )
 
 
 def main() -> int:

@@ -45,6 +45,24 @@ const setSummary = {
 describe("runtime API response contracts", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("rejects retired reconstruction pipelines in mission responses", () => {
+    expect(() => parseMissionCatalog({
+      items: [{
+        vol_id: "old-mission",
+        owner_subject: "operator",
+        status: "success",
+        progress: 100,
+        pipeline: "legacy",
+        attempt_count: 1,
+        overall_status: "success",
+        is_stale: false,
+      }],
+      total: 1,
+      limit: 25,
+      offset: 0,
+    })).toThrow(ResponseContractError);
+  });
+
   it("accepts the mission, pod and parameter catalog shapes used by the UI", () => {
     expect(parseMissionCatalog({
       items: [],
@@ -75,26 +93,26 @@ describe("runtime API response contracts", () => {
       products: [],
     }).vol_id).toBe("mission-1");
     expect(parseParameterConfig({
-      pipelines: { modern: {}, legacy: {} },
+      pipelines: { modern: {} },
       processes: [],
       metadata: {},
       quality_profiles: [
         {
-          id: "normal-v1",
-          version: 1,
+          id: "normal-v3",
+          version: 3,
           name: "Normal",
           description: "Balanced",
           parameters: {},
         },
         {
-          id: "high-quality-v3",
-          version: 3,
-          name: "High Quality (resident candidate)",
-          description: "Controlled qualification candidate",
+          id: "high-quality-v4",
+          version: 4,
+          name: "High Quality",
+          description: "Qualified production profile",
           parameters: { gs_resident_partitioning: true },
         },
       ],
-      quality_profile_default: "normal-v1",
+      quality_profile_default: "normal-v3",
       yolo_models: [],
       sam3: {
         model_id: "facebook/sam3",

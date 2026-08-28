@@ -235,7 +235,7 @@ const ALIGNMENT_PRESETS = [
 export default function PhaseReconstruction() {
   const { t } = useI18n();
   const {
-    pipeline, setPipeline, parameterSchema,
+    pipeline, parameterSchema,
     parameterValues, updateParameter, setParameterValues,
     workDrive, setWorkDrive,
   } = useStore();
@@ -339,9 +339,7 @@ export default function PhaseReconstruction() {
                 {t("reconstruction.activeEngine")}
               </div>
               <div className="text-sm font-semibold text-[#34413d]">
-                {pipeline === "modern"
-                  ? t("reconstruction.engineModern")
-                  : t("reconstruction.engineLegacy")}
+                {t("reconstruction.engineModern")}
               </div>
             </div>
           </div>
@@ -546,9 +544,7 @@ export default function PhaseReconstruction() {
               <span className="mt-0.5 block text-xs text-[#77847f]">
                 {workDrives.find((drive) => drive.name === workDrive)?.label ??
                   t("reconstruction.automaticStorage")}{" "}
-                · {pipeline === "modern"
-                  ? t("reconstruction.modernPipeline")
-                  : t("reconstruction.legacyPipeline")}
+                · {t("reconstruction.modernPipeline")}
               </span>
             </span>
           </span>
@@ -587,28 +583,13 @@ export default function PhaseReconstruction() {
             <h4 className="text-sm font-bold text-[#34413d]">
               {t("reconstruction.engineFamily")}
             </h4>
-            <div className="mt-3 grid gap-2">
-              {(["modern", "legacy"] as const).map((engine) => (
-                <button
-                  key={engine}
-                  type="button"
-                  onClick={() => setPipeline(engine)}
-                  className={`rounded-xl border px-4 py-3 text-left transition ${
-                    pipeline === engine
-                      ? "border-[#68bfae] bg-[#edf9f6]"
-                      : "border-[#dce4e1] bg-[#fafcfb] hover:border-[#b8c9c3]"
-                  }`}
-                >
-                  <span className="block text-sm font-bold capitalize text-[#2f3d38]">
-                    {engine}
-                  </span>
-                  <span className="mt-0.5 block text-[11px] text-[#77847f]">
-                    {engine === "modern"
-                      ? t("reconstruction.modernDescription")
-                      : t("reconstruction.legacyDescription")}
-                  </span>
-                </button>
-              ))}
+            <div className="mt-3 rounded-xl border border-[#68bfae] bg-[#edf9f6] px-4 py-3">
+              <span className="block text-sm font-bold text-[#2f3d38]">
+                {t("reconstruction.engineModern")}
+              </span>
+              <span className="mt-0.5 block text-[11px] text-[#77847f]">
+                {t("reconstruction.modernDescription")}
+              </span>
             </div>
           </div>
         </div>

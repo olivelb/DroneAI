@@ -52,9 +52,9 @@ struct Options {
     std::uint64_t stop_after = 0;
     std::string profile_id = "custom";
     std::string dataset_fingerprint;
-    std::string optimizer_profile = "dronegs-dev16";
-    std::string pruning_policy = "original";
-    std::string raster_profile = "auto";
+    std::string optimizer_profile = "reference-absolute";
+    std::string pruning_policy = "spatial-bounds";
+    std::string raster_profile = "fastgs";
     std::string background_mode = "black";
     std::string loss_pixel_mask = "active";
     bool opacity_sh_enabled = false;

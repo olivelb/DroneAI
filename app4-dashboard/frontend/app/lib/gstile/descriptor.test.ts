@@ -4,7 +4,7 @@ import { decodeGsTileViewerDescriptor } from "./descriptor";
 const manifest = () => ({
   schema: "droneai-gstile",
   version: 1,
-  profile: "dronegs-sh3-opacity-sh3-q96",
+  profile: "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4",
   bundleId: `sha256:${"a".repeat(64)}`,
   source: {
     sha256: "b".repeat(64),
@@ -19,6 +19,8 @@ const manifest = () => ({
     {
       id: "r",
       bounds: { min: [0, 0, 0], max: [1, 1, 1] },
+      renderBounds: { min: [-0.5, -0.5, -0.5], max: [1.5, 1.5, 1.5] },
+      geometricError: 0,
       gaussianCount: 1,
       tile: {
         pack: "r",
@@ -55,7 +57,9 @@ const manifest = () => ({
     leafCount: 1,
     packBytes: 128,
     bytesPerGaussian: 128,
-    lod: "leaf-only",
+    lod: "deterministic-adaptive-cost-moment-opacity-refit-v4",
+    proxyCount: 0,
+    proxyRecords: 0,
   },
 });
 

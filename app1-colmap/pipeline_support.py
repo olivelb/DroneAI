@@ -485,18 +485,6 @@ def save_projected_crs(
         logger.warning("Failed to save projected CRS for %s: %s", geo_data_file, error)
 
 
-def read_saved_utm_crs(geo_data_file):
-    """Backward-compatible alias for older worker imports."""
-
-    return read_saved_projected_crs(geo_data_file)
-
-
-def save_utm_crs(geo_data_file, utm_crs):
-    """Backward-compatible alias for older worker imports."""
-
-    save_projected_crs(geo_data_file, utm_crs)
-
-
 def sanitize_exif_for_colmap(image_dir, vol_id, report_fn):
     marker_path = os.path.join(image_dir, ".colmap_exif_sanitized")
     if os.path.exists(marker_path):

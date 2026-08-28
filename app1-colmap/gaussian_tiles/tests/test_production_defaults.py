@@ -39,7 +39,7 @@ def test_default_build_matches_explicit_qualified_profile(tmp_path):
     assert inventory(default) == inventory(explicit)
 
 
-def test_cli_defaults_and_explicit_rollbacks(monkeypatch):
+def test_cli_defaults_and_retired_modes_rejected(monkeypatch):
     repository = Path(__file__).resolve().parents[3]
     monkeypatch.syspath_prepend(str(repository / "tools"))
     parser = runpy.run_path(str(repository / "tools/build_gstiles.py"))["_parser"]()
@@ -47,11 +47,10 @@ def test_cli_defaults_and_explicit_rollbacks(monkeypatch):
     assert (args.lod_proxy_size, args.lod_proxy_strategy, args.pack_target_bytes, args.pack_workers) == (
         16384, "adaptive-moment", 2097152, 2,
     )
-    legacy = parser.parse_args(["input.ply", "bundle", "--no-lod", "--individual-packs", "--pack-workers", "1"])
-    assert legacy.lod_proxy_size is legacy.pack_target_bytes is None
-    assert legacy.pack_workers == 1
-    for flags in (["--no-lod", "--lod-proxy-size", "1024"],
-                  ["--individual-packs", "--pack-target-bytes", "1048576"]):
+    for flags in (["--no-lod"], ["--individual-packs"],
+                  ["--lod-proxy-strategy", "moment-matched"],
+                  ["--lod-proxy-strategy", "minhash"],
+                  ["--lod-proxy-strategy", "spatial-stratified"]):
         with pytest.raises(SystemExit) as error:
             parser.parse_args(["input.ply", "bundle", *flags])
         assert error.value.code == 2
@@ -61,4 +60,7 @@ def test_smaller_leaf_needs_an_explicit_compatible_proxy_size():
     with pytest.raises(ValueError, match="lod_proxy_size"):
         GsTileBuildOptions(leaf_size=1024).validate()
     GsTileBuildOptions(leaf_size=1024, lod_proxy_size=1024).validate()
-    GsTileBuildOptions(leaf_size=1024, lod_proxy_size=None).validate()
+    with pytest.raises(ValueError, match="lod_proxy_size"):
+        GsTileBuildOptions(leaf_size=1024, lod_proxy_size=None).validate()
+    with pytest.raises(ValueError, match="pack_target_bytes"):
+        GsTileBuildOptions(pack_target_bytes=None).validate()

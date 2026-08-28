@@ -317,11 +317,12 @@ a verified project-level pull-only robot whose secret is stored only in the
 The CPU-only publication produced these immutable artifacts for commit
 `6b5a17d8261618980697514cf716214d45edac85`:
 
-- `drone-processing`: `sha256:5749dea2160171891d887e2c1702a6d2780b3a66a35fbdaf0c00a8ef9ac5faca`;
 - `drone-dashboard-api`: `sha256:08a5a588cd85410ebe06673a67f2bcaddfa5e2ce56a9cfbff4adc399935f344b`;
 - `drone-dashboard-frontend`: `sha256:86608159b360a2a8f7b0c4af0a7f572d35314b76b6c488569dda0c1bc21e9152`.
 
-No IA, COLMAP or CUDA image was built or pushed.
+No IA, COLMAP or CUDA image was built or pushed. These dated CPU artifacts
+are historical evidence, not images for the current cleanup. Rebuild all four
+current application images; the former processing image is retired.
 
 ## 5. Install cluster add-ons
 
@@ -388,7 +389,7 @@ No apex, `www`, MX, SPF, DKIM or other mail record was changed.
 ## 6. Publish immutable images
 
 Use the exact commit that will be deployed. The default command publishes only
-the three CPU control-plane images and never builds or publishes CUDA/GPU
+the two CPU control-plane images and never builds or publishes CUDA/GPU
 images:
 
 ```bash
@@ -406,8 +407,9 @@ export TERRAFORM_BIN="$HOME/.cache/codex/terraform-1.14.6/terraform"
 scripts/deploy/publish-ovh-preprod-cpu.sh
 ```
 
-GPU publication requires `INCLUDE_GPU_IMAGES=1`. It reuses an existing local
-`drone-colmap-base:latest` and fails if that base is absent. The long base build
+GPU publication requires `INCLUDE_GPU_IMAGES=1`. It reuses the local
+`drone-colmap-base:GIT_SHA` for the selected revision, passes that exact reference
+to the application build and fails if that base is absent. The long base build
 is possible only when both `INCLUDE_GPU_IMAGES=1` and
 `REBUILD_COLMAP_BASE=1` are explicitly set. A normal PR, merge, documentation,
 Terraform, Helm or CPU application change must never set those flags.
@@ -463,7 +465,7 @@ kubectl -n drone-ai-preprod create secret generic hf-token \
 ```
 
 The Helm defaults pin `facebook/sam3` to a full Hugging Face commit in
-`iaWorker.sam3.revision`. Keep that revision immutable in environment overlays;
+`stageJobs.sam3.revision`. Keep that revision immutable in environment overlays;
 upgrading it is a reviewed model change and creates a different provenance
 manifest in analysis results.
 
@@ -692,7 +694,7 @@ kubectl get node "$GPU_NODE" \
   -L nvidia.com/gpu.present,droneai.io/gpu-vram-at-least-8gb,droneai.io/gpu-vram-at-least-12gb,droneai.io/gpu-vram-at-least-24gb
 ```
 
-When bounded Jobs replace the compatibility Deployments, add to each immutable
+For bounded Jobs, add to each immutable
 executor entry only the toleration matching the actual GPU-pool taint, for
 example:
 
@@ -707,24 +709,9 @@ tolerations:
 The rendered Job adds the VRAM selector itself. An executor may add a stricter
 pool/architecture selector but cannot weaken this resource-class requirement.
 
-Set both `colmapWorker.enabled` and `iaWorker.enabled` to `true` in the local
-values file and upgrade Helm. With one GPU node, immediately keep just one
-worker active:
+Use the Stage Job scheduler concurrency and resource-class limits to share a
+single GPU. The retired Kafka worker Deployments cannot be enabled.
 
-```bash
-helm upgrade drone-ai charts/drone-ai \
-  --namespace drone-ai-preprod \
-  -f charts/drone-ai/values-ovh-preprod.local.yaml \
-  --wait --wait-for-jobs --timeout 15m
-
-# COLMAP phase
-kubectl -n drone-ai-preprod scale deployment/ia-worker --replicas=0
-kubectl -n drone-ai-preprod scale deployment/colmap-worker --replicas=1
-
-# IA phase: reverse the replicas after COLMAP has completed.
-kubectl -n drone-ai-preprod scale deployment/colmap-worker --replicas=0
-kubectl -n drone-ai-preprod scale deployment/ia-worker --replicas=1
-```
 
 Because this is a new cloud GPU architecture, run one `nvidia-smi` pod smoke
 test and one small end-to-end mission. Do not rerun the long COLMAP/CUDA build

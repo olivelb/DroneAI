@@ -93,7 +93,7 @@ def test_preprod_overlay_requires_immutable_images_and_external_secrets() -> Non
     cert_manager = _read(ROOT / "infra" / "kubernetes" / "ovh-preprod" / "cert-manager-values.yaml")
 
     assert ":latest" not in values
-    assert values.count('tag: "REPLACE_GIT_SHA"') == 5
+    assert values.count('tag: "REPLACE_GIT_SHA"') == 2
     assert "existingSecret: drone-ai-storage-preprod" in values
     assert "createNamespace: false" in values
     assert "environment: staging" in values
@@ -107,13 +107,6 @@ def test_preprod_overlay_requires_immutable_images_and_external_secrets() -> Non
     assert "s3Bucket: droneai-preprod-backups-fe7dc125" in values
     assert "amazon/aws-cli:2.31.25@sha256:" in _read(CHART / "values.yaml")
     assert values.count("@sha256:") >= 2
-    assert (
-        "processingWorker:\n  replicaCount: 0\n"
-        "  tag: \"REPLACE_GIT_SHA\"\n  resources:"
-    ) in values
-    assert "limits:\n      memory: 4Gi\n    requests:\n      memory: 2Gi" in values
-    assert "memory: 16Gi" in values
-    assert "memory: 32Gi" in values
     assert "droneai-preprod.olembo.fr" in values
     assert "api-droneai-preprod.olembo.fr" in values
     assert "className: traefik" in values
@@ -155,16 +148,12 @@ def test_preprod_overlay_requires_immutable_images_and_external_secrets() -> Non
 def test_gpu_workers_are_opt_in_and_external_kafka_is_supported() -> None:
     values = _read(CHART / "values-ovh-preprod.example.yaml")
     helpers = _read(CHART / "templates" / "_helpers.tpl")
-    colmap = _read(CHART / "templates" / "colmap-worker.yaml")
-    ia = _read(CHART / "templates" / "ia-worker.yaml")
     kafka = _read(CHART / "templates" / "kafka.yaml")
     kafka_topics = _read(CHART / "templates" / "kafka-topics.yaml")
 
     assert "minio:\n  enabled: false" in values
     assert "colmapWorker:\n  enabled: false" in values
-    assert "iaWorker:\n  enabled: false" in values
-    assert "if .Values.colmapWorker.enabled" in colmap
-    assert "if .Values.iaWorker.enabled" in ia
+    assert not (CHART / "templates" / "colmap-worker.yaml").exists()
     assert ".Values.kafka.broker" in helpers
     assert "fsGroup: 1000" in kafka
     assert "fsGroupChangePolicy: OnRootMismatch" in kafka
@@ -176,27 +165,14 @@ def test_gpu_workers_are_opt_in_and_external_kafka_is_supported() -> None:
     assert "range .Values.kafka.topics" in kafka_topics
     topic_values = _read(CHART / "values.yaml")
     for topic in (
-        "vols-bruts",
-        "images-ortho",
         "pipeline-status",
         "pipeline-control",
         "pipeline-dead-letter",
     ):
         assert f"- name: {topic}\n      partitions: 1" in topic_values
-    for topic in ("image-tiles", "tile-detections"):
-        assert f"- name: {topic}\n      partitions: 4" in topic_values
+    for topic in ("vols-bruts", "images-ortho", "image-tiles", "tile-detections"):
+        assert f"- name: {topic}\n" not in topic_values
 
-
-def test_tile_workers_expose_safe_scale_out_controls() -> None:
-    values = _read(CHART / "values.yaml")
-    ia = _read(CHART / "templates" / "ia-worker.yaml")
-    processing = _read(CHART / "templates" / "processing-worker.yaml")
-
-    assert values.count("replicaCount: 1") >= 2
-    assert "accessMode: ReadWriteOnce" in values
-    assert "replicas: {{ .Values.iaWorker.replicaCount }}" in ia
-    assert ia.count("{{ .Values.iaWorker.modelCache.accessMode }}") == 2
-    assert "replicas: {{ .Values.processingWorker.replicaCount }}" in processing
 
 
 def test_ovh_dns_upsert_is_bounded_to_explicit_a_records() -> None:
@@ -246,8 +222,8 @@ def test_preprod_publication_never_implicitly_builds_gpu_images() -> None:
 
     assert 'readonly INCLUDE_GPU_IMAGES="${INCLUDE_GPU_IMAGES:-0}"' in script
     assert 'REBUILD_COLMAP_BASE=1 requires INCLUDE_GPU_IMAGES=1' in script
-    assert 'GPU publication refused: drone-colmap-base:latest is missing.' in script
-    assert 'images=(\n    drone-processing' in script
+    assert 'GPU publication refused: $COLMAP_BASE_IMAGE is missing.' in script
+    assert 'images=(\n    drone-dashboard-api' in script
     assert 'images=(drone-colmap drone-ia "${images[@]}")' in script
 
     wrapper = _read(ROOT / "scripts" / "deploy" / "publish-ovh-preprod-cpu.sh")
@@ -275,8 +251,51 @@ def test_cpu_deployment_bootstraps_external_secrets_and_is_atomic() -> None:
     assert "--dry-run=server --hide-secret" in deploy
     assert "Reusing deployed CPU image tag" in deploy
     assert "IMAGE_TAG must be a 7-40 character" in deploy
-    assert "processingWorker.tag=${image_tag}" in deploy
+    assert "processingWorker.tag" not in deploy
     assert "postgres.backup.s3Endpoint=${s3_endpoint}" in deploy
     assert "postgres.backup.s3Bucket=${backup_bucket}" in deploy
     assert "colmapWorker.tag" not in deploy
     assert "iaWorker.tag" not in deploy
+
+
+def test_preprod_gpu_build_binds_the_requested_base_revision(tmp_path):
+    import os
+    import subprocess
+
+    docker = tmp_path / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$BUILD_LOG\"\n"
+        "if [[ \"$1 $2\" == 'image inspect' ]]; then exit 1; fi\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    log = tmp_path / "build.log"
+    env = dict(
+        os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}",
+        BUILD_LOG=str(log), INCLUDE_GPU_IMAGES="1", REBUILD_COLMAP_BASE="1",
+    )
+    revision = "a" * 40
+    command = ["bash", "scripts/deploy/publish-preprod-images.sh", "registry.test/droneai", revision]
+    subprocess.run(command, cwd=ROOT, env=env, check=True, capture_output=True, text=True)
+    calls = log.read_text().splitlines()
+    base = f"drone-colmap-base:{revision}"
+    builds = [line for line in calls if line.startswith("build ")]
+    assert len(builds) == 5
+    assert f"--tag {base} " in builds[0]
+    assert f"--build-arg COLMAP_BASE_IMAGE={base} " in builds[1]
+    assert len([line for line in calls if line.startswith("push ")]) == 4
+
+    log.write_text("")
+    env["REBUILD_COLMAP_BASE"] = "0"
+    refused = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
+    assert refused.returncode == 1
+    assert base in refused.stderr
+    assert not any(line.startswith(("build ", "push ")) for line in log.read_text().splitlines())
+
+    log.write_text("")
+    env["INCLUDE_GPU_IMAGES"] = "0"
+    subprocess.run(command, cwd=ROOT, env=env, check=True, capture_output=True, text=True)
+    calls = log.read_text().splitlines()
+    assert len([line for line in calls if line.startswith("build ")]) == 2
+    assert not any("drone-colmap" in line or "drone-ia" in line for line in calls)

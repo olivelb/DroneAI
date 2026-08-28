@@ -36,7 +36,7 @@ more uniform seed because DroneGS performs the later densification. See the
 
 | Mode | Intended use | Entry point |
 |---|---|---|
-| Local dashboard | Complete workstation deployment with Docker Compose | `./deploy.sh local` |
+| Test services | HTTP/control-plane dependencies without compute | `compose.test.yaml` |
 | Distributed dashboard | Single-node K3s deployment managed by Helm; local Jobs use a Git-SHA tag, protected environments require OCI digests | `STAGE_JOBS_IMAGE_TAG=<git-sha> ./deploy.sh distributed` |
 | Local runner | Infrastructure-free scientific diagnostics | `./tools/run_local_pipeline.sh` |
 
@@ -67,8 +67,8 @@ flowchart LR
 ```
 
 Retries create a new immutable attempt against exact parent artifact IDs; they
-do not replay successful ancestors. The Kafka fused-worker path remains a
-compatibility mode for local deployments and existing missions.
+do not replay successful ancestors. Bounded Stage Jobs are the only mission
+execution path; global mission replay and Kafka compute workers are removed.
 
 ## How the parts work together
 
@@ -77,7 +77,7 @@ compatibility mode for local deployments and existing missions.
 The Next.js frontend uploads datasets directly to S3 through short-lived
 multipart URLs, then lets operators configure and launch missions, follow
 progress, inspect map layers and export results. Its FastAPI backend validates
-and journals upload sessions, stores mission state, publishes work to Kafka and
+and journals upload sessions, queues durable Stage Jobs and
 serves datasets and results from S3-compatible storage and PostGIS. The map
 workspace also imports surveyed ground control, proposes photos from registered
 camera visibility with an EXIF fallback, supports bounded sub-pixel marking and
@@ -89,8 +89,8 @@ status stream needed for their own WebSocket clients.
 ### Reconstruction and raster products — `app1-colmap`
 
 The COLMAP image exposes independent one-shot reconstruction, Gaussian
-training, Gaussian filtering and rasterization commands. They share the same
-typed scientific boundaries as the compatibility worker, while S3 manifests
+training, Gaussian filtering, rasterization and Gaussian viewer commands.
+Typed scientific boundaries and versioned S3 manifests
 carry verified state between disposable Jobs. The pipeline creates either a
 georeferenced map frame or a local facade frame, applies product-specific
 quality gates and renders RGB and height/depth rasters. Only map missions
@@ -98,18 +98,10 @@ continue to AI. Aerial publication also requires a versioned spatial-coverage
 report over the registered-camera footprint, preventing a sparse DSM from
 passing solely because enough Gaussian primitives survived filtering.
 
-### Raster processing — `app3-processing`
-
-The processing image provides the compatibility Kafka tiling and aggregation
-worker. In bounded stage-Job mode, the detection executor streams overlapping
-raster windows directly, removes duplicates, publishes the final GeoJSON and
-retains the same bounded tiling and provenance contracts. Indexed vectors can
-then be persisted in PostGIS for spatial search.
-
 ### AI inference — `app2-ia`
 
-The AI image exposes both the one-shot detection executor and the compatibility
-tile worker. It runs either Meta SAM 3 prompt-based segmentation or
+The AI image exposes the bounded detection executor, including independent map
+analyses. It runs either Meta SAM 3 prompt-based segmentation or
 Ultralytics YOLO OBB, records immutable model provenance and publishes bounded
 JSON/GeoJSON artifacts without embedding large segmentation payloads in Kafka.
 
@@ -117,7 +109,7 @@ JSON/GeoJSON artifacts without embedding large segmentation payloads in Kafka.
 
 Shared modules define configuration, event contracts, validation, storage and
 database helpers used by every service. MinIO or another S3-compatible store
-holds large artifacts, Kafka carries asynchronous work and status events, and
+holds large artifacts, Kafka carries control and status events, and
 PostgreSQL/PostGIS holds durable application and vector data.
 
 ### Local tools — `tools`
@@ -129,26 +121,25 @@ operator use.
 
 ## Quick start
 
-The recommended workstation setup is:
+The workstation deployment uses K3s and bounded Stage Jobs:
 
 ```bash
 git clone https://github.com/olivelb/DroneAI.git
 cd DroneAI
-./deploy.sh local
+./deploy.sh distributed --stage-jobs "$(git rev-parse --short=7 HEAD)"
 ```
 
 For the distributed K3s deployment:
 
 ```bash
-export STAGE_JOBS_IMAGE_TAG="$(git rev-parse --short=7 HEAD)"
-./deploy.sh distributed
+./deploy.sh distributed --stage-jobs "$(git rev-parse --short=7 HEAD)"
 ```
 
 The deployment command prepares pinned external sources, builds the services,
 starts the required infrastructure and prints the dashboard URL. `HF_TOKEN` is
 optional for YOLO and required only for gated Hugging Face models such as SAM 3.
-Omit `STAGE_JOBS_IMAGE_TAG` only when deliberately exercising the fused-worker
-compatibility path.
+The immutable Git SHA is required. Compose is retained only for isolated
+integration tests; it no longer launches compute workers.
 
 ## Documentation
 
@@ -168,7 +159,7 @@ guides for implementation and operational details:
 | Production boundary and release gates | [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) |
 | Reconstruction and RTK alignment | [`docs/FAST_ALIGNMENT.md`](docs/FAST_ALIGNMENT.md) |
 | Map workspace, measurements and exports | [`docs/GEOSPATIAL_WORKSPACE.md`](docs/GEOSPATIAL_WORKSPACE.md) |
-| Projected Fast/Normal/HQ candidates, resident capacity and promotion gates | [`docs/contracts/quality-profiles-v3.md`](docs/contracts/quality-profiles-v3.md) |
+| Qualified Fast v2 / Normal v3 / HQ v4, resident capacity and campaign gates | [`docs/contracts/quality-profiles-v3.md`](docs/contracts/quality-profiles-v3.md) |
 | Documentation index and dated validation evidence | [`docs/README.md`](docs/README.md) |
 | Third-party components and licenses | [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) |
 

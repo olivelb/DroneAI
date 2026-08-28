@@ -29,7 +29,6 @@ from shared.identity import (
     database_authentication_enabled,
     validate_session_identity,
 )
-from shared.quality_profiles import quality_profile_candidates_enabled
 from shared.platform_identity import (
     PLATFORM_PRINCIPAL_ORGANIZATION,
     AuthenticatedPlatformIdentity,
@@ -276,10 +275,6 @@ def validate_production_configuration() -> None:
     if not is_production():
         return
     bounded_stage_jobs_enabled()
-    if quality_profile_candidates_enabled():
-        raise RuntimeError(
-            "Candidate quality profiles cannot be exposed in production"
-        )
     if "*" in configured_cors_origins():
         raise RuntimeError("CORS_ORIGINS must list trusted origins in production")
     if not database_authentication_enabled(production=True):

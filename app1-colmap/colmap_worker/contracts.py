@@ -69,9 +69,3 @@ class PipelineGaussianState:
     checkpoint_s3_prefix: str
     profile_id: str
     qualification_policy_id: str
-
-
-@dataclass(frozen=True)
-class PipelinePublicationState:
-    ortho_s3_key: str
-    gaussian_upload_complete: bool

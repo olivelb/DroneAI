@@ -384,8 +384,6 @@ def test_facade_process_preserves_quality_overrides_but_enforces_local_frame():
     ),
     [
         ("normal-v3", "15000", "3000000", "8.0", "local-knn", False),
-        ("normal-v4", "15000", "3000000", "8.0", "projected-knn", True),
-        ("high-quality-v3", "30000", "5000000", "3.6", "local-knn", False),
         ("high-quality-v4", "30000", "5000000", "3.6", "projected-knn", True),
     ],
 )

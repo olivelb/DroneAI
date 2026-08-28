@@ -34,7 +34,7 @@ def _manifest(*, digest: str = "b" * 64, zstd: bool = False) -> dict[str, object
     manifest = {
         "schema": "droneai-gstile",
         "version": 1,
-        "profile": "dronegs-sh3-opacity-sh3-q96",
+        "profile": "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4",
         "bundleId": "sha256:" + "a" * 64,
         "root": "root",
         "source": {"sha256": "c" * 64, "gaussianCount": 1},
@@ -52,6 +52,8 @@ def _manifest(*, digest: str = "b" * 64, zstd: bool = False) -> dict[str, object
             {
                 "id": "root",
                 "bounds": {"min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 1.0]},
+                "renderBounds": {"min": [-1.0, -1.0, -1.0], "max": [2.0, 2.0, 2.0]},
+                "geometricError": 0,
                 "gaussianCount": 1,
                 "tile": {
                     "pack": "pack-0",
@@ -62,7 +64,7 @@ def _manifest(*, digest: str = "b" * 64, zstd: bool = False) -> dict[str, object
                 },
             }
         ],
-        "statistics": {"lod": "leaf-only"},
+        "statistics": {"lod": "deterministic-adaptive-cost-moment-opacity-refit-v4", "proxyCount": 0, "proxyRecords": 0},
     }
     if zstd:
         manifest["packs"][0]["encodings"] = {

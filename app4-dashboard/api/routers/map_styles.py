@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from shared.database import MissionArtifact, RasterLayerStyle, get_session
 
 from ..map_schemas import RasterStyleCreate, RasterStyleUpdate
-from ..map_support import JsonObject, MissionRecord, RouteSession, get_mission, mission_key
+from ..map_support import JsonObject, MissionRecord, RouteSession, get_mission, validate_map_layer
 from ..security import Principal, require_authenticated, require_operator
 
 router = APIRouter()
@@ -26,7 +26,7 @@ def _style_context(
     owner_subject: str | None,
     action: str,
 ) -> Iterator[tuple[RouteSession, MissionRecord]]:
-    mission_key(vol_id, layer)
+    validate_map_layer(vol_id, layer)
     with get_session() as session:
         typed_session = cast(RouteSession, session)
         mission = get_mission(

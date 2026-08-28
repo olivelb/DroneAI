@@ -113,14 +113,3 @@ class DroneGSProductionProfile:
 
 DRONEGS_PRODUCTION_PROFILE_V1 = DroneGSProductionProfile()
 DRONEGS_PRODUCTION_DEFAULTS = MappingProxyType(DRONEGS_PRODUCTION_PROFILE_V1.pipeline_defaults())
-
-
-def effective_raster_profile(
-    requested: str,
-    optimizer_profile: str,
-) -> str:
-    """Resolve the native ``auto`` raster choice to its executed backend."""
-
-    if requested in {"bounded", "fastgs"}:
-        return requested
-    return "fastgs" if optimizer_profile == "dev38-staged-rotation008-absgrad050-fastgs" else "bounded"

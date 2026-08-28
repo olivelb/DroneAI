@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,15 +11,14 @@ from functools import lru_cache
 from typing import Any, Protocol, Self, cast
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 
 from shared import storage
 from shared.config import S3_BUCKET
-from shared.database import Detection, MapFeature, MissionArtifact
-from shared.geospatial_assets import detections_feature_collection
+from shared.database import MapFeature, MissionArtifact, MissionStageRun
 from shared.geospatial_workspace import bounds_intersect, geometry_bounds
 from shared.stage_workspace import resolve_workspace_files
-from shared.tenancy import LEGACY_ORGANIZATION_ID, MissionObjectNamespace
+from shared.tenancy import MissionObjectNamespace
 
 from .mission_access import get_owned_mission
 from .security import Principal
@@ -167,16 +167,8 @@ class AnalysisRunRecord(Protocol):
     completed_at: datetime | None
 
 
-class AnalysisTileRecord(Protocol):
-    result_s3_key: str
-    bounds_wgs84: list[float] | None
-
-
-def mission_key(
-    vol_id: str,
-    layer: str,
-    namespace: MissionObjectNamespace | None = None,
-) -> tuple[str, str]:
+def validate_map_layer(vol_id: str, layer: str) -> tuple[str, str]:
+    """Validate the requested mission/layer and return its logical raster name."""
     if not VOL_ID_PATTERN.fullmatch(vol_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -189,11 +181,7 @@ def mission_key(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Unknown raster layer",
         ) from error
-    mission_namespace = namespace or MissionObjectNamespace.create(
-        LEGACY_ORGANIZATION_ID,
-        vol_id,
-    )
-    return mission_namespace.key(suffix), colormap
+    return suffix, colormap
 
 
 def _artifact_manifest_key(artifact: MissionArtifactRecord) -> str:
@@ -228,19 +216,14 @@ def resolve_raster_product(
     vol_id: str,
     layer: str,
 ) -> RasterProductObject:
-    """Resolve a map layer from the newest immutable raster artifact.
+    """Resolve a map layer only from its immutable raster artifact."""
 
-    Compatibility missions may still expose the historical root-level object.
-    Once a versioned raster artifact exists, it is authoritative and failures
-    are not hidden by falling back to a potentially stale legacy object.
-    """
-
-    namespace = MissionObjectNamespace.from_binding(
+    MissionObjectNamespace.from_binding(
         mission.organization_id,
         mission.vol_id,
         mission.workspace_prefix,
     )
-    compatibility_key, colormap = mission_key(vol_id, layer, namespace)
+    logical_path, colormap = validate_map_layer(vol_id, layer)
     artifact = cast(
         MissionArtifactRecord | None,
         session.query(MissionArtifact)
@@ -252,15 +235,11 @@ def resolve_raster_product(
         .first(),
     )
     if artifact is None:
-        require_object(compatibility_key)
-        compatibility_sidecar_key = f"{compatibility_key}.cog.json"
-        return RasterProductObject(
-            key=compatibility_key,
-            default_colormap=colormap,
-            sidecar_key=(compatibility_sidecar_key if storage.file_exists(compatibility_sidecar_key) else None),
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Raster artifact is not available",
         )
 
-    logical_path = RASTER_LAYERS[layer][0]
     metadata_name = "ortho_file" if layer == "ortho" else "height_file"
     configured_path = artifact.artifact_metadata.get(metadata_name)
     if isinstance(configured_path, str) and configured_path:
@@ -301,9 +280,11 @@ def resolve_detection_product(
     artifact = cast(
         MissionArtifactRecord | None,
         session.query(MissionArtifact)
+        .join(MissionStageRun, MissionStageRun.id == MissionArtifact.stage_run_id)
         .filter(
             MissionArtifact.mission_id == mission.id,
             MissionArtifact.kind == "detection_workspace",
+            MissionStageRun.analysis_run_id.is_(None),
         )
         .order_by(MissionArtifact.created_at.desc(), MissionArtifact.id.desc())
         .first(),
@@ -354,6 +335,7 @@ def parse_bbox(value: str | None) -> Bounds | None:
         ) from error
     if (
         len(bounds) != 4
+        or not all(math.isfinite(coordinate) for coordinate in bounds)
         or bounds[0] >= bounds[2]
         or bounds[1] >= bounds[3]
         or bounds[0] < -180
@@ -501,29 +483,6 @@ def apply_spatial_filter[FilterQueryT: FilterQueryProtocol](
     )
 
 
-def apply_detection_spatial_filter[FilterQueryT: FilterQueryProtocol](
-    query: FilterQueryT,
-    bounds: Bounds | None,
-) -> FilterQueryT:
-    """Filter legacy detections stored as geometry or fallback GPS columns."""
-
-    if not bounds:
-        return query
-    west, south, east, north = bounds
-    envelope = func.ST_MakeEnvelope(west, south, east, north, 4326)
-    return query.filter(
-        or_(
-            func.ST_Intersects(Detection.geometry, envelope),
-            (
-                (Detection.geo_lon >= west)
-                & (Detection.geo_lon <= east)
-                & (Detection.geo_lat >= south)
-                & (Detection.geo_lat <= north)
-            ),
-        )
-    )
-
-
 def load_json_object(key: str) -> dict[str, Any]:
     stream, content_length, _ = storage.get_object_stream(key)
     if content_length > MAX_VECTOR_OBJECT_BYTES:
@@ -556,6 +515,13 @@ def pipeline_detection_features(
     product = resolve_detection_product(session, mission)
     if product is None:
         return None
+    return detection_product_features(product, vol_id, bounds, limit, {"source": "pipeline"})
+
+
+def detection_product_features(
+    product: DetectionProductObject, vol_id: str, bounds: Bounds | None,
+    limit: int, extra_properties: JsonObject,
+) -> tuple[list[JsonObject], bool]:
     payload = load_json_object(product.key)
     if payload.get("type") != "FeatureCollection" or not isinstance(payload.get("features"), list):
         raise HTTPException(
@@ -610,7 +576,7 @@ def pipeline_detection_features(
                 **feature,
                 "properties": {
                     **cast(JsonObject, properties),
-                    "source": "legacy",
+                    **extra_properties,
                     "name": properties.get("name") or properties.get("class_name"),
                     "color": properties.get("color") or "#f43f5e",
                 },
@@ -619,48 +585,38 @@ def pipeline_detection_features(
     return selected, truncated
 
 
-def object_store_analysis_features(
-    tiles: list[AnalysisTileRecord],
-    bounds: Bounds | None,
-    limit: int,
-    *,
-    vol_id: str,
-    tiling_metadata: JsonObject,
+def analysis_artifact_features(
+    session: RouteSession, mission: MissionRecord, run: AnalysisRunRecord,
+    bounds: Bounds | None, limit: int,
 ) -> tuple[list[JsonObject], bool]:
-    """Read legacy feature collections or versioned raw tile artifacts."""
-
-    features: list[JsonObject] = []
-    truncated = False
-    for tile in tiles:
-        if bounds and tile.bounds_wgs84 and not bounds_intersect(list(bounds), tile.bounds_wgs84):
-            continue
-        payload = load_json_object(tile.result_s3_key)
-        if "raw_detections" in payload:
-            collection = detections_feature_collection(
-                cast(list[JsonObject], payload["raw_detections"]),
-                geotransform=cast(
-                    list[float] | None,
-                    tiling_metadata.get("transform"),
-                ),
-                source_crs=cast(str | None, tiling_metadata.get("crs")),
-                vol_id=vol_id,
-            )
-            stored_features = cast(
-                list[JsonObject],
-                collection["features"],
-            )
-        else:
-            stored_features = cast(list[JsonObject], payload.get("features", []))
-        for feature in stored_features:
-            if bounds and not bounds_intersect(
-                list(bounds),
-                geometry_bounds(cast(JsonObject, feature["geometry"])),
-            ):
-                continue
-            features.append(feature)
-            if len(features) >= limit:
-                truncated = True
-                break
-        if truncated:
-            break
-    return features, truncated
+    """Read this analysis's immutable result, never a pipeline artifact."""
+    if run.status != "completed":
+        return [], False
+    artifact = session.query(MissionArtifact).join(
+        MissionStageRun, MissionStageRun.id == MissionArtifact.stage_run_id,
+    ).filter(
+        MissionArtifact.mission_id == mission.id,
+        MissionArtifact.kind == "detection_workspace",
+        MissionStageRun.analysis_run_id == run.id,
+        MissionStageRun.status == "succeeded",
+    ).order_by(MissionStageRun.attempt.desc()).first()
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Analysis artifact is not available")
+    metadata = artifact.artifact_metadata or {}
+    if metadata.get("analysis_run_id") != run.run_id:
+        raise HTTPException(status_code=502, detail="Analysis artifact identity does not match")
+    try:
+        object_keys = _workspace_object_keys(
+            _artifact_manifest_key(artifact), artifact.checksum_sha256, mission.organization_id,
+        )
+    except (OSError, ValueError) as error:
+        raise HTTPException(status_code=502, detail=f"Unable to resolve analysis artifact manifest: {error}") from error
+    logical_path = metadata.get("geojson_file")
+    key = object_keys.get(logical_path) if isinstance(logical_path, str) else None
+    if key is None:
+        raise HTTPException(status_code=502, detail="Analysis artifact has no GeoJSON result")
+    return detection_product_features(
+        DetectionProductObject(key=key, artifact_id=artifact.artifact_id),
+        mission.vol_id, bounds, limit,
+        {"source": "ai", "run_id": run.run_id, "name": run.name, "color": run.color},
+    )

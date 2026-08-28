@@ -12,6 +12,7 @@ from shared.database import (
     AIAnalysisTile,
     Mission,
     MissionArtifact,
+    MissionArtifactParent,
     MissionStageRun,
     Organization,
     OrganizationSaasPolicy,
@@ -36,6 +37,7 @@ def _retention_scope(monkeypatch):
         AIAnalysisTile.__table__,
         OutboxEvent.__table__,
         MissionArtifact.__table__,
+        MissionArtifactParent.__table__,
     ):
         table.create(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
@@ -134,15 +136,11 @@ def test_retention_cancels_and_drains_active_analyses_before_object_deletion(
         session.add(analysis)
         session.flush()
         session.add(
-            AIAnalysisTile(
-                analysis_run_id=analysis.id,
-                tile_index=0,
-                status="queued",
-                tile_s3_key="organizations/tenant-a/missions/analysis-drain/tile-0.png",
-                offset_x=0,
-                offset_y=0,
-                width=1024,
-                height=1024,
+            MissionStageRun(
+                run_id="analysis-drain-stage", mission_id=mission.id, analysis_run_id=analysis.id,
+                stage="detection", attempt=1, status="running", idempotency_key="b" * 64,
+                parameters={"analysis_generation": 2},
+                executor="kubernetes-job", job_name="droneai-analysis-drain-stage",
             )
         )
 
@@ -152,16 +150,18 @@ def test_retention_cancels_and_drains_active_analyses_before_object_deletion(
     assert deleted_prefixes == []
     with scope() as session:
         analysis = session.query(AIAnalysisRun).one()
-        tile = session.query(AIAnalysisTile).one()
         assert analysis.status == "cancelled"
-        assert analysis.finalization_owner is None
-        assert analysis.finalization_lease_until is None
-        assert tile.status == "dead"
-        assert session.query(OutboxEvent).count() == 1
+        assert session.query(OutboxEvent).count() == 0
         mission = session.query(Mission).one()
         assert mission.status == "deleting"
         assert mission.current_step == "RETENTION_DRAINING"
 
+    # Cancellation alone cannot authorize deletion until Kubernetes cleanup is acknowledged.
+    assert retention.retention_cleanup_once(now=now, delete_prefix=delete) == 0
+    assert deleted_prefixes == []
+    with scope() as session:
+        stage = session.query(MissionStageRun).one()
+        stage.provenance = {"cancellation_job_cleanup_at": now.isoformat()}
     assert retention.retention_cleanup_once(now=now, delete_prefix=delete) == 1
     assert deleted_prefixes == ["organizations/tenant-a/missions/analysis-drain/"]
 

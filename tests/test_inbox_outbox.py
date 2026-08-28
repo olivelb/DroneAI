@@ -21,15 +21,7 @@ from shared.inbox_outbox import (
     process_inbox_transaction,
     run_outbox_dispatcher,
 )
-from shared.kafka_reliability import MessageDeferredError, RetryPolicy
-from shared.worker_inbox import (
-    InboxLeaseLostError,
-    WorkerInboxResult,
-    claim_inbox_work,
-    make_inbox_work_handler,
-    process_inbox_work,
-    renew_inbox_claim,
-)
+from shared.kafka_reliability import RetryPolicy
 
 
 @pytest.fixture
@@ -81,10 +73,10 @@ def test_inbox_and_outbox_share_one_transaction_and_deduplicate(
             topic="next-stage",
             key=event["vol_id"],
             event=make_event(
-                "mission",
+                "control",
                 {
                     "vol_id": event["vol_id"],
-                    "input_dataset": "datasets/mission-1",
+                    "command": "cancel",
                 },
                 event_id="mission:next",
             ),
@@ -219,8 +211,8 @@ def test_handler_failure_rolls_back_inbox_and_outbox(session_scope):
             session,
             topic="next-stage",
             event=make_event(
-                "mission",
-                {"vol_id": event["vol_id"]},
+                "control",
+                {"vol_id": event["vol_id"], "command": "cancel"},
                 event_id="mission:rolled-back",
             ),
         )
@@ -240,220 +232,16 @@ def test_handler_failure_rolls_back_inbox_and_outbox(session_scope):
         assert session.query(OutboxEvent).count() == 0
 
 
-def test_long_running_inbox_completes_and_suppresses_duplicate(session_scope):
-    event = status_event("status:worker-complete")
-    handled = []
-
-    first = process_inbox_work(
-        session_scope,
-        consumer_group="processing-workers",
-        event=event,
-        source={"topic": "tile-detections", "partition": 0, "offset": 8},
-        handler=lambda payload: handled.append(payload["event_id"]),
-        worker_id="worker-a",
-        heartbeat_interval_seconds=0,
-    )
-    second = process_inbox_work(
-        session_scope,
-        consumer_group="processing-workers",
-        event=event,
-        source={"topic": "tile-detections", "partition": 1, "offset": 3},
-        handler=lambda payload: handled.append(payload["event_id"]),
-        worker_id="worker-b",
-        heartbeat_interval_seconds=0,
-    )
-
-    assert first == WorkerInboxResult.PROCESSED
-    assert second == WorkerInboxResult.DUPLICATE
-    assert handled == ["status:worker-complete"]
-    with session_scope() as session:
-        record = session.query(InboxEvent).one()
-        assert record.status == "completed"
-        assert record.locked_at is None
-        assert record.locked_by is None
-
-
-def test_failed_worker_inbox_is_reclaimable(session_scope):
-    event = status_event("status:worker-retry")
-
-    with pytest.raises(RuntimeError, match="inference failed"):
-        process_inbox_work(
-            session_scope,
-            consumer_group="ia-workers",
-            event=event,
-            source={"topic": "image-tiles", "partition": 0, "offset": 12},
-            handler=lambda _payload: (_ for _ in ()).throw(
-                RuntimeError("inference failed")
-            ),
-            worker_id="worker-a",
-            heartbeat_interval_seconds=0,
-        )
-
-    with session_scope() as session:
-        failed = session.query(InboxEvent).one()
-        assert failed.status == "failed"
-        assert failed.attempts == 1
-        assert failed.last_error == "RuntimeError: inference failed"
-
-    result = process_inbox_work(
-        session_scope,
-        consumer_group="ia-workers",
-        event=event,
-        source={"topic": "image-tiles", "partition": 0, "offset": 12},
-        handler=lambda _payload: None,
-        worker_id="worker-b",
-        heartbeat_interval_seconds=0,
-    )
-
-    assert result == WorkerInboxResult.PROCESSED
-    with session_scope() as session:
-        completed = session.query(InboxEvent).one()
-        assert completed.status == "completed"
-        assert completed.attempts == 2
-        assert completed.last_error is None
-
-
-def test_worker_inbox_lease_blocks_overlap_and_allows_stale_takeover(
-    session_scope,
-):
-    event = status_event("status:leased")
-    started = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
-    source = {"topic": "vols-bruts", "partition": 2, "offset": 20}
-
-    first = claim_inbox_work(
-        session_scope,
-        consumer_group="colmap-workers",
-        event=event,
-        source=source,
-        worker_id="worker-a",
-        lease_seconds=60,
-        now=started,
-    )
-    overlap = claim_inbox_work(
-        session_scope,
-        consumer_group="colmap-workers",
-        event=event,
-        source=source,
-        worker_id="worker-b",
-        lease_seconds=60,
-        now=started + timedelta(seconds=30),
-    )
-    takeover = claim_inbox_work(
-        session_scope,
-        consumer_group="colmap-workers",
-        event=event,
-        source=source,
-        worker_id="worker-b",
-        lease_seconds=60,
-        now=started + timedelta(seconds=61),
-    )
-
-    assert first == WorkerInboxResult.PROCESSED
-    assert overlap == WorkerInboxResult.IN_PROGRESS
-    assert takeover == WorkerInboxResult.PROCESSED
-    assert not renew_inbox_claim(
-        session_scope,
-        consumer_group="colmap-workers",
-        event_id=event["event_id"],
-        worker_id="worker-a",
-    )
-    assert renew_inbox_claim(
-        session_scope,
-        consumer_group="colmap-workers",
-        event_id=event["event_id"],
-        worker_id="worker-b",
-    )
-    with session_scope() as session:
-        record = session.query(InboxEvent).one()
-        assert record.attempts == 2
-        assert record.locked_by == "worker-b"
-
-
-def test_active_worker_inbox_defers_kafka_delivery(session_scope):
-    event = status_event("status:active")
-    source = {"topic": "image-tiles", "partition": 0, "offset": 7}
-    assert claim_inbox_work(
-        session_scope,
-        consumer_group="ia-workers",
-        event=event,
-        source=source,
-        worker_id="worker-a",
-        lease_seconds=60,
-    ) == WorkerInboxResult.PROCESSED
-
-    with pytest.raises(MessageDeferredError, match="already leased"):
-        process_inbox_work(
-            session_scope,
-            consumer_group="ia-workers",
-            event=event,
-            source=source,
-            handler=lambda _payload: pytest.fail("active work must not overlap"),
-            worker_id="worker-b",
-            heartbeat_interval_seconds=0,
-        )
-
-    with session_scope() as session:
-        record = session.query(InboxEvent).one()
-        assert record.status == "processing"
-        assert record.attempts == 1
-        assert record.locked_by == "worker-a"
-
-
-def test_worker_inbox_detects_lost_ownership(session_scope):
-    event = status_event("status:lease-lost")
-
-    def steal_claim(_payload):
-        with session_scope() as session:
-            record = session.query(InboxEvent).one()
-            record.locked_by = "worker-b"
-
-    with pytest.raises(InboxLeaseLostError, match="lease lost"):
-        process_inbox_work(
-            session_scope,
-            consumer_group="processing-workers",
-            event=event,
-            source={"topic": "tile-detections", "partition": 0, "offset": 1},
-            handler=steal_claim,
-            worker_id="worker-a",
-            heartbeat_interval_seconds=0,
-        )
-
-
-def test_worker_inbox_handler_captures_message_location(session_scope):
-    message = SimpleNamespace(
-        topic=lambda: "image-tiles",
-        partition=lambda: 4,
-        offset=lambda: 23,
-    )
-    handler = make_inbox_work_handler(
-        session_scope,
-        consumer_group="ia-workers",
-        message=message,
-        handler=lambda _event: None,
-        worker_id="worker-a",
-    )
-
-    handler(status_event("status:worker-wrapped"))
-
-    with session_scope() as session:
-        record = session.query(InboxEvent).one()
-        assert (record.source_topic, record.source_partition, record.source_offset) == (
-            "image-tiles",
-            4,
-            23,
-        )
-
-
 def test_dispatcher_marks_successful_publication(session_scope):
     now = datetime(2026, 7, 23, tzinfo=timezone.utc)
     with session_scope() as session:
         enqueue_outbox(
             session,
-            topic="vols-bruts",
+            topic="pipeline-control",
             key="mission-1",
             event=make_event(
-                "mission",
-                {"vol_id": "mission-1"},
+                "control",
+                {"vol_id": "mission-1", "command": "cancel"},
                 event_id="mission:dispatch",
             ),
             now=now,
@@ -475,7 +263,7 @@ def test_dispatcher_marks_successful_publication(session_scope):
         "failed": 0,
         "dead": 0,
     }
-    assert published == [("vols-bruts", "mission:dispatch", "mission-1")]
+    assert published == [("pipeline-control", "mission:dispatch", "mission-1")]
     with session_scope() as session:
         record = session.query(OutboxEvent).one()
         assert record.status == "published"
@@ -540,10 +328,10 @@ def test_dispatcher_publishes_outside_the_claim_transaction(session_scope):
     with session_scope() as session:
         enqueue_outbox(
             session,
-            topic="vols-bruts",
+            topic="pipeline-control",
             event=make_event(
-                "mission",
-                {"vol_id": "mission-1"},
+                "control",
+                {"vol_id": "mission-1", "command": "cancel"},
                 event_id="mission:outside-transaction",
             ),
             now=now,
@@ -579,10 +367,10 @@ def test_dispatcher_reclaims_an_expired_publication_lease(session_scope):
     with session_scope() as session:
         record = enqueue_outbox(
             session,
-            topic="vols-bruts",
+            topic="pipeline-control",
             event=make_event(
-                "mission",
-                {"vol_id": "mission-1"},
+                "control",
+                {"vol_id": "mission-1", "command": "cancel"},
                 event_id="mission:expired-lease",
             ),
             now=now,
@@ -611,10 +399,10 @@ def test_dispatcher_does_not_finalize_a_stolen_claim(session_scope):
     with session_scope() as session:
         enqueue_outbox(
             session,
-            topic="vols-bruts",
+            topic="pipeline-control",
             event=make_event(
-                "mission",
-                {"vol_id": "mission-1"},
+                "control",
+                {"vol_id": "mission-1", "command": "cancel"},
                 event_id="mission:stolen-claim",
             ),
             now=now,
@@ -640,10 +428,10 @@ def test_dispatcher_schedules_failed_publication_for_retry(session_scope):
     with session_scope() as session:
         enqueue_outbox(
             session,
-            topic="vols-bruts",
+            topic="pipeline-control",
             event=make_event(
-                "mission",
-                {"vol_id": "mission-1"},
+                "control",
+                {"vol_id": "mission-1", "command": "cancel"},
                 event_id="mission:retry",
             ),
             now=now,
@@ -698,10 +486,10 @@ def test_dispatcher_dead_letters_outbox_after_retry_budget(session_scope):
     with session_scope() as session:
         enqueue_outbox(
             session,
-            topic="vols-bruts",
+            topic="pipeline-control",
             event=make_event(
-                "mission",
-                {"vol_id": "mission-1"},
+                "control",
+                {"vol_id": "mission-1", "command": "cancel"},
                 event_id="mission:dead",
             ),
             now=now,

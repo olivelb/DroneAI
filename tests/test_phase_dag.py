@@ -46,16 +46,17 @@ PRINCIPAL = SimpleNamespace(
 
 def _gcp_bundle():
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "organization_id": "acme",
         "set_id": "00000000-0000-0000-0000-000000000001",
         "source_sha256": "a" * 64,
         "gcp_list": {
-            "key": f"blobs/sha256/{'b' * 2}/{'b' * 64}",
+            "key": f"organizations/acme/blobs/sha256/{'b' * 2}/{'b' * 64}",
             "size": 100,
             "sha256": "b" * 64,
         },
         "accuracy_csv": {
-            "key": f"blobs/sha256/{'c' * 2}/{'c' * 64}",
+            "key": f"organizations/acme/blobs/sha256/{'c' * 2}/{'c' * 64}",
             "size": 80,
             "sha256": "c" * 64,
         },
@@ -79,8 +80,11 @@ def test_gcp_bundle_is_scoped_to_reconstruction_stage_parameters():
     assert error.value.status_code == 422
 
 
-def test_tenant_stage_parameters_reject_new_global_gcp_bundle_but_allow_replay():
-    request = stage_schemas.StageRunCreate(parameters={"gcp_bundle": _gcp_bundle()})
+def test_tenant_stage_parameters_reject_global_gcp_bundle():
+    payload = _gcp_bundle()
+    payload["schema_version"] = 1
+    payload.pop("organization_id")
+    request = stage_schemas.StageRunCreate(parameters={"gcp_bundle": payload})
 
     with pytest.raises(HTTPException) as error:
         stage_routes._stage_parameters(
@@ -89,15 +93,7 @@ def test_tenant_stage_parameters_reject_new_global_gcp_bundle_but_allow_replay()
             organization_id="acme",
         )
     assert error.value.status_code == 422
-    assert "organization does not match" in error.value.detail
-
-    parameters = stage_routes._stage_parameters(
-        "reconstruction",
-        request,
-        organization_id="acme",
-        allow_legacy_gcp_bundle=True,
-    )
-    assert parameters["gcp_bundle"]["schema_version"] == 1
+    assert "Unsupported GCP bundle schema version" in error.value.detail
 
 
 def _reconstruction_artifact_request(
@@ -255,14 +251,14 @@ def test_stage_resource_catalog_is_explicit_and_prevents_gpu_downgrades():
     assert resource_class_for_stage(
         "rasterization",
         {
-            "quality_profile": "normal-v1",
+            "quality_profile": "normal-v3",
             "colmap_params": {"gs_cap_max": "3000000"},
         },
     ) == "gpu-standard"
     assert resource_class_for_stage(
         "rasterization",
         {
-            "quality_profile": "high-quality-v2",
+            "quality_profile": "high-quality-v4",
             "colmap_params": {"gs_cap_max": "12000000"},
         },
     ) == "gpu-high-memory"
@@ -277,7 +273,7 @@ def test_stage_resource_catalog_is_explicit_and_prevents_gpu_downgrades():
         resource_class_for_stage(
             "rasterization",
             {
-                "quality_profile": "high-quality-v2",
+                "quality_profile": "high-quality-v4",
                 "resource_class": "gpu-standard",
             },
         )
@@ -443,6 +439,7 @@ def test_stage_retry_is_idempotent_and_uses_exact_mission_artifacts(
     dag_sessions,
     monkeypatch,
 ):
+    monkeypatch.setattr(stage_routes, "stage_jobs_enabled", lambda: True)
     raster_id = str(uuid4())
     with dag_sessions() as session:
         mission = Mission(
@@ -501,7 +498,7 @@ def test_stage_retry_is_idempotent_and_uses_exact_mission_artifacts(
         assert session.query(MissionStageRun).filter(
             MissionStageRun.stage == "detection"
         ).count() == 1
-        assert session.query(OutboxEvent).count() == 1
+        assert session.query(OutboxEvent).count() == 0
 
     monkeypatch.setattr(stage_routes, "stage_jobs_enabled", lambda: True)
     stage_routes.create_stage_run(
@@ -516,7 +513,7 @@ def test_stage_retry_is_idempotent_and_uses_exact_mission_artifacts(
         assert session.query(MissionStageRun).filter(
             MissionStageRun.stage == "detection"
         ).count() == 2
-        assert session.query(OutboxEvent).count() == 1
+        assert session.query(OutboxEvent).count() == 0
 
     with pytest.raises(HTTPException) as error:
         stage_routes.create_stage_run(
@@ -535,6 +532,7 @@ def test_stage_retry_rejects_artifact_from_wrong_dependency_stage(
     dag_sessions,
     monkeypatch,
 ):
+    monkeypatch.setattr(stage_routes, "stage_jobs_enabled", lambda: True)
     artifact_id = str(uuid4())
     with dag_sessions() as session:
         mission = Mission(
@@ -632,7 +630,7 @@ def test_artifact_publication_queues_the_next_ready_stage(
         assert training.status == "queued"
         assert training.upstream_artifact_ids == [artifact_id]
         assert session.query(MissionArtifactParent).count() == 0
-        assert session.query(OutboxEvent).count() == 1
+        assert session.query(OutboxEvent).count() == 0
 
 
 def test_recovery_artifact_publication_blocks_storage_overage(
@@ -892,3 +890,48 @@ def test_new_manual_artifact_requires_a_running_stage(dag_sessions, monkeypatch)
         )
 
     assert error.value.status_code == 409
+
+
+def test_stage_retry_requires_stage_jobs_before_mutating_storage(monkeypatch):
+    monkeypatch.setattr(stage_routes, "stage_jobs_enabled", lambda: False)
+    monkeypatch.setattr(
+        stage_routes, "get_session",
+        lambda: pytest.fail("disabled compute must not mutate storage"),
+    )
+    with pytest.raises(HTTPException, match="Stage retries require Stage Jobs") as error:
+        stage_routes.create_stage_run(
+            "mission-disabled", "reconstruction",
+            stage_schemas.StageRunCreate(), PRINCIPAL, "disabled-request-001", None,
+        )
+    assert error.value.status_code == 503
+
+
+@pytest.mark.parametrize(
+    ("mission_status", "current_step"),
+    [
+        ("cancelled", "CANCELLATION_REQUESTED"),
+        ("deleting", None),
+        ("deletion_failed", None),
+        ("success", "DELETION_REQUESTED"),
+        ("error", "MANUAL_DELETION_FAILED"),
+    ],
+)
+def test_stage_retry_rejects_cancelled_or_deleting_missions(
+    dag_sessions, monkeypatch, mission_status, current_step,
+):
+    monkeypatch.setattr(stage_routes, "stage_jobs_enabled", lambda: True)
+    monkeypatch.setattr(stage_routes, "get_session", dag_sessions)
+    with dag_sessions() as session:
+        session.add(Mission(
+            vol_id="mission-terminal", owner_subject=PRINCIPAL.subject,
+            status=mission_status, current_step=current_step,
+        ))
+    with pytest.raises(HTTPException, match="cannot queue stage retries") as error:
+        stage_routes.create_stage_run(
+            "mission-terminal", "reconstruction",
+            stage_schemas.StageRunCreate(), PRINCIPAL, "terminal-retry-001", None,
+        )
+    assert error.value.status_code == 409
+    with dag_sessions() as session:
+        assert session.query(MissionStageRun).count() == 0
+        assert session.query(Mission).one().status == mission_status

@@ -25,7 +25,7 @@ from shared.detection_shard_results import (
     parse_detection_shard_result,
 )
 from shared.detection_sharding import DetectionShardPlan
-from shared.tenancy import LEGACY_ORGANIZATION_ID, validate_organization_id
+from shared.tenancy import validate_organization_id
 
 
 @dataclass(frozen=True)
@@ -64,17 +64,11 @@ def publish_detection_shard_result(
         path = Path(descriptor.name)
         descriptor.write(content)
     try:
-        if durable_organization == LEGACY_ORGANIZATION_ID:
-            uploaded = storage.publish_content_addressed_file(
-                path,
-                cancellation_check=cancellation_check,
-            )
-        else:
-            uploaded = storage.publish_content_addressed_file(
-                path,
-                organization_id=durable_organization,
-                cancellation_check=cancellation_check,
-            )
+        uploaded = storage.publish_content_addressed_file(
+            path,
+            organization_id=durable_organization,
+            cancellation_check=cancellation_check,
+        )
     finally:
         path.unlink(missing_ok=True)
     recorded: RecordedShardReceipt = record_detection_shard_receipt(

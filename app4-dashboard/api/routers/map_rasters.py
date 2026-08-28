@@ -1,4 +1,4 @@
-"""COG metadata/tiles and the combined legacy/manual vector layer."""
+"""COG metadata/tiles and the combined pipeline/manual/analysis vector layer."""
 
 from __future__ import annotations
 
@@ -10,9 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
 from shared import storage
-from shared.database import Detection, MapFeature, get_session
+from shared.database import MapFeature, get_session
 from shared.geospatial_assets import (
-    detections_feature_collection,
     inspect_remote_cog,
     render_cog_tile,
 )
@@ -22,12 +21,11 @@ from ..map_support import (
     JsonObject,
     MissionRecord,
     RouteSession,
-    apply_detection_spatial_filter,
     apply_spatial_filter,
     feature_collection,
     get_mission,
     map_feature_geojson,
-    mission_key,
+    validate_map_layer,
     parse_bbox,
     pipeline_detection_features,
     resolve_raster_product,
@@ -202,7 +200,7 @@ def raster_tile(
     )
 
 
-def _legacy_features(
+def _pipeline_features(
     session: RouteSession,
     mission: MissionRecord,
     vol_id: str,
@@ -218,23 +216,7 @@ def _legacy_features(
     )
     if immutable is not None:
         return immutable
-    query = session.query(Detection).filter(
-        Detection.mission_id == mission.id
-    )
-    query = apply_detection_spatial_filter(query, bounds)
-    records = query.order_by(Detection.id).limit(limit + 1).all()
-    metadata = mission.tiling_metadata or {}
-    payload = detections_feature_collection(
-        records[:limit],
-        geotransform=metadata.get("transform"),
-        source_crs=metadata.get("crs"),
-        vol_id=vol_id,
-    )
-    features = cast(list[JsonObject], payload["features"])
-    for feature in features:
-        properties = cast(JsonObject, feature["properties"])
-        properties.update({"source": "legacy", "color": "#f43f5e"})
-    return features, len(records) > limit
+    return [], False
 
 
 def _stored_features(
@@ -273,15 +255,20 @@ def vector_layer(
     principal: Annotated[Principal, Depends(require_authenticated)],
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
     bbox: str | None = Query(default=None),
-    sources: str = Query(default="legacy,manual,ai"),
+    sources: str = Query(default="pipeline,manual,ai"),
     run_ids: str | None = Query(default=None),
     limit: int = Query(default=10_000, ge=1, le=50_000),
 ) -> JsonObject:
-    mission_key(vol_id, "ortho")
+    validate_map_layer(vol_id, "ortho")
     bounds = parse_bbox(bbox)
     requested_sources = {
         value.strip() for value in sources.split(",") if value.strip()
     }
+    if not requested_sources.issubset({"pipeline", "manual", "ai"}):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Unsupported vector source",
+        )
     requested_runs = {
         value.strip() for value in (run_ids or "").split(",") if value.strip()
     }
@@ -295,11 +282,11 @@ def vector_layer(
             principal,
             owner_subject=owner_subject,
         )
-        if "legacy" in requested_sources:
-            legacy, truncated = _legacy_features(
+        if "pipeline" in requested_sources:
+            pipeline, truncated = _pipeline_features(
                 typed_session, mission, vol_id, bounds, limit
             )
-            features.extend(legacy)
+            features.extend(pipeline)
         remaining = max(0, limit - len(features))
         if remaining and requested_sources.intersection({"manual", "ai"}):
             stored, stored_truncated = _stored_features(
