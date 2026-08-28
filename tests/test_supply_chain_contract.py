@@ -61,6 +61,9 @@ def test_runtime_images_publish_pinned_sbom_and_vulnerability_evidence() -> None
     assert "${{ matrix.artifact }}.trivy.json" in workflow
     assert "supply-chain-${{ matrix.artifact }}-${{ github.sha }}" in workflow
     assert "retention-days: 30" in workflow
+    for marker in ("Record HIGH and CRITICAL image vulnerabilities", "Record frontend HIGH and CRITICAL vulnerabilities"):
+        report_step = workflow.split(marker, 1)[1].split("- name:", 1)[0]
+        assert "--ignore-unfixed" not in report_step
 
 
 def test_runtime_image_gate_rejects_fixable_high_and_critical_findings() -> None:
