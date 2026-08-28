@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from threading import Event
 from typing import cast
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from shared import storage
@@ -19,6 +19,7 @@ from shared.database import (
     AIAnalysisTile,
     Mission,
     MissionArtifact,
+    MissionArtifactParent,
     MissionStageRun,
     OrganizationSaasPolicy,
     get_session,
@@ -137,6 +138,7 @@ def claim_retention_candidates(
         .with_for_update(
             of=Mission,
             skip_locked=True,
+            key_share=True,  # NO KEY UPDATE: state changes must not block publisher FKs.
         )
         .limit(limit * 5)
         .all()
@@ -232,6 +234,16 @@ def _complete_retention(
                 "deletion_reason": candidate.reason,
             },
         )
+        # RESTRICT parent edges are checked immediately, even when the mission
+        # cascade would delete both artifacts. Remove only internal edges first;
+        # dependencies from another mission must still prevent deletion.
+        artifact_ids = select(MissionArtifact.id).where(
+            MissionArtifact.mission_id == candidate.mission_id,
+        )
+        session.query(MissionArtifactParent).filter(
+            MissionArtifactParent.artifact_id.in_(artifact_ids),
+            MissionArtifactParent.parent_artifact_id.in_(artifact_ids),
+        ).delete(synchronize_session=False)
         session.query(Mission).filter(
             Mission.id == candidate.mission_id,
         ).delete(synchronize_session=False)

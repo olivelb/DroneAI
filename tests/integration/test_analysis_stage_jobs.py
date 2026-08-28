@@ -15,7 +15,8 @@ from sqlalchemy.orm import sessionmaker
 from shared import stage_execution
 from shared.analysis_stages import create_analysis_stage
 from shared.database import (
-    AIAnalysisRun, MapFeature, Mission, MissionArtifact, MissionStageRun, Organization,
+    AIAnalysisRun, MapFeature, Mission, MissionArtifact, MissionArtifactParent,
+    MissionStageRun, Organization, OutboxEvent,
 )
 from shared.stage_execution import StageExecutionResult
 
@@ -72,8 +73,19 @@ def analysis_postgis(monkeypatch):
         stage = create_analysis_stage(session, mission, analysis, raster)
         stage.executor = "kubernetes-job"
         stage_id, analysis_id, run_id = stage.id, analysis.id, stage.run_id
-    yield scope, tenant, stage_id, analysis_id, run_id
-    engine.dispose()
+    try:
+        yield scope, tenant, stage_id, analysis_id, run_id
+    finally:
+        # Concurrent tests commit real transactions. Remove only this fixture's
+        # operational rows so global outbox/retention tests cannot pick them up.
+        with scope() as session:
+            artifact_ids = select(MissionArtifact.id).join(Mission).where(Mission.organization_id == tenant)
+            session.query(MissionArtifactParent).filter(
+                MissionArtifactParent.artifact_id.in_(artifact_ids),
+            ).delete(synchronize_session=False)
+            session.query(OutboxEvent).filter_by(organization_id=tenant).delete(synchronize_session=False)
+            session.query(Mission).filter_by(organization_id=tenant).delete(synchronize_session=False)
+        engine.dispose()
 
 
 def _result(tenant, analysis):
@@ -285,3 +297,48 @@ def test_publication_and_mission_deletion_do_not_deadlock(analysis_postgis, monk
         assert session.query(MissionArtifact).filter_by(
             mission_id=mission.id, kind="detection_workspace",
         ).count() == 1
+
+
+def test_publication_and_retention_drain_do_not_deadlock(analysis_postgis, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import UTC, datetime, timedelta
+    from threading import Event
+
+    from shared.organization_saas import PolicyValues, set_policy
+
+    retention = importlib.import_module("app4-dashboard.api.retention")
+    scope, tenant, _stage_id, analysis_id, run_id = analysis_postgis
+    context = stage_execution.load_stage_execution_context(run_id, "detection")
+    now = datetime.now(UTC)
+    with scope() as session:
+        analysis = session.get(AIAnalysisRun, analysis_id)
+        analysis.mission.updated_at = now - timedelta(days=2)
+        set_policy(session, organization_id=tenant, values=PolicyValues(retention_days=1), actor_subject="test")
+    stage_locked, mission_locked = Event(), Event()
+    original_reserve = stage_execution.reserve_stage_output_storage
+    original_cancel = retention.request_mission_analysis_cancellations
+
+    def reserve_after_mission_lock(*args, **kwargs):
+        stage_locked.set()
+        assert mission_locked.wait(10)
+        return original_reserve(*args, **kwargs)
+
+    def cancel_after_mission_lock(*args, **kwargs):
+        mission_locked.set()
+        return original_cancel(*args, **kwargs)
+
+    def drain():
+        with scope() as session:
+            return retention.claim_retention_candidates(session, now=now, retry_seconds=3600)
+
+    monkeypatch.setattr(stage_execution, "reserve_stage_output_storage", reserve_after_mission_lock)
+    monkeypatch.setattr(retention, "request_mission_analysis_cancellations", cancel_after_mission_lock)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        publication = pool.submit(stage_execution._publish_result, context, _result(tenant, analysis))
+        assert stage_locked.wait(10)
+        draining = pool.submit(drain)
+        assert publication.result(timeout=15)
+        assert draining.result(timeout=15) == []
+    with scope() as session:
+        assert session.get(AIAnalysisRun, analysis_id).status == "completed"
+        assert session.get(Mission, analysis.mission_id).current_step == "RETENTION_DRAINING"

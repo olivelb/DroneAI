@@ -14,6 +14,7 @@ from shared.database import (
     DatasetUploadSession,
     Mission,
     MissionArtifact,
+    MissionArtifactParent,
     MissionStageRun,
     Organization,
     OrganizationSaasPolicy,
@@ -160,6 +161,15 @@ def test_retention_deletes_the_postgres_graph_after_object_cleanup() -> None:
         session.flush()
         mission_id = int(mission.id)
         artifact_id = int(artifact.id)
+        child = MissionArtifact(
+            mission_id=mission.id, stage_run_id=run.id, kind="detection_workspace",
+            uri=f"s3://drone-ai/{mission.workspace_prefix}/detections.json",
+            checksum_sha256="f" * 64, size_bytes=50,
+        )
+        session.add(child)
+        session.flush()
+        session.add(MissionArtifactParent(artifact_id=child.id, parent_artifact_id=artifact.id))
+        child_id = int(child.id)
 
     deleted_prefixes: list[str] = []
     assert retention.retention_cleanup_once(
@@ -173,9 +183,10 @@ def test_retention_deletes_the_postgres_graph_after_object_cleanup() -> None:
     with get_session() as session:
         assert session.get(Mission, mission_id) is None
         assert session.get(MissionArtifact, artifact_id) is None
+        assert session.get(MissionArtifact, child_id) is None
         event = session.query(OrganizationUsageEvent).filter_by(
             organization_id=organization_id,
             action="retention_deleted",
         ).one()
-        assert event.quantity == -123
+        assert event.quantity == -173
         assert event.details["objects_deleted"] == 4

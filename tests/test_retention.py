@@ -12,6 +12,7 @@ from shared.database import (
     AIAnalysisTile,
     Mission,
     MissionArtifact,
+    MissionArtifactParent,
     MissionStageRun,
     Organization,
     OrganizationSaasPolicy,
@@ -36,6 +37,7 @@ def _retention_scope(monkeypatch):
         AIAnalysisTile.__table__,
         OutboxEvent.__table__,
         MissionArtifact.__table__,
+        MissionArtifactParent.__table__,
     ):
         table.create(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)

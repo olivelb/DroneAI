@@ -583,3 +583,29 @@ the operator's planned new campaign. No production deployment is performed.
 
 Evidence is retained under tmp/cleanup-20260828/review-*.log. Initial failing
 regressions are preserved alongside passing runs.
+
+### CI integration follow-up
+
+The first PR integration run exposed committed fixture rows leaking into the
+global outbox and retention tests. The standalone-analysis fixture now removes
+only its own operational rows after each test, while retaining append-only audit
+records.
+
+That failure also revealed a real PostgreSQL defect: deleting a mission with
+linked parent/child artifacts was rejected by the immediate parent RESTRICT
+foreign key, even when both artifacts belonged to the mission being deleted.
+Retention now removes only edges whose two endpoints belong to that mission,
+inside the final deletion transaction. Foreign-key protection for dependencies
+from another mission remains in place. Compute-quiescence, cancellation drain,
+Kubernetes cleanup evidence, historical tile checks and retry guards are unchanged.
+
+The existing real PostgreSQL retention test now includes a parent/child graph
+and verifies the released byte total. It failed before the SQL correction and
+passes afterward. The combined PostgreSQL, deletion and retention selection
+passes **24 tests**. The corrected full CPU suite is rerun before merge.
+
+
+The same concurrent publication test was extended to automatic retention draining
+and reproduced a second deadlock. Candidate state transitions now also use
+FOR NO KEY UPDATE; the final physical deletion retains its exclusive mission
+lock. The new regression passes without weakening the quiescence conditions.
