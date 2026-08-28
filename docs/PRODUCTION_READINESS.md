@@ -355,7 +355,7 @@ Required on every candidate:
 2. Native DroneGS CPU and CUDA tests on a real GPU.
 3. Frontend unit tests, lint, production build and Playwright mission journeys.
 4. CycloneDX SBOM and Trivy report for each CI-built runtime image, with no
-   fixable CRITICAL vulnerability.
+   fixable HIGH or CRITICAL vulnerability.
 5. Helm lint with the production overlay.
 6. One complete RTK preparation run and one non-RTK regression scene.
 7. Immutable benchmark bundle with binary/dataset/artifact hashes.
@@ -371,7 +371,7 @@ SAVERES repetitions before creating `DRONEGS_PRODUCTION_PROFILE_V2`.
 The hosted supply-chain gates cover the dashboard API and processing worker in
 `.github/workflows/ci.yml`, plus both final CUDA runtimes in
 `.github/workflows/cuda-containers.yml`. They emit commit-scoped, 30-day Syft
-CycloneDX and Trivy HIGH/CRITICAL evidence and block fixable CRITICAL findings.
+CycloneDX and Trivy HIGH/CRITICAL evidence and block fixable HIGH and CRITICAL findings.
 The CUDA workflow prepares every external COLMAP/ONNX dependency from pinned,
 SHA-256-verified sources before building; real-GPU execution remains a distinct,
 change-gated qualification in `dronegs-gpu-qualification.yml`. It has no schedule:

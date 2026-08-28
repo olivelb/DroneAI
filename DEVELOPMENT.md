@@ -178,7 +178,7 @@ CUDA container validation is split deliberately. The hosted
 portable DroneGS binary inside it, and builds the `dronegs-builder` stages from
 both production Dockerfiles. A parallel matrix prepares the pinned external
 COLMAP dependencies, builds both final CUDA runtime images, emits their Syft
-CycloneDX and Trivy HIGH/CRITICAL evidence, and rejects fixable CRITICAL
+CycloneDX and Trivy HIGH/CRITICAL evidence, and rejects fixable HIGH and CRITICAL
 findings. These hosted jobs validate Docker recipes and toolchains without
 claiming to exercise a GPU. Pull requests may start the lightweight CUDA
 selector when relevant files change, but do not run either costly build job
@@ -230,7 +230,7 @@ self-hosted GPU runner before manually requesting physical-GPU qualification.
 The hosted CI builds the dashboard API, processing worker, CUDA COLMAP base and
 local Gaussian runtime images, then generates a CycloneDX JSON SBOM with Syft
 and a HIGH/CRITICAL JSON vulnerability report with Trivy for each image.
-Fixable CRITICAL findings fail the image job; unfixed findings remain visible
+Fixable HIGH and CRITICAL findings fail the image job; unfixed findings remain visible
 in the report without making a release impossible. The commit-scoped
 `supply-chain-<image>-<sha>` artifacts are retained for 30 days, including
 failed jobs. Syft and Trivy container tags and multi-architecture digests are

@@ -63,11 +63,11 @@ def test_runtime_images_publish_pinned_sbom_and_vulnerability_evidence() -> None
     assert "retention-days: 30" in workflow
 
 
-def test_runtime_image_gate_rejects_fixable_critical_findings() -> None:
+def test_runtime_image_gate_rejects_fixable_high_and_critical_findings() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "Reject fixed CRITICAL image vulnerabilities" in workflow
-    assert "--severity CRITICAL --exit-code 1" in workflow
+    assert "Reject fixed HIGH and CRITICAL image vulnerabilities" in workflow
+    assert "--severity HIGH,CRITICAL --exit-code 1" in workflow
     assert workflow.count("--ignore-unfixed") >= 2
     assert workflow.count("--image-src docker") >= 2
     assert workflow.count("--scanners vuln") >= 2
@@ -85,7 +85,7 @@ def test_cuda_runtime_images_use_the_same_supply_chain_gate() -> None:
     assert "run: bash setup_deps.sh" in workflow
     assert "anchore/syft:v1.50.0@sha256:" in workflow
     assert "aquasec/trivy:0.73.0@sha256:" in workflow
-    assert "--severity CRITICAL --exit-code 1" in workflow
+    assert "--severity HIGH,CRITICAL --exit-code 1" in workflow
     assert "supply-chain-${{ matrix.artifact }}-${{ github.sha }}" in workflow
     assert "retention-days: 30" in workflow
 

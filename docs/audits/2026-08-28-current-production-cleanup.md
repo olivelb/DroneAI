@@ -609,3 +609,17 @@ The same concurrent publication test was extended to automatic retention drainin
 and reproduced a second deadlock. Candidate state transitions now also use
 FOR NO KEY UPDATE; the final physical deletion retains its exclusive mission
 lock. The new regression passes without weakening the quiescence conditions.
+
+
+### Image security review
+
+The second CI run was green, but inspection of its actual Trivy reports found
+fixable HIGH findings inherited from pinned OS images: OpenSSL in API, IA and
+frontend, plus the util-linux package family in the API. A green CRITICAL-only
+gate was therefore insufficient to close this review.
+
+Runtime Dockerfiles now explicitly refresh those packages. Image gates are
+strengthened to reject fixable HIGH as well as CRITICAL findings, including
+the CUDA workflow when selected; no ignore list or severity suppression is added.
+The existing source-contract tests verify the stronger threshold. Final rebuilt
+image scans and CI status are recorded in the PR delivery evidence.

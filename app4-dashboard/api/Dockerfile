@@ -7,7 +7,10 @@ ENV PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends libexpat1 \
+    && apt-get install --yes --no-install-recommends \
+        libexpat1 libssl3t64 openssl openssl-provider-legacy \
+        bsdutils libblkid1 liblastlog2-2 libmount1 libsmartcols1 libuuid1 \
+        login mount util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements/api.txt /tmp/requirements.txt

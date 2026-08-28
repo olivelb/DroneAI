@@ -27,7 +27,8 @@ WORKDIR /app
 
 # The production server only needs Node.js. Removing npm/npx reduces the
 # runtime attack surface and avoids shipping their unused dependency tree.
-RUN rm -rf /usr/local/lib/node_modules/npm \
+RUN apk upgrade --no-cache libcrypto3 libssl3 \
+    && rm -rf /usr/local/lib/node_modules/npm \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --chown=node:node --from=builder /app/package*.json ./
