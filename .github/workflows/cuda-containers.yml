@@ -2,6 +2,7 @@ name: CUDA container validation
 
 on:
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -12,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  version-change:
+  changes:
     name: Select CUDA build requirement
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -24,16 +25,16 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Detect explicit dispatch or version change
+      - name: Detect CUDA build input changes
         id: selection
-        run: python3 scripts/ci/select_cuda_builds.py
+        run: python3 -m scripts.ci.select_cuda_builds
       - name: Report selection
         run: echo "CUDA build selection=${{ steps.selection.outputs.build_required }} reason=${{ steps.selection.outputs.reason }}"
 
   cuda-container-build:
     name: CUDA Dockerfile build contracts
-    needs: version-change
-    if: needs.version-change.outputs.build_required == 'true'
+    needs: changes
+    if: needs.changes.outputs.build_required == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -43,8 +44,8 @@ jobs:
 
   cuda-runtime-supply-chain:
     name: CUDA runtime SBOM and vulnerability gate
-    needs: version-change
-    if: needs.version-change.outputs.build_required == 'true'
+    needs: changes
+    if: needs.changes.outputs.build_required == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -109,21 +110,18 @@ jobs:
   cuda-gate:
     name: CUDA validation gate
     needs:
-      - version-change
+      - changes
       - cuda-container-build
       - cuda-runtime-supply-chain
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Require every selected CUDA job to pass
-        run: |
-          for result in \
-            "${{ needs.version-change.result }}" \
-            "${{ needs.cuda-container-build.result }}" \
-            "${{ needs.cuda-runtime-supply-chain.result }}"; do
-            case "$result" in
-              success|skipped) ;;
-              *) echo "Selected CUDA job concluded: $result" >&2; exit 1 ;;
-            esac
-          done
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: >-
+          python3 -m scripts.ci.check_selected_jobs --selector changes
+          --job cuda-container-build=build_required
+          --job cuda-runtime-supply-chain=build_required

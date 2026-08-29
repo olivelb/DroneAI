@@ -43,6 +43,11 @@ postgres:
     s3Bucket: droneai-preprod-backups-fe7dc125
     s3Region: GRA
 
+networkPolicy:
+  enabled: true
+  ingressNamespace: traefik
+  monitoringNamespace: monitoring
+
 storage:
   existingSecret: drone-ai-storage-preprod
   accessKeySecretKey: s3-access-key
@@ -73,8 +78,10 @@ colmapWorker:
 
 dashboardApi:
   replicaCount: 2
-  tag: "REPLACE_GIT_SHA"
+  image: "drone-dashboard-api@sha256:REPLACE_OCI_DIGEST"
   environment: staging
+  proxy:
+    trustedCidrs: "REPLACE_TRUSTED_PROXY_CIDRS"
   # Set true only for a controlled Dashboard qualification before a candidate
   # quality profile is promoted to the public catalog.
   databaseUrlSecretKey: api-database-url
@@ -102,7 +109,7 @@ dashboardApi:
     credentialPepperSecretKey: credential-pepper
 
 dashboardFrontend:
-  tag: "REPLACE_GIT_SHA"
+  image: "drone-dashboard-frontend@sha256:REPLACE_OCI_DIGEST"
   apiUrl: "https://api-droneai-preprod.olembo.fr"
   service:
     type: ClusterIP

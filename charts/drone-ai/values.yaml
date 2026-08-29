@@ -24,6 +24,17 @@ observability:
     stageQueueAgeSeconds: 600
     kafkaLagRecords: 1000
 
+
+# --------------------------------------------------------------------------
+# Application NetworkPolicy (portable L3/L4 baseline)
+# --------------------------------------------------------------------------
+networkPolicy:
+  # Protected overlays enable this. It targets only DroneAI application and
+  # Stage Job pods; stateful dependencies keep their chart/service policies.
+  enabled: false
+  ingressNamespace: ingress-nginx
+  monitoringNamespace: monitoring
+
 # --------------------------------------------------------------------------
 # Kafka
 # --------------------------------------------------------------------------
@@ -191,6 +202,11 @@ dashboardApi:
   cors:
     origins: "*"
   environment: development
+  proxy:
+    # Uvicorn accepts forwarded client/protocol headers only from these direct
+    # peers. Protected overlays must replace this with the actual ingress/LB
+    # source CIDRs; wildcard and internet-wide networks are rejected.
+    trustedCidrs: "127.0.0.1"
   auth:
     disabled: true
     databaseAuthEnabled: false

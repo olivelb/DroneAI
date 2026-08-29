@@ -93,10 +93,12 @@ def test_preprod_overlay_requires_immutable_images_and_external_secrets() -> Non
     cert_manager = _read(ROOT / "infra" / "kubernetes" / "ovh-preprod" / "cert-manager-values.yaml")
 
     assert ":latest" not in values
-    assert values.count('tag: "REPLACE_GIT_SHA"') == 2
+    assert 'image: "drone-dashboard-api@sha256:REPLACE_OCI_DIGEST"' in values
+    assert 'image: "drone-dashboard-frontend@sha256:REPLACE_OCI_DIGEST"' in values
     assert "existingSecret: drone-ai-storage-preprod" in values
     assert "createNamespace: false" in values
     assert "environment: staging" in values
+    assert 'trustedCidrs: "REPLACE_TRUSTED_PROXY_CIDRS"' in values
     assert "minio:\n  enabled: false" in values
     assert "postgres:\n  enabled: true" in values
     assert "existingSecret: drone-ai-postgres" in values
@@ -110,6 +112,8 @@ def test_preprod_overlay_requires_immutable_images_and_external_secrets() -> Non
     assert "droneai-preprod.olembo.fr" in values
     assert "api-droneai-preprod.olembo.fr" in values
     assert "className: traefik" in values
+    assert "networkPolicy:\n  enabled: true" in values
+    assert "ingressNamespace: traefik" in values
     assert "nginx.ingress.kubernetes.io" not in values
     assert "email: admin@olembo.fr" in issuer
     assert "ingressClassName: traefik" in issuer
@@ -222,7 +226,7 @@ def test_preprod_publication_never_implicitly_builds_gpu_images() -> None:
 
     assert 'readonly INCLUDE_GPU_IMAGES="${INCLUDE_GPU_IMAGES:-0}"' in script
     assert 'REBUILD_COLMAP_BASE=1 requires INCLUDE_GPU_IMAGES=1' in script
-    assert 'GPU publication refused: $COLMAP_BASE_IMAGE is missing.' in script
+    assert 'GPU publication refused: $COLMAP_BASE_IMAGE is missing or has a mismatched revision label.' in script
     assert 'images=(\n    drone-dashboard-api' in script
     assert 'images=(drone-colmap drone-ia "${images[@]}")' in script
 
@@ -249,8 +253,8 @@ def test_cpu_deployment_bootstraps_external_secrets_and_is_atomic() -> None:
     assert "bootstrap-ovh-preprod-secrets.sh" in deploy
     assert "--atomic --wait --wait-for-jobs --timeout 15m" in deploy
     assert "--dry-run=server --hide-secret" in deploy
-    assert "Reusing deployed CPU image tag" in deploy
-    assert "IMAGE_TAG must be a 7-40 character" in deploy
+    assert "Reusing deployed CPU image digests" in deploy
+    assert "API_IMAGE and FRONTEND_IMAGE must use full OCI digests" in deploy
     assert "processingWorker.tag" not in deploy
     assert "postgres.backup.s3Endpoint=${s3_endpoint}" in deploy
     assert "postgres.backup.s3Bucket=${backup_bucket}" in deploy
@@ -266,7 +270,10 @@ def test_preprod_gpu_build_binds_the_requested_base_revision(tmp_path):
     docker.write_text(
         "#!/usr/bin/env bash\n"
         "printf '%s\\n' \"$*\" >> \"$BUILD_LOG\"\n"
-        "if [[ \"$1 $2\" == 'image inspect' ]]; then exit 1; fi\n",
+        "if [[ \"$1 $2\" == 'image inspect' && \"$*\" == *org.opencontainers.image.revision* ]]; then\n"
+        "  printf '%s' \"${BASE_REVISION:-}\"\n"
+        "fi\n"
+        "exit 0\n",
         encoding="utf-8",
     )
     docker.chmod(0o755)
@@ -275,9 +282,20 @@ def test_preprod_gpu_build_binds_the_requested_base_revision(tmp_path):
         os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}",
         BUILD_LOG=str(log), INCLUDE_GPU_IMAGES="1", REBUILD_COLMAP_BASE="1",
     )
-    revision = "a" * 40
+    repo = tmp_path / "repo"
+    script = repo / "scripts/deploy/publish-preprod-images.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text(_read(ROOT / "scripts/deploy/publish-preprod-images.sh"))
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=repo, text=True).strip()
+    git("init", "-q")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    git("add", ".")
+    git("commit", "-qm", "fixture")
+    revision = git("rev-parse", "HEAD")
     command = ["bash", "scripts/deploy/publish-preprod-images.sh", "registry.test/droneai", revision]
-    subprocess.run(command, cwd=ROOT, env=env, check=True, capture_output=True, text=True)
+    subprocess.run(command, cwd=repo, env=env, check=True, capture_output=True, text=True)
     calls = log.read_text().splitlines()
     base = f"drone-colmap-base:{revision}"
     builds = [line for line in calls if line.startswith("build ")]
@@ -288,14 +306,45 @@ def test_preprod_gpu_build_binds_the_requested_base_revision(tmp_path):
 
     log.write_text("")
     env["REBUILD_COLMAP_BASE"] = "0"
-    refused = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
+    refused = subprocess.run(command, cwd=repo, env=env, capture_output=True, text=True)
     assert refused.returncode == 1
     assert base in refused.stderr
     assert not any(line.startswith(("build ", "push ")) for line in log.read_text().splitlines())
 
+    env["BASE_REVISION"] = "b" * 40
+    rejected = subprocess.run(command, cwd=repo, env=env, capture_output=True, text=True)
+    assert rejected.returncode == 1
+    env["BASE_REVISION"] = revision
+    log.write_text("")
+    subprocess.run(command, cwd=repo, env=env, check=True, capture_output=True, text=True)
+    calls = log.read_text().splitlines()
+    assert len([line for line in calls if line.startswith("build ")]) == 4
+
     log.write_text("")
     env["INCLUDE_GPU_IMAGES"] = "0"
-    subprocess.run(command, cwd=ROOT, env=env, check=True, capture_output=True, text=True)
+    subprocess.run(command, cwd=repo, env=env, check=True, capture_output=True, text=True)
     calls = log.read_text().splitlines()
     assert len([line for line in calls if line.startswith("build ")]) == 2
     assert not any("drone-colmap" in line or "drone-ia" in line for line in calls)
+
+
+    for revision_arg, dirty in (("b" * 40, False), (revision[:7], False), (revision, True)):
+        if dirty:
+            (repo / "untracked.txt").write_text("unreviewed input")
+        log.write_text("")
+        rejected = subprocess.run([*command[:-1], revision_arg], cwd=repo, env=env,
+                                  capture_output=True, text=True)
+        assert rejected.returncode == 2
+        assert not log.read_text()
+
+def test_cloud_helper_rejects_retired_tag_before_external_access(tmp_path) -> None:
+    import os
+    import subprocess
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy/deploy-ovh-preprod-cpu.sh"], cwd=ROOT,
+        env={**os.environ, "IMAGE_TAG": "a" * 40, "KUBECONFIG": str(tmp_path / "missing")},
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 2
+    assert "IMAGE_TAG is retired" in result.stderr

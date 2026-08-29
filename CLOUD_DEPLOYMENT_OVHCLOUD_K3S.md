@@ -4,7 +4,7 @@
 > This self-managed K3s guide is retained as a generic alternative. The
 > current OVHcloud target uses managed MKS and is documented in
 > [`docs/OVHCLOUD_PREPROD.md`](docs/OVHCLOUD_PREPROD.md). Use immutable
-> Git-SHA/digest service images and the bounded five-Job execution map below;
+> OCI-digest service images and the five blocking Jobs plus optional viewer branch below;
 > do not copy deployment values from dated benchmark reports.
 
 Deploy the DroneAI pipeline on a cloud K3s cluster with GPU support.
@@ -39,6 +39,7 @@ The entire stack is packaged as a single Helm chart (`charts/drone-ai/`) that wo
 |---------|-------|-----|--------|------|
 | Stage Jobs 1–4 | `drone-colmap:<git-sha>` | 1 when required | resource class; HQ raster/training/filtering use 24 Gi request / 64 Gi limit | Reconstruction, Gaussian training/filtering and Ortho/DEM rasterization |
 | Stage Job 5 | `drone-ia:<git-sha>` | 1 | `gpu-high-memory` class | SAM3/YOLO streaming inference and GeoJSON publication |
+| Optional viewer Job | `drone-colmap:<git-sha>` | — | `cpu-high-memory` class | Non-blocking Gaussian viewer bundle publication |
 | `dashboard-api` | `drone-dashboard-api` | — | 512 Mi–2 Gi | FastAPI control plane, WebSocket status |
 | `dashboard-frontend` | `drone-dashboard-frontend` | — | 128–512 Mi | Next.js web UI |
 
@@ -65,6 +66,7 @@ flowchart LR
     GF <--> S3
     RA <--> S3
     AI <--> S3
+    GV <--> S3
     DB --> UI
 ```
 
@@ -644,8 +646,10 @@ The `drone-ai.image` helper prepends `global.imageRegistry` to application
 Deployments. Dynamic executor Jobs use the complete immutable image stored in
 `stageJobs.executors`:
 
-- Local: `drone-colmap:<git-sha>` imported into K3s with `docker save | k3s ctr import`
-- Cloud: `ghcr.io/<org>/drone-colmap:<git-sha>` or an OCI digest
+- Local: `drone-colmap:<7-to-40-character-git-revision>` imported into K3s;
+  this reproducible development tag is not an immutable registry identity.
+- Protected cloud environments: `ghcr.io/<org>/drone-colmap@sha256:<64-hex>`;
+  every service and executor image must use an OCI digest.
 
 ### Services
 
@@ -672,27 +676,31 @@ For local K3s (WSL2/Ubuntu), use the unified entry point:
 
 ```bash
 # First clone, build and deployment
-export STAGE_JOBS_IMAGE_TAG="$(git rev-parse --short=7 HEAD)"
-./deploy.sh distributed
+REVISION="$(git rev-parse --short=7 HEAD)"
+./deploy.sh distributed --stage-jobs "$REVISION"
 
 # Fast idempotent redeployment
-./deploy.sh distributed --no-build
+./deploy.sh distributed --stage-jobs "$REVISION" --no-build
 
 # Complete no-cache rebuild
-./deploy.sh distributed --base
+./deploy.sh distributed --stage-jobs "$REVISION" --base
 ```
 
 See [`DEPLOYMENT.md`](DEPLOYMENT.md) for the maintained deployment workflow.
 
 ## Post-deployment improvements
 
-After the first cloud deployment works:
+Repository controls already cover selective CI, image SBOM/vulnerability
+evidence, metrics endpoints, backup/restore scripts, bounded scheduling and
+external Secret references. A target environment still needs measured,
+provider-specific qualification:
 
-1. **CI/CD**: automate image builds and `helm upgrade` on push (GitHub Actions)
-2. **Managed services**: replace in-cluster MinIO/PostgreSQL with managed S3 + RDS
-3. **Monitoring**: Prometheus + Grafana for pod metrics and GPU utilization
-4. **Logging**: centralized log aggregation (Loki, CloudWatch)
-5. **Backups**: automated PostgreSQL dumps, S3 lifecycle policies
-6. **Autoscaling**: resource-class queue metrics and reviewed GPU-node bounds;
-   do not autoscale from an unbounded raw Job count
-7. **Secrets management**: external secrets operator or cloud vault
+1. publish signed OCI-digest promotions and require their verification policy;
+2. connect Prometheus/Grafana and alert delivery to the target-cluster metrics;
+3. connect centralized log retention and tenant-aware access controls;
+4. execute scheduled PostgreSQL/S3 backup and restore drills on the real
+   provider;
+5. calibrate queue-based GPU node scaling from resource-class pod units and
+   cost bounds;
+6. integrate the chosen external secret manager and rotation procedure;
+7. execute CNI, ingress, node-interruption and multi-replica fault campaigns.

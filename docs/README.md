@@ -8,13 +8,15 @@ implemented system as it exists now.
 
 | Area | Source of truth |
 |---|---|
+| Documentation authority and maintenance policy | [`DOCUMENTATION_POLICY.md`](DOCUMENTATION_POLICY.md) |
 | System architecture, events, states and artifacts | [`../DOCUMENTATION.md`](../DOCUMENTATION.md) |
 | Installation and distributed deployment | [`../DEPLOYMENT.md`](../DEPLOYMENT.md) |
+| Generic self-managed K3s cloud alternative | [`../CLOUD_DEPLOYMENT_OVHCLOUD_K3S.md`](../CLOUD_DEPLOYMENT_OVHCLOUD_K3S.md) |
 | OVHcloud MKS realistic preproduction | [`OVHCLOUD_PREPROD.md`](OVHCLOUD_PREPROD.md) |
 | Qualification, recovery, retention and cost controls | [`OPERATIONS.md`](OPERATIONS.md) |
 | Local workflow | [`../LOCAL_PIPELINE.md`](../LOCAL_PIPELINE.md) |
 | Development, tests and dependency management | [`../DEVELOPMENT.md`](../DEVELOPMENT.md) |
-| Platform versioning and release procedure | [`RELEASES.md`](RELEASES.md) |
+| Platform versioning, signed image promotion and release procedure | [`RELEASES.md`](RELEASES.md) |
 | HD facade workflow | [`FACADE_ORTHOPHOTO.md`](FACADE_ORTHOPHOTO.md) |
 | Fast aerial alignment and RTK/GCP behavior | [`FAST_ALIGNMENT.md`](FAST_ALIGNMENT.md) |
 | Geospatial workspace and AI results | [`GEOSPATIAL_WORKSPACE.md`](GEOSPATIAL_WORKSPACE.md) |
@@ -52,7 +54,8 @@ They must not override the current documents or executable contracts above.
 
 ## Cleanup status
 
-The [2026-08-28 cleanup record](audits/2026-08-28-current-production-cleanup.md)
+The [2026-08-29 audit verification](audits/2026-08-29-audit-verification.md)
+records the current remediation disposition. The [2026-08-28 cleanup record](audits/2026-08-28-current-production-cleanup.md)
 distinguishes completed removals from pending structural work.
 
 ## Historical evidence
@@ -97,7 +100,8 @@ the current release status:
 - 2026-08-12 SaaS structural audit, implemented hardening and remaining
   non-scientific debt:
   [`audits/2026-08-12-saas-structural-audit.md`](audits/2026-08-12-saas-structural-audit.md)
-- [`audits/`](audits/) and the date-stamped `AUDIT_*` / `CONTRE_AUDIT_*` reports
+- dated [`audits/`](audits/) and `AUDIT_*` / `CONTRE_AUDIT_*` reports, except
+  the explicitly current verification record linked above
 - [`GAJAN_R2S_VALIDATION.md`](GAJAN_R2S_VALIDATION.md)
 - [`dronegs/CHANGELOG.md`](dronegs/CHANGELOG.md)
 

@@ -33,7 +33,7 @@ overlay. Before installation, create:
 
 - the storage Secret with `s3-access-key`, `s3-secret-key`, operator
   `database-url` and non-owner `api-database-url`;
-- five stage Secrets containing a non-owner
+- six stage Secrets containing a non-owner
   `stage-database-url` plus stage-scoped S3 credentials;
 - the API auth Secret with a distinct random `session-secret` and
   `credential-pepper`, each at least 32 characters;
@@ -304,48 +304,39 @@ because their local wall-frame selection has a separate quality contract.
 
 ## Distributed durability contract
 
-- The required orthomosaic is uploaded with SHA-256 metadata and verified by
-  `HEAD` before `DONE` or the downstream event can be published.
-- Every AI tile response is a versioned S3 object; Kafka carries only its
-  deterministic key, exact size, SHA-256, schema version and detection count.
-- Both aggregation paths verify object integrity, tile identity and model
-  provenance before persistence. Modern receipts retain the object key, hash
-  size and producing attempt, including responses with zero detections, so
-  recovery revalidates the correct inputs before finalization.
-- Aggregation completion is locked in PostgreSQL and stale finalizations are
-  recovered after a worker restart.
-- Outbox events enter `dead` after their retry budget; administrators can list
-  and explicitly replay them.
-- Kafka publications use per-record delivery callbacks and bounded polling.
-  Consumed offsets and poison-message offsets are committed only after the
-  corresponding output or dead-letter record is confirmed by the broker.
-- Every new pipeline, status and control event carries the organization in its
-  validated envelope. Deterministic IDs, correlations and Kafka keys are
-  tenant-qualified; cancellation and realtime fan-out reject a different
-  durable mission organization. Historical organization-less v1 records remain
-  readable during migration.
-- Staging and production use PostgreSQL-backed raster token buckets shared by
-  every API replica; process-local limiting is rejected in those environments.
-- Buckets use the authenticated subject, hashed before database storage, rather
-  than the ingress-dependent peer address. Forwarded headers are not trusted.
-- Long AI finalizations renew their database ownership lease while loading
-  referenced tile artifacts and around deduplication and final S3 publication.
-- Each API pod has a distinct status consumer group for local WebSocket fan-out,
-  while the shared status inbox applies the database transition only once.
-- Scheduler organization and mission limits count logical stage runs, while
-  global and resource-class limits count physical pod units. Indexed detection
-  parallelism is capped to available GPU units and persisted for accounting.
-- Detection shard inference uses its persisted GPU class; the receipt-verified
-  finalizer re-enters scheduling as `cpu-standard` without model credentials or
-  GPU placement constraints.
-- The revisioned Helm migration job runs `alembic upgrade head`, while init
-  containers prevent database-dependent services from starting on an old
-  schema.
-
-For an in-place upgrade from a release that still embeds detections in Kafka,
-pause IA consumption first, apply migration `0010` and roll the processing/API
-consumers, then roll and resume IA. New consumers accept queued inline events;
-old consumers must never receive the new reference-only form.
+- Every stage attempt is bound to exact parent artifact UUIDs. Workspace
+  manifests are checksum-addressed, tenant-scoped and verified again on
+  restore; successful parent artifacts are never overwritten.
+- Artifact publication, terminal stage state and release of direct dependants
+  occur in one PostgreSQL transaction. S3 and GPU work converge through
+  idempotency keys, leases, manifests and reconciliation rather than a false
+  cross-system transaction.
+- Detection fan-out persists one immutable plan and requires one verified
+  receipt per shard, including zero-detection shards. The separately scheduled
+  CPU finalizer rejects missing, duplicate, contradictory or provenance-drifted
+  receipts before overlap deduplication and publication.
+- Independent map analyses use the same exact raster-artifact binding,
+  Stage Job scheduler and receipt-verified finalization. Kafka is not a compute
+  transport.
+- Transactional inbox/outbox remains limited to validated platform control and
+  status events. Entries become `dead` after the retry budget; only an audited
+  administrator action may replay them.
+- Every event, artifact path, idempotency key and realtime audience is qualified
+  by the durable mission organization.
+- Staging and production use PostgreSQL-backed request buckets shared by every
+  API replica. Uvicorn accepts forwarded client addresses only from the exact
+  `dashboardApi.proxy.trustedCidrs` set; untrusted peers cannot choose the
+  public identity used by peer rate limits.
+- Each API pod has a distinct status consumer group for local WebSocket
+  fan-out, while the shared status inbox applies each database transition once.
+- Scheduler organization and mission limits count logical runs; global and
+  resource-class limits count physical pod units. Indexed detection
+  parallelism is persisted and the finalizer re-enters the queue as
+  `cpu-standard` without model credentials or GPU constraints.
+- The revisioned Helm migration Job runs `alembic upgrade head`. Init
+  containers prevent database-dependent Pods from starting against an old
+  schema. The API and bounded Jobs also fail startup if their non-owner
+  PostgreSQL roles do not have effective RLS.
 
 ## Release gates
 
@@ -368,17 +359,28 @@ The spatial-block implementation is ready, but its production PSNR/SSIM/LPIPS
 thresholds remain a measured gate: use at least five complete ALBAGNAC and
 SAVERES repetitions before creating `DRONEGS_PRODUCTION_PROFILE_V2`.
 
-The hosted supply-chain gates cover the dashboard API and processing worker in
-`.github/workflows/ci.yml`, plus both final CUDA runtimes in
+The hosted supply-chain gates cover the dashboard API and bounded IA worker,
+plus the separately built frontend runtime in `.github/workflows/ci.yml`, and
+both final CUDA runtimes in
 `.github/workflows/cuda-containers.yml`. They emit commit-scoped, 30-day Syft
 CycloneDX and Trivy HIGH/CRITICAL evidence and block fixable HIGH and CRITICAL findings.
 The CUDA workflow prepares every external COLMAP/ONNX dependency from pinned,
 SHA-256-verified sources before building; real-GPU execution remains a distinct,
 change-gated qualification in `dronegs-gpu-qualification.yml`. It has no schedule:
-the self-hosted GPU job runs on pull requests only for CUDA version, GPU
-architecture, CUDA source/interface, CTest or validation-harness changes, or
-after an explicit manual dispatch. Ordinary pull requests and merges do not
-reserve the GPU runner.
+the self-hosted GPU job is selected from changed paths on pull requests and
+merge groups only for GPU-runtime, CUDA, CTest or qualification-harness scope,
+or after an explicit manual dispatch. Unknown or incomplete change metadata
+fails safe by selecting qualification; unrelated pull requests and merges do
+not reserve the GPU runner.
+
+Production images are promoted only by `promote-images.yml` from a
+GitHub-verified signed platform tag whose commit is on `main`. The workflow
+requires successful commit-scoped CI, CUDA-container, physical-GPU and CodeQL
+runs; builds the five image identities in hosted builders; repeats the
+fixable-CVE gate; publishes BuildKit/GitHub provenance; signs each digest with
+Sigstore OIDC; and retains a signed release manifest with SBOM hashes and exact
+qualification run URLs. Repository code cannot configure environment approval:
+`production-promotion` must have required reviewers before the first tag.
 
 ## CUDA 12.9.2 qualification status
 

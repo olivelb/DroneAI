@@ -20,13 +20,13 @@ def test_hosted_ci_builds_each_cuda_dockerfile_contract() -> None:
     assert "-DDRONEGS_CUDA_ARCHITECTURES=portable" in script
 
 
-def test_portable_cuda_build_only_runs_for_version_changes_or_manual_dispatch() -> None:
+def test_portable_cuda_build_runs_for_build_inputs_or_manual_dispatch() -> None:
     general_workflow = GENERAL_WORKFLOW.read_text(encoding="utf-8")
     cuda_workflow = CONTAINER_WORKFLOW.read_text(encoding="utf-8")
 
     assert "DroneGS portable CUDA build" not in general_workflow
-    assert "run: python3 scripts/ci/select_cuda_builds.py" in cuda_workflow
-    assert cuda_workflow.count("if: needs.version-change.outputs.build_required == 'true'") == 2
+    assert "run: python3 -m scripts.ci.select_cuda_builds" in cuda_workflow
+    assert cuda_workflow.count("if: needs.changes.outputs.build_required == 'true'") == 2
     assert "workflow_dispatch" in cuda_workflow
     assert "dockerfile: app1-colmap/Dockerfile.base" in cuda_workflow
     assert "dockerfile: app1-colmap/Dockerfile.local-gaussian" in cuda_workflow
@@ -40,7 +40,7 @@ def test_gpu_qualification_executes_native_cuda_tests_in_container() -> None:
     assert "schedule:" not in workflow
     assert "pull_request:" in workflow
     assert "workflow_dispatch:" in workflow
-    assert "scripts/ci/select_gpu_validation.py" in workflow
+    assert "scripts.ci.select_gpu_validation" in workflow
     assert "needs.changes.outputs.gpu_required == 'true'" in workflow
     assert "runs-on: [self-hosted, linux, x64, gpu, cuda]" in workflow
     assert "scripts/ci/validate_cuda_containers.sh gpu" in workflow

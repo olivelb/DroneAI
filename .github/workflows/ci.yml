@@ -31,16 +31,16 @@ jobs:
       infra: ${{ steps.scopes.outputs.infra }}
     steps:
       - name: Checkout pull-request history
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Checkout current revision
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Classify changed paths
         id: scopes
-        run: python3 scripts/ci/select_ci_jobs.py
+        run: python3 -m scripts.ci.select_ci_jobs
 
   docs:
     name: Documentation and qualification contracts
@@ -472,8 +472,9 @@ jobs:
         run: >-
           helm template drone-ai charts/drone-ai
           --values charts/drone-ai/values-production.example.yaml
-          --set-string dashboardApi.tag="${GITHUB_SHA}"
-          --set-string dashboardFrontend.tag="${GITHUB_SHA}"
+          --set-string dashboardApi.image="drone-dashboard-api@${CI_OCI_DIGEST}"
+          --set-string dashboardFrontend.image="drone-dashboard-frontend@${CI_OCI_DIGEST}"
+          --set-string dashboardApi.proxy.trustedCidrs="10.0.0.0/8"
           --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.gaussian_training.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
@@ -485,8 +486,9 @@ jobs:
         run: >-
           helm template drone-ai charts/drone-ai
           --values charts/drone-ai/values-ovh-preprod.example.yaml
-          --set-string dashboardApi.tag="${GITHUB_SHA}"
-          --set-string dashboardFrontend.tag="${GITHUB_SHA}"
+          --set-string dashboardApi.image="drone-dashboard-api@${CI_OCI_DIGEST}"
+          --set-string dashboardFrontend.image="drone-dashboard-frontend@${CI_OCI_DIGEST}"
+          --set-string dashboardApi.proxy.trustedCidrs="10.0.0.0/8"
           --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.gaussian_training.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
@@ -507,7 +509,7 @@ jobs:
             echo "Mutable application image tag found in the production render" >&2
             exit 1
           fi
-          test "$(grep -Ec '^[[:space:]]+image: .+:[0-9a-f]{40}$' /tmp/drone-ai-production.yaml)" -ge 6
+          test "$(grep -Ec '^[[:space:]]+image: .+@sha256:[0-9a-f]{64}$' /tmp/drone-ai-production.yaml)" -ge 6
       - name: Verify preproduction cost and image guards
         run: |
           if grep -Eq '^[[:space:]]+name: (colmap-worker|ia-worker|processing-worker)$' /tmp/drone-ai-ovh-preprod.yaml; then
@@ -559,23 +561,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Require every selected job to pass
-        run: |
-          for result in \
-            "${{ needs.changes.result }}" \
-            "${{ needs.docs.result }}" \
-            "${{ needs.dronegs-core.result }}" \
-            "${{ needs.python.result }}" \
-            "${{ needs.duplication.result }}" \
-            "${{ needs.migrations.result }}" \
-            "${{ needs.integration.result }}" \
-            "${{ needs.frontend.result }}" \
-            "${{ needs.frontend-container.result }}" \
-            "${{ needs.container-smoke.result }}" \
-            "${{ needs.helm.result }}" \
-            "${{ needs.infra.result }}"; do
-            case "$result" in
-              success|skipped) ;;
-              *) echo "Selected CI job concluded: $result" >&2; exit 1 ;;
-            esac
-          done
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: >-
+          python3 -m scripts.ci.check_selected_jobs --selector changes
+          --job docs=docs --job dronegs-core=dronegs --job python=python
+          --job duplication=duplication --job migrations=migrations
+          --job integration=integration --job frontend=frontend
+          --job frontend-container=frontend_container --job container-smoke=containers
+          --job helm=helm --job infra=infra

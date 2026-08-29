@@ -17,12 +17,14 @@ def test_production_overlay_requires_immutable_application_images() -> None:
 
     assert "requireImmutableImages: false" in defaults
     assert "requireImmutableImages: true" in values
-    assert values.count('tag: "REPLACE_GIT_SHA"') == 2
+    assert 'trustedCidrs: "REPLACE_TRUSTED_PROXY_CIDRS"' in values
+    assert 'image: "drone-dashboard-api@sha256:REPLACE_OCI_DIGEST"' in values
+    assert 'image: "drone-dashboard-frontend@sha256:REPLACE_OCI_DIGEST"' in values
     assert 'regexMatch "^[0-9a-f]{7,40}$" $tag' in helpers
     assert 'regexMatch "@sha256:[0-9a-f]{64}$" .image' in helpers
     assert "Mutable application image tag found in the production render" in ci
     assert ci.count("--set-string") >= 8
-    assert "${GITHUB_SHA}" in ci
+    assert "${CI_OCI_DIGEST}" in ci
 
 
 def test_browser_upload_cors_exposes_multipart_etag() -> None:
@@ -246,3 +248,136 @@ def test_control_worker_is_separate_from_http_api_and_probes_are_meaningful() ->
     assert "dashboard-control-worker:" in compose
     assert 'DRONEAI_EMBED_CONTROL_LOOPS: "false"' in compose
     assert "http://localhost:8000/ready" in compose
+
+
+def test_helm_requires_digests_even_if_protected_image_guard_is_disabled() -> None:
+    import shutil
+    import subprocess
+    import pytest
+    import yaml
+
+    if not shutil.which("helm"):
+        pytest.skip("Helm render is also mandatory in the dedicated CI job")
+    digest = "sha256:" + "a" * 64
+    for overlay in ("values-production.example.yaml", "values-ovh-preprod.example.yaml"):
+        args = ["helm", "template", "test", str(CHART), "-f", str(CHART / overlay),
+                "--set", "global.requireImmutableImages=false",
+                "--set-string", "dashboardApi.proxy.trustedCidrs=10.0.0.0/8"]
+        for stage in ("reconstruction", "gaussian_training", "gaussian_filtering",
+                      "rasterization", "detection", "gaussian_viewer"):
+            args += ["--set-string", f"stageJobs.executors.{stage}.image=registry.test/worker@{digest}"]
+        for tag in ("latest", "a" * 7, "a" * 40):
+            result = subprocess.run([*args,
+                "--set-string", "dashboardApi.image=api",
+                "--set-string", f"dashboardApi.tag={tag}",
+                "--set-string", f"dashboardFrontend.image=frontend@{digest}"],
+                capture_output=True, text=True)
+            assert result.returncode != 0
+            assert "must use an OCI digest in staging and production" in result.stderr
+        result = subprocess.run([*args,
+            "--set-string", f"dashboardApi.image=api@{digest}",
+            "--set-string", f"dashboardFrontend.image=frontend@{digest}"],
+            check=True, capture_output=True, text=True)
+        images = []
+        for doc in yaml.safe_load_all(result.stdout):
+            if doc and doc["kind"] in ("Deployment", "Job"):
+                containers = doc["spec"]["template"]["spec"].get("containers", [])
+                images.extend(c["image"] for c in containers if c["image"].endswith(digest))
+        assert len(images) >= 4
+
+
+def test_protected_api_requires_narrow_trusted_proxy_cidrs() -> None:
+    import shutil
+    import subprocess
+    import pytest
+    import yaml
+
+    if not shutil.which("helm"):
+        pytest.skip("Helm render is mandatory in the dedicated CI job")
+    digest = "sha256:" + "b" * 64
+    base = [
+        "helm", "template", "test", str(CHART),
+        "-f", str(CHART / "values-production.example.yaml"),
+        "--set-string", f"dashboardApi.image=api@{digest}",
+        "--set-string", f"dashboardFrontend.image=frontend@{digest}",
+    ]
+    for stage in ("reconstruction", "gaussian_training", "gaussian_filtering",
+                  "rasterization", "detection", "gaussian_viewer"):
+        base += ["--set-string", f"stageJobs.executors.{stage}.image=worker@{digest}"]
+    for invalid in ("", "*", "0.0.0.0/0", "::/0", "REPLACE_TRUSTED_PROXY_CIDRS",
+                    r"10.0.0.0/8\, 10.1.0.0/16"):
+        result = subprocess.run(
+            [*base, "--set-string", f"dashboardApi.proxy.trustedCidrs={invalid}"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0
+        assert "must contain explicit comma-separated" in result.stderr
+
+    rendered = subprocess.run(
+        [*base, "--set-string",
+         r"dashboardApi.proxy.trustedCidrs=10.0.0.0/16\,10.1.2.3"],
+        check=True, capture_output=True, text=True,
+    )
+    documents = [doc for doc in yaml.safe_load_all(rendered.stdout) if doc]
+    api = next(doc for doc in documents if doc["kind"] == "Deployment"
+               and doc["metadata"]["name"] == "dashboard-api")
+    container = next(item for item in api["spec"]["template"]["spec"]["containers"]
+                     if item["name"] == "api")
+    assert container["command"] == ["uvicorn"]
+    assert container["args"][-3:] == [
+        "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/16,10.1.2.3",
+    ]
+
+
+def test_protected_network_policies_default_deny_and_allow_only_required_ports() -> None:
+    import shutil
+    import subprocess
+    import pytest
+    import yaml
+
+    if not shutil.which("helm"):
+        pytest.skip("Helm render is mandatory in the dedicated CI job")
+    digest = "sha256:" + "c" * 64
+    args = [
+        "helm", "template", "test", str(CHART),
+        "-f", str(CHART / "values-production.example.yaml"),
+        "--set-string", f"dashboardApi.image=api@{digest}",
+        "--set-string", f"dashboardFrontend.image=frontend@{digest}",
+        "--set-string", "dashboardApi.proxy.trustedCidrs=10.0.0.0/8",
+    ]
+    for stage in ("reconstruction", "gaussian_training", "gaussian_filtering",
+                  "rasterization", "detection", "gaussian_viewer"):
+        args += ["--set-string", f"stageJobs.executors.{stage}.image=worker@{digest}"]
+    rendered = subprocess.run(args, check=True, capture_output=True, text=True)
+    policies = {
+        doc["metadata"]["name"]: doc
+        for doc in yaml.safe_load_all(rendered.stdout)
+        if doc and doc["kind"] == "NetworkPolicy"
+    }
+    assert set(policies) == {
+        "drone-ai-app-default-deny", "drone-ai-stage-default-deny",
+        "dashboard-frontend-allow", "dashboard-api-allow",
+        "dashboard-control-worker-allow", "drone-ai-stage-egress",
+    }
+    assert policies["drone-ai-app-default-deny"]["spec"]["policyTypes"] == [
+        "Ingress", "Egress",
+    ]
+    assert "ingress" not in policies["drone-ai-stage-default-deny"]["spec"]
+    stage_ports = {
+        port["port"]
+        for rule in policies["drone-ai-stage-egress"]["spec"]["egress"]
+        for port in rule["ports"]
+    }
+    assert stage_ports == {53, 443, 5432, 9000}
+    assert 9092 not in stage_ports
+    api_ingress = policies["dashboard-api-allow"]["spec"]["ingress"]
+    assert api_ingress[0]["from"][0]["namespaceSelector"]["matchLabels"][
+        "kubernetes.io/metadata.name"
+    ] == "ingress-nginx"
+
+    disabled = subprocess.run(
+        [*args, "--set", "networkPolicy.enabled=false"],
+        capture_output=True, text=True,
+    )
+    assert disabled.returncode != 0
+    assert "networkPolicy.enabled must be true" in disabled.stderr

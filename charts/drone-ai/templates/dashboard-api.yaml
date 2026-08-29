@@ -15,6 +15,16 @@
 {{- if and $protectedStageJobEnvironment (not .Values.storage.existingSecret) }}
 {{- fail "storage.existingSecret is required in staging and production" }}
 {{- end }}
+{{- if and $protectedStageJobEnvironment (not .Values.networkPolicy.enabled) }}
+{{- fail "networkPolicy.enabled must be true in staging and production" }}
+{{- end }}
+{{- if and $protectedStageJobEnvironment (or (not .Values.networkPolicy.ingressNamespace) (contains "REPLACE_" .Values.networkPolicy.ingressNamespace) (not .Values.networkPolicy.monitoringNamespace) (contains "REPLACE_" .Values.networkPolicy.monitoringNamespace)) }}
+{{- fail "networkPolicy ingress and monitoring namespaces must be explicit in staging and production" }}
+{{- end }}
+{{- $trustedProxyCidrs := trim .Values.dashboardApi.proxy.trustedCidrs }}
+{{- if and $protectedStageJobEnvironment (or (not $trustedProxyCidrs) (eq $trustedProxyCidrs "*") (contains "0.0.0.0/0" $trustedProxyCidrs) (contains "::/0" $trustedProxyCidrs) (contains "REPLACE_" $trustedProxyCidrs) (not (regexMatch "^[^[:space:],]+(,[^[:space:],]+)*$" $trustedProxyCidrs))) }}
+{{- fail "dashboardApi.proxy.trustedCidrs must contain explicit comma-separated ingress/LB IPs or CIDRs in staging and production" }}
+{{- end }}
 {{- if and $protectedStageJobEnvironment (eq .Values.dashboardApi.databaseUrlSecretKey .Values.storage.databaseUrlSecretKey) }}
 {{- fail "dashboardApi.databaseUrlSecretKey must use a distinct non-owner PostgreSQL role in staging and production" }}
 {{- end }}
@@ -189,6 +199,16 @@ spec:
           mountPath: /tmp
       containers:
       - name: api
+        command: ["uvicorn"]
+        args:
+        - app4-dashboard.api.main:app
+        - --host
+        - "0.0.0.0"
+        - --port
+        - "8000"
+        - --proxy-headers
+        - --forwarded-allow-ips
+        - {{ .Values.dashboardApi.proxy.trustedCidrs | quote }}
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
