@@ -1,0 +1,74 @@
+name: CodeQL source security
+
+on:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Select CodeQL languages
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.selection.outputs.python }}
+      javascript: ${{ steps.selection.outputs.javascript }}
+      any: ${{ steps.selection.outputs.any }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: selection
+        run: python3 -m scripts.ci.select_codeql
+
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            selected: ${{ needs.changes.outputs.python }}
+          - language: javascript-typescript
+            selected: ${{ needs.changes.outputs.javascript }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: matrix.selected == 'true'
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+      - if: matrix.selected == 'true'
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  codeql-gate:
+    name: CodeQL gate
+    needs: [changes, analyze]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require selected CodeQL scans
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: >-
+          python3 -m scripts.ci.check_selected_jobs --selector changes
+          --job analyze=any

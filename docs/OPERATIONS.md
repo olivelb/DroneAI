@@ -104,7 +104,7 @@ The removed v1/v2 writer switch is not a rollback mechanism.
 ## Scoped credential gate for stage Jobs
 
 Every one-shot executor in `staging` or `production` must use its own existing
-Kubernetes Secret. Configure all five names under
+Kubernetes Secret. Configure all six stage names under
 `stageJobs.credentialSecrets`; Helm and the API both fail closed if an entry is
 missing or if two stages share a Secret. Each Secret exposes
 `stage-database-url`, `s3-access-key` and `s3-secret-key`. The database URL must
@@ -194,7 +194,7 @@ The production cancellation, deadline, interruption, restore and rollback
 drills use the machine-readable
 [`production-qualification-evidence-v1`](contracts/production-qualification-evidence-v1.schema.json)
 contract. The contract is stricter than a narrative report: it requires the
-exact release and target, all five executor image digests, RTO/RPO objectives,
+exact release and target, the five blocking executor image digests, RTO/RPO objectives,
 the nine mandatory drills and an operator attestation. It also rejects fields
 or text that look like credentials.
 
@@ -304,9 +304,10 @@ default remains `false` so a deployment cannot acquire Job
 RBAC or dispatch GPU work without an explicit immutable executor map. Each new
 target environment must satisfy all of the following before activation:
 
-1. All five executor entries use OCI digests or commit-derived immutable tags
-   and the reviewed one-shot commands.
-2. All five credential Secrets and their distinct least-privilege principals
+1. All six executor entries use exact OCI digests and the reviewed one-shot
+   commands. The five blocking entries form the scientific chain; the viewer
+   entry is independently terminal.
+2. All six credential Secrets and their distinct least-privilege principals
    have been provisioned and reviewed.
 3. The Q3 record demonstrates the complete artifact chain on the target GPU.
 4. Resource-class capability labels and executor tolerations match the reviewed
@@ -322,8 +323,9 @@ target environment must satisfy all of the following before activation:
 9. A rollback revision and deep-sleep procedure have been reviewed.
 
 Enabling the flag is a reviewed deployment change, not a code-side default. On
-the single-node distributed installer, set `STAGE_JOBS_IMAGE_TAG` to the exact
-Git SHA; leaving it unset deliberately selects compatibility workers.
+the single-node distributed installer, pass `--stage-jobs <revision>` using a
+7-to-40-character lower-case Git revision. Omitting it leaves Stage Jobs disabled;
+there is no compatibility compute-worker fallback.
 Production promotion remains blocked until the target environment has its own
 cancellation/deadline, backup/restore, rollback and interruption record, plus a
 named operator attestation, even though the BIGZEN preproduction execution path

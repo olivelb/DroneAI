@@ -1,16 +1,18 @@
 """Select CI jobs from candidate paths without external actions.
 
-Merge-group and manual runs deliberately execute every scope. Pull requests
-only execute jobs whose runtime or contract is affected by the diff.
+Pull requests and merge groups execute only scopes affected by their candidate
+diff. Manual runs execute every scope. Unclassifiable input fails safe by
+selecting every scope.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 from pathlib import PurePosixPath
-from typing import Final
+from typing import Any, Final
+
+from scripts.ci.changed_paths import event_changed_paths
 
 SCOPES: Final = (
     "python",
@@ -28,8 +30,17 @@ SCOPES: Final = (
 CONTROL_PATHS: Final = {
     ".github/workflows/ci.yml",
     "scripts/ci/select_ci_jobs.py",
-    "tests/test_ci_change_scopes.py",
+    "scripts/ci/check_selected_jobs.py",
+    "scripts/ci/changed_paths.py",
 }
+PROMOTION_PATHS: Final = {
+    ".github/workflows/promote-images.yml",
+    "tools/promotion_manifest.py",
+    "tests/test_promotion_manifest.py",
+}
+NO_TEST_PATHS: Final = {".gitignore", ".gitattributes"}
+DOCUMENT_PATHS: Final = {"LICENSE", "THIRD_PARTY_NOTICES.md"}
+
 DUPLICATION_TOOL_PATHS: Final = {
     ".jscpd.json",
     "app4-dashboard/frontend/package.json",
@@ -41,6 +52,35 @@ def _under(path: str, directory: str) -> bool:
     return path == directory or path.startswith(f"{directory}/")
 
 
+
+def _is_recognized_path(path: str) -> bool:
+    """Whether the dependency map deliberately owns this path."""
+    if path in (
+        CONTROL_PATHS | NO_TEST_PATHS | DOCUMENT_PATHS | DUPLICATION_TOOL_PATHS | PROMOTION_PATHS
+    ):
+        return True
+    if path in {
+        "Makefile", "pyproject.toml", "VERSION", "alembic.ini",
+        ".dockerignore", ".github/compose.http-e2e.yaml",
+        ".github/compose.integration.yaml", "compose.test.yaml",
+        "app2-ia/Dockerfile", "app4-dashboard/api/Dockerfile",
+        "scripts/deploy/publish-preprod-images.sh",
+    }:
+        return True
+    if _under(path, "docs") or path.endswith(".md"):
+        return True
+    if any(_under(path, directory) for directory in (
+        "shared", "app4-dashboard/api", "app4-dashboard/frontend",
+        "app2-ia", "app1-colmap/dronegs", "alembic", "tests/integration",
+        "requirements", "charts/drone-ai", "infra/ovh",
+    )):
+        return True
+    if path.endswith(".py") and any(_under(path, directory) for directory in (
+        "app1-colmap", "tests", "tools", "scripts/ci",
+    )):
+        return True
+    return False
+
 def classify_paths(paths: list[str]) -> dict[str, bool]:
     """Return the minimal safe job set for normalized repository paths."""
 
@@ -51,6 +91,8 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             normalized_path = normalized_path[2:]
         normalized.add(normalized_path)
     control_changed = bool(normalized & CONTROL_PATHS)
+    promotion_changed = bool(normalized & PROMOTION_PATHS)
+    recognized = set(normalized & (CONTROL_PATHS | NO_TEST_PATHS | PROMOTION_PATHS))
     # Exercise every lightweight CI contract when the dispatcher changes, but
     # never turn a CI-only edit into a native CUDA/DroneGS build. A real
     # DroneGS path in the same diff is still classified by the loop below.
@@ -58,6 +100,9 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
         scope: control_changed and scope != "dronegs"
         for scope in SCOPES
     }
+
+    if promotion_changed:
+        selected["python"] = True
 
     for path in normalized:
         is_python = path.endswith(".py") and any(
@@ -73,8 +118,9 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
                 "scripts/ci",
             )
         )
-        if is_python or path in {"Makefile", "pyproject.toml"} or _under(path, "requirements"):
+        if is_python or path in {"Makefile", "pyproject.toml", "VERSION"} or _under(path, "requirements"):
             selected["python"] = True
+            recognized.add(path)
         if (
             (
                 path.endswith(".py")
@@ -95,10 +141,12 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             or path in DUPLICATION_TOOL_PATHS
         ):
             selected["duplication"] = True
-        if _under(path, "docs") or path.endswith(".md") or path in {
+        if _under(path, "docs") or path.endswith(".md") or path in DOCUMENT_PATHS or path in {
             "tools/check_markdown_links.py",
+            "tools/check_documentation_contracts.py",
             "tools/production_qualification.py",
             "tests/test_markdown_links.py",
+            "tests/test_documentation_contracts.py",
             "tests/test_production_qualification.py",
         }:
             selected["docs"] = True
@@ -173,36 +221,14 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             selected["infra"] = True
         if path == "scripts/deploy/publish-preprod-images.sh":
             selected["infra"] = True
+        if _is_recognized_path(path):
+            recognized.add(path)
 
+    # A new path not covered by the dependency map is uncertainty, not proof
+    # that no test applies. Select every scope until its ownership is codified.
+    if normalized - recognized:
+        return {scope: True for scope in SCOPES}
     return selected
-
-
-def _pull_request_paths(event: dict[str, object]) -> list[str]:
-    pull_request = event.get("pull_request")
-    if not isinstance(pull_request, dict):
-        raise ValueError("pull_request event payload is missing pull_request")
-    base = pull_request.get("base")
-    head = pull_request.get("head")
-    if not isinstance(base, dict) or not isinstance(head, dict):
-        raise ValueError("pull_request event payload is missing base/head")
-    base_sha = base.get("sha")
-    head_sha = head.get("sha")
-    if not isinstance(base_sha, str) or not isinstance(head_sha, str):
-        raise ValueError("pull_request event payload is missing base/head SHA")
-    result = subprocess.run(
-        [
-            "git",
-            "diff",
-            "--name-only",
-            "--no-renames",
-            "--diff-filter=ACMD",
-            f"{base_sha}...{head_sha}",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
 
 
 def main() -> int:
@@ -211,12 +237,21 @@ def main() -> int:
         raise RuntimeError("GITHUB_OUTPUT is required")
 
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
-    if event_name == "pull_request":
+    if event_name == "workflow_dispatch":
+        selected = {scope: True for scope in SCOPES}
+    elif event_name in {"pull_request", "merge_group"}:
+        event: dict[str, Any] = {}
         event_path = os.environ.get("GITHUB_EVENT_PATH")
-        if not event_path:
-            raise RuntimeError("GITHUB_EVENT_PATH is required for pull requests")
-        with open(event_path, encoding="utf-8") as handle:
-            selected = classify_paths(_pull_request_paths(json.load(handle)))
+        if event_path:
+            try:
+                with open(event_path, encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                if isinstance(loaded, dict):
+                    event = loaded
+            except (OSError, json.JSONDecodeError):
+                pass
+        paths = event_changed_paths(event_name, event)
+        selected = {scope: True for scope in SCOPES} if paths is None else classify_paths(paths)
     else:
         selected = {scope: True for scope in SCOPES}
 

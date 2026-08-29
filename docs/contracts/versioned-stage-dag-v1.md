@@ -1,4 +1,7 @@
-# Versioned mission-stage DAG contract v1
+# Versioned mission-stage DAG contract (runtime v2)
+
+> The filename is retained for stable links. The live contract is DAG version
+> 2; migration and attempt history remain append-only.
 
 ## Scope
 
@@ -27,9 +30,9 @@ quality metrics, heartbeat and terminal error fields describe what actually
 ran.
 
 Migration `0016` adds the scheduling envelope: `resource_class`, bounded Job
-identity, dispatch count/error and scheduling timestamp. The v1 catalogue
-declares four portable classes (`cpu-standard`, `gpu-standard`,
-`gpu-geometry`, `gpu-high-memory`) with explicit CPU, memory, ephemeral storage,
+identity, dispatch count/error and scheduling timestamp. The runtime v2
+catalogue declares five portable classes (`cpu-standard`,
+`cpu-high-memory`, `gpu-standard`, `gpu-geometry`, `gpu-high-memory`) with explicit CPU, memory, ephemeral storage,
 GPU and minimum-VRAM requirements. Detection with the pinned SAM3 revision,
 1,008 px processor input and batch size one is promoted to the 12 GiB
 `gpu-geometry` class. A request may strengthen but never reduce that envelope;
@@ -130,11 +133,14 @@ run as non-root with dropped capabilities and derive their requests/limits from
 the persisted resource class. Rasterization uses `gpu-high-memory` whenever
 the selected profile is `high-quality-*` or its configured Gaussian cap is
 above the normal 3M envelope; this covers the large host-memory peak of final
-GeoTIFF materialization independently of steady-state VRAM use. All five commands completed the representative
-BIGZEN K3s/RTX 3090 Q3 chain. The generic chart default remains disabled only
+GeoTIFF materialization independently of steady-state VRAM use. All five blocking commands completed the representative
+BIGZEN K3s/RTX 3090 Q3 chain. `gaussian_viewer` is a non-blocking branch
+from `gaussian_filtering` and does not qualify or invalidate the scientific
+raster/detection path. The generic chart default remains disabled only
 to require an explicit immutable executor map for each environment; it is no
-longer an adapter-availability limitation. `deploy.sh distributed` activates
-the mode when `STAGE_JOBS_IMAGE_TAG` supplies the commit-derived image tag.
+longer an adapter-availability limitation. `deploy.sh distributed --stage-jobs <revision>` activates the local mode with
+a 7-to-40-character lower-case Git revision. Protected environments use exact
+OCI digests for all six executor entries.
 
 When explicitly enabled, the dashboard reserves queued rows with
 `FOR UPDATE SKIP LOCKED`, commits their deterministic Job identity, then calls
@@ -150,13 +156,13 @@ mission cancellation deletes the Job, and a Job that exits successfully
 without first publishing its immutable artifact is treated as failed. Artifact
 publication atomically marks the run succeeded before releasing dependants.
 
-Activation requires a complete `stageJobs.executors` map for all five stages.
+Activation requires a complete `stageJobs.executors` map for all six runtime-v2 stages.
 Every entry supplies an immutable image, a non-empty one-shot command, optional
 additional node selectors, validated tolerations and (for GPU stages) the
 selected GPU architecture recorded in provenance. The renderer derives GPU
 presence and minimum-VRAM capability selectors from the run's resource class;
 executor selectors may narrow but never contradict them. Job pods receive only
-run/mission identity plus S3/Kafka settings and their stage-specific Secret
+run/mission identity plus object/database settings and their stage-specific Secret
 references for database/S3 credentials; they use bounded writable
 `/tmp`, `/work` and `/cache` volumes over a read-only root filesystem. The
 selected mission `work_drive` is persisted in every stage-run contract. The
@@ -344,8 +350,8 @@ removed on every stage exit. Mission `sam_prompt` and `tile_size` choices remain
 part of the immutable stage parameters rather than being replaced by worker
 defaults.
 
-All five one-shot adapters are implemented and the complete artifact chain is
-qualified by
+All six one-shot adapters are implemented. The five blocking adapters and their
+complete scientific artifact chain are qualified by
 [`../benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md`](../benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md).
 Kubernetes dispatch still requires deliberate per-environment activation plus
 a complete immutable executor-image map; the chart never infers that authority

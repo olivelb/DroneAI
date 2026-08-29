@@ -2,6 +2,12 @@
 
 Date: 2026-07-28
 
+> [!CAUTION]
+> Historical implementation plan. Statements below describe the repository at
+> that dated revision and must not be used as current operational guidance.
+> Use [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md) and the current
+> [documentation index](README.md).
+
 This document records the critical review of the pre-COLMAP-4.1 / pre-dashboard
 analysis against the current repository, the decisions taken, and the
 remaining release work.

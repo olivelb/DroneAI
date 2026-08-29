@@ -20,7 +20,7 @@ CI.
 | Objects | Encrypted, versioned OVH S3 bucket | Terraform prevents accidental deletion. |
 | Backups | Separate encrypted OVH S3 bucket, seven daily PostgreSQL slots | Dedicated read/write credentials cannot delete objects; Terraform prevents bucket deletion. |
 | Terraform state | Separate encrypted, versioned OVH S3 bucket | Dedicated S3 user, least-privilege object policy and native `.tflock` locking. |
-| Images | OVH Harbor/MPR, Git SHA tags | `latest` is forbidden for preproduction service images. |
+| Images | OVH Harbor/MPR, OCI digests | Git tags identify builds; deployed application references must use SHA-256 digests. |
 | DNS | `droneai-preprod.olembo.fr` and `api-droneai-preprod.olembo.fr` | Do not alter apex, `www`, MX, SPF or DKIM records. |
 
 With the default maximum of one GPU node, keep global and per-mission GPU
@@ -28,11 +28,13 @@ resource concurrency at one so reconstruction/Gaussian/raster/detection Jobs
 run sequentially. Set `gpu_max_nodes = 2` only after a quota and cost review if
 cross-mission concurrency is required.
 
-The five one-shot executors are now qualified on BIGZEN K3s/RTX 3090; see the
+The five blocking one-shot executors are qualified on BIGZEN K3s/RTX 3090;
+the optional non-blocking `gaussian_viewer` adapter is implemented but is not
+part of that scientific-chain qualification; see the
 [Chapelle Q3 addendum](benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md#q3-kubernetes-five-job-qualification-addendum).
 That result replaces the former executor-availability blocker, but it does not
 create OVH GPU quota or authorize waking the zero-node pool. The next OVH GPU
-qualification must deploy `stageJobs.enabled=true` with the published Git-SHA
+qualification must deploy `stageJobs.enabled=true` with the reviewed six-entry OCI-digest
 executor map and one-per-mission GPU concurrency. The dated hybrid worker run
 later in this document remains historical cloud evidence.
 
@@ -388,7 +390,7 @@ No apex, `www`, MX, SPF, DKIM or other mail record was changed.
 
 ## 6. Publish immutable images
 
-Use the exact commit that will be deployed. The default command publishes only
+Use a clean checkout of the exact full 40-character HEAD commit that will be deployed. The default command publishes only
 the two CPU control-plane images and never builds or publishes CUDA/GPU
 images:
 
@@ -409,7 +411,8 @@ scripts/deploy/publish-ovh-preprod-cpu.sh
 
 GPU publication requires `INCLUDE_GPU_IMAGES=1`. It reuses the local
 `drone-colmap-base:GIT_SHA` for the selected revision, passes that exact reference
-to the application build and fails if that base is absent. The long base build
+to the application build and fails if that base is absent or its OCI revision
+label does not match. The label is a consistency check, not signed provenance. The long base build
 is possible only when both `INCLUDE_GPU_IMAGES=1` and
 `REBUILD_COLMAP_BASE=1` are explicitly set. A normal PR, merge, documentation,
 Terraform, Helm or CPU application change must never set those flags.
@@ -499,8 +502,13 @@ scripts/deploy/bootstrap-ovh-preprod-secrets.sh
 
 ## 8. Deploy the CPU control plane first
 
-Copy the tracked overlay to the ignored local file and replace the three
-placeholders: registry URL, S3 endpoint and Git SHA. Do not add credentials.
+Copy the tracked overlay to the ignored local file and replace every
+placeholder: registry URL, S3 endpoint, application/executor OCI digests and
+target GPU architecture and `dashboardApi.proxy.trustedCidrs`. Determine the
+direct source addresses from the live Traefik/LB path; never use `*`,
+`0.0.0.0/0` or `::/0`. Do not add credentials. Retain the publisher's
+RepoDigests and use them instead of Git tags; old tag-based protected overlays
+must be migrated before their next Helm rollout.
 
 ```bash
 cp charts/drone-ai/values-ovh-preprod.example.yaml \
@@ -523,7 +531,7 @@ curl --fail https://api-droneai-preprod.olembo.fr/
 ```
 
 The configured OVHcloud workstation can perform the same CPU-only deployment
-without generating a local values file. The wrapper resolves only non-secret
+with the qualified local executor values file. The wrapper resolves only non-secret
 Terraform outputs, reconciles Kubernetes Secrets separately and uses Helm
 `--atomic --wait --wait-for-jobs`:
 
@@ -533,13 +541,15 @@ export KUBECONFIG="$HOME/.config/droneai/kubeconfig-preprod.yaml"
 scripts/deploy/deploy-ovh-preprod-cpu.sh
 ```
 
-For an existing release, the wrapper reuses the common Git-SHA tag currently
-deployed by the CPU workloads. This permits Helm/Terraform-only updates without
-attempting to pull an unpublished image for the documentation commit. Set
-`IMAGE_TAG=<published-git-sha>` explicitly to deploy a new application image;
-the wrapper refuses mixed live tags and non-SHA values.
+For an existing release, the wrapper reuses the deployed API and frontend
+digests and requires the control worker to match the API. Supply both
+`API_IMAGE` and `FRONTEND_IMAGE` explicitly for a new release, together
+with `RELEASE_VALUES_FILE` for the qualified executor overlay as described
+below. `IMAGE_TAG` is rejected; old tag-based releases require explicit
+migration to digests.
 
-At this stage Kafka, processing, API and frontend run; GPU workers are absent.
+At this stage Kafka, PostgreSQL, API, control workers and frontend run; GPU
+Stage Jobs remain pending until a qualified GPU pool is available.
 
 ### First CPU control-plane deployment result (7 August 2026)
 
@@ -837,3 +847,36 @@ terraform show destroy.tfplan
 The Terraform state bucket is never part of ordinary teardown. Deleting either
 retained bucket is a separate, deliberate OVHcloud operation after its contents
 and recovery requirements have been reviewed.
+
+### Digest-only CPU deployment helper
+
+For a new CPU release, pass the two full published references as `API_IMAGE`
+and `FRONTEND_IMAGE`. Supply the qualified executor configuration through
+`RELEASE_VALUES_FILE` (the ignored local overlay above); CPU-first deployment
+still needs valid executor digests even when the GPU Jobs remain pending.
+
+```bash
+API_IMAGE="<registry>/droneai/drone-dashboard-api@sha256:<64-hex-digest>" \
+FRONTEND_IMAGE="<registry>/droneai/drone-dashboard-frontend@sha256:<64-hex-digest>" \
+RELEASE_VALUES_FILE="charts/drone-ai/values-ovh-preprod.local.yaml" \
+scripts/deploy/deploy-ovh-preprod-cpu.sh
+```
+
+With both image variables omitted, the helper reuses the deployed API and
+frontend digests and checks that the control worker runs the same API image.
+A deployment still using tags is rejected: supply both qualified digest
+references explicitly for its migration. `IMAGE_TAG` no longer controls
+cloud deployment. Local `deploy.sh distributed --stage-jobs GIT_SHA` retains
+its development-only tag contract.
+
+
+### Network policy qualification
+
+The protected overlay enables application default-deny policies and sets
+`networkPolicy.ingressNamespace=traefik`. Before rollout, confirm namespace
+labels and exercise: frontend/API ingress, Prometheus metrics from
+`networkPolicy.monitoringNamespace`, DNS, PostgreSQL, Kafka, S3, model
+downloads, control-worker Job creation and a complete Stage Job. Confirm a
+Stage Job cannot reach Kafka or the Kubernetes API. Port 443 remains
+destination-agnostic because standard NetworkPolicy cannot match S3/model DNS
+names; record any CNI-specific FQDN restriction separately.
