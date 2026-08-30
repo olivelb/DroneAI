@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import threading
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +38,7 @@ SUPPORTED_DRONEGS_INITIAL_SCALE_POLICIES = {"local-knn", "projected-knn"}
 SUPPORTED_DRONEGS_TEST_SPLITS = {"modulo", "spatial-block"}
 SUPPORTED_DRONEGS_BACKGROUND_MODES = {"black", "random"}
 SUPPORTED_DRONEGS_LOSS_PIXEL_MASKS = {"active", "all"}
+MAX_DRONEGS_IMAGE_WIDTH = 8_192
 
 
 def _require_supported(name: str, value: str, supported: set[str]) -> None:
@@ -210,8 +212,10 @@ class TrainingRequest:
         require_integer("max_cap", self.max_cap, 1)
         require_integer("resize_factor", self.resize_factor, 1, {1, 2, 4, 8})
         require_integer("max_width", self.max_width, 1)
-        if self.max_width > 4096:
-            raise ValueError("max_width must be between 1 and 4096")
+        if self.max_width > MAX_DRONEGS_IMAGE_WIDTH:
+            raise ValueError(
+                f"max_width must be between 1 and {MAX_DRONEGS_IMAGE_WIDTH}"
+            )
         require_integer("tile_mode", self.tile_mode, 1, {1, 2, 4})
         require_integer("seed", self.seed, 0)
         if not isinstance(self.dronegs, DroneGSTuning):
@@ -549,6 +553,7 @@ class DroneGSBackend:
         )
         reader.start()
         output_finished = False
+        output_tail: deque[str] = deque(maxlen=40)
         try:
             while process.poll() is None or not output_finished or not output_queue.empty():
                 if cancellation_check is not None:
@@ -563,6 +568,8 @@ class DroneGSBackend:
                     output_finished = True
                     continue
                 line = raw_line.rstrip()
+                if line:
+                    output_tail.append(line)
                 if verbose:
                     print(f"[DroneGS] {line}")
                 try:
@@ -588,7 +595,11 @@ class DroneGSBackend:
             raise
         return_code = process.wait()
         if return_code != 0:
-            raise RuntimeError(f"DroneGS training failed with exit code {return_code}")
+            diagnostic = "\n".join(output_tail)
+            suffix = f":\n{diagnostic}" if diagnostic else ""
+            raise RuntimeError(
+                f"DroneGS training failed with exit code {return_code}{suffix}"
+            )
 
         manifest_path = output_path / "trainer_run.json"
         if not manifest_path.is_file():

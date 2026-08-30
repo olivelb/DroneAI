@@ -62,7 +62,7 @@ def request(**overrides) -> TrainingRequest:
         ("sh_degree", 4, "sh_degree"),
         ("max_cap", 0, "max_cap"),
         ("resize_factor", 3, "resize_factor"),
-        ("max_width", 4097, "max_width"),
+        ("max_width", 8193, "max_width"),
         ("tile_mode", 3, "tile_mode"),
         ("seed", -1, "seed"),
     ],
@@ -70,6 +70,10 @@ def request(**overrides) -> TrainingRequest:
 def test_training_request_validation(field, value, message):
     with pytest.raises(ValueError, match=message):
         request(**{field: value})
+
+
+def test_training_request_accepts_native_5280_width():
+    assert request(max_width=5280).max_width == 5280
 
 
 def test_dronegs_adapter_uses_canonical_contract():
@@ -376,6 +380,35 @@ def test_dronegs_adapter_rejects_nonempty_output(tmp_path):
         DroneGSBackend(str(executable)).train(
             request(data_path=str(dataset), output_path=str(output)),
         )
+
+
+def test_dronegs_adapter_reports_a_bounded_native_output_tail(tmp_path):
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    executable = tmp_path / "dronegs"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "i=1\n"
+        "while [ $i -le 45 ]; do echo diagnostic-$i; i=$((i + 1)); done\n"
+        "echo 'cudaMalloc reusable alpha buffer failed' >&2\n"
+        "exit 10\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+
+    with pytest.raises(RuntimeError) as raised:
+        DroneGSBackend(str(executable)).train(
+            request(
+                data_path=str(dataset),
+                output_path=str(tmp_path / "output"),
+            )
+        )
+
+    message = str(raised.value)
+    assert "exit code 10" in message
+    assert "cudaMalloc reusable alpha buffer failed" in message
+    assert "diagnostic-1\n" not in message
+    assert "diagnostic-7" in message
 
 
 def test_spatial_split_requires_valid_guard_configuration():

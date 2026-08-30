@@ -729,7 +729,15 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
           "CLI initial PLY mismatch");
     values.resize(values.size() - 48U);
 
-    values[values.size() - 7] = "4097";  // --max-width value
+    values[values.size() - 7] = "5280";  // --max-width value
+    arguments = mutable_arguments(values);
+    const auto native_width = dronegs::parse_options(
+        static_cast<int>(arguments.size()), arguments.data());
+    check(
+        native_width.max_width == 5280U,
+        "CLI rejected native 5280-pixel training width");
+
+    values[values.size() - 7] = "8193";  // --max-width value
     arguments = mutable_arguments(values);
     bool rejected = false;
     try {
