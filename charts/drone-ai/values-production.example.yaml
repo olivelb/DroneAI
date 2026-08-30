@@ -13,12 +13,25 @@ observability:
 # service. The chart's single-broker PLAINTEXT StatefulSet is development-only.
 kafka:
   enabled: false
-  broker: "REPLACE_EXTERNAL_KAFKA_BROKER"
+  broker: "REPLACE_EXTERNAL_KAFKA_BROKER:9093"
+  egressPort: 9093
+  security:
+    protocol: SASL_SSL
+    existingSecret: drone-ai-kafka-production
+    saslMechanism: SCRAM-SHA-512
+    usernameSecretKey: username
+    passwordSecretKey: password
+    tls:
+      existingSecret: "" # Set for a private CA and optional mTLS identity.
 
 networkPolicy:
   enabled: true
   ingressNamespace: traefik
   monitoringNamespace: monitoring
+  externalHttpsCidrs:
+    - REPLACE_EXTERNAL_HTTPS_CIDR
+  databasePort: 5432
+  s3Port: 443
 
 storage:
   existingSecret: drone-ai-storage-production
@@ -89,6 +102,8 @@ dashboardFrontend:
 
 stageJobs:
   enabled: true
+  sam3:
+    artifactSha256: REPLACE_SAM3_ARTIFACT_SHA256
   executors:
     reconstruction:
       image: "registry.example.com/drone-colmap@sha256:REPLACE_OCI_DIGEST"

@@ -22,7 +22,7 @@ x-worker-dependencies: &worker-dependencies
 
 services:
   postgres:
-    image: postgis/postgis:16-3.5
+    image: postgis/postgis:16-3.5@sha256:8828b03e9a95269f808abe62aa83215b22a2d3710f54a55e8040327b7b5f9932
     restart: unless-stopped
     environment:
       POSTGRES_DB: droneai
@@ -38,7 +38,7 @@ services:
       retries: 30
 
   kafka:
-    image: apache/kafka:3.7.0
+    image: apache/kafka:3.7.0@sha256:41c20d65b0a2180b9deca056d47540771752e69fe9225d5748dd65a25a9675d7
     restart: unless-stopped
     environment:
       KAFKA_NODE_ID: "1"
@@ -64,7 +64,7 @@ services:
       start_period: 20s
 
   kafka-init:
-    image: apache/kafka:3.7.0
+    image: apache/kafka:3.7.0@sha256:41c20d65b0a2180b9deca056d47540771752e69fe9225d5748dd65a25a9675d7
     restart: "no"
     depends_on:
       kafka:
@@ -109,7 +109,7 @@ services:
         done
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     restart: unless-stopped
     command: server /data --console-address :9001
     environment:
@@ -124,7 +124,7 @@ services:
       - minio-data:/data
 
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc:latest@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     restart: "no"
     depends_on:
       minio:

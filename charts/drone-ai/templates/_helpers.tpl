@@ -64,6 +64,34 @@ workers retain their operator connection.
   value: {{ $root.Values.dashboardApi.environment | quote }}
 - name: KAFKA_BROKER
   value: {{ default (printf "my-kafka.%s.svc.cluster.local:9092" $root.Values.global.namespace) $root.Values.kafka.broker | quote }}
+- name: KAFKA_SECURITY_PROTOCOL
+  value: {{ $root.Values.kafka.security.protocol | quote }}
+{{- if hasPrefix "SASL_" $root.Values.kafka.security.protocol }}
+- name: KAFKA_SASL_MECHANISM
+  value: {{ $root.Values.kafka.security.saslMechanism | quote }}
+- name: KAFKA_SASL_USERNAME
+  valueFrom:
+    secretKeyRef:
+      name: {{ $root.Values.kafka.security.existingSecret }}
+      key: {{ $root.Values.kafka.security.usernameSecretKey }}
+- name: KAFKA_SASL_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ $root.Values.kafka.security.existingSecret }}
+      key: {{ $root.Values.kafka.security.passwordSecretKey }}
+{{- end }}
+{{- if $root.Values.kafka.security.tls.existingSecret }}
+- name: KAFKA_SSL_CA_LOCATION
+  value: /var/run/secrets/droneai/kafka/{{ $root.Values.kafka.security.tls.caSecretKey }}
+{{- if $root.Values.kafka.security.tls.certificateSecretKey }}
+- name: KAFKA_SSL_CERTIFICATE_LOCATION
+  value: /var/run/secrets/droneai/kafka/{{ $root.Values.kafka.security.tls.certificateSecretKey }}
+{{- end }}
+{{- if $root.Values.kafka.security.tls.privateKeySecretKey }}
+- name: KAFKA_SSL_KEY_LOCATION
+  value: /var/run/secrets/droneai/kafka/{{ $root.Values.kafka.security.tls.privateKeySecretKey }}
+{{- end }}
+{{- end }}
 - name: CANCELLATION_POLL_SECONDS
   value: {{ $root.Values.kafka.cancellationPollSeconds | quote }}
 - name: S3_ENDPOINT

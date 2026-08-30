@@ -47,6 +47,9 @@ def test_gpu_qualification_executes_native_cuda_tests_in_container() -> None:
     assert "docker run --rm --gpus all" in script
     assert "-DDRONEGS_CUDA_ARCHITECTURES=native" in script
     assert "ctest --test-dir /tmp/dronegs-gpu --output-on-failure" in script
+    assert "compute-sanitizer" in script
+    assert "--tool memcheck" in script
+    assert "--error-exitcode 99" in script
     assert "smoke_runtime_images_on_gpu" in script
     assert "report_validation_context" in script
     assert "git -C" in script

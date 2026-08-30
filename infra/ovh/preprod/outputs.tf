@@ -86,6 +86,22 @@ output "backup_storage_secret_access_key" {
   sensitive   = true
 }
 
+output "stage_storage_access_key_ids" {
+  description = "Per-Stage S3 access keys; inject each entry only into its matching Secret."
+  value = {
+    for stage, credential in ovh_cloud_project_user_s3_credential.stage : stage => credential.access_key_id
+  }
+  sensitive = true
+}
+
+output "stage_storage_secret_access_keys" {
+  description = "Per-Stage S3 secrets; inject each entry only into its matching Secret."
+  value = {
+    for stage, credential in ovh_cloud_project_user_s3_credential.stage : stage => credential.secret_access_key
+  }
+  sensitive = true
+}
+
 output "terraform_state_bucket" {
   description = "Dedicated encrypted and versioned S3 backend bucket."
   value       = ovh_cloud_project_storage.terraform_state.name
