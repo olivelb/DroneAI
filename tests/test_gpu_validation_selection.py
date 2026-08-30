@@ -1,97 +1,47 @@
-from __future__ import annotations
+import pytest
 
 from scripts.ci.select_gpu_validation import gpu_validation_reason
 
 
-def test_cuda_version_change_requests_physical_gpu_validation() -> None:
-    assert (
-        gpu_validation_reason(
-            ["app1-colmap/dronegs/Dockerfile"],
-            [
-                "-FROM nvidia/cuda:12.9.2-devel-ubuntu24.04",
-                "+FROM nvidia/cuda:13.0.0-devel-ubuntu24.04",
-            ],
-        )
-        == "cuda-version-change"
-    )
+@pytest.mark.parametrize("path", [
+    "app1-colmap/dronegs/cuda/trainer.cu",
+    "app1-colmap/dronegs/include/dronegs/training.hpp",
+    "app1-colmap/dronegs/src/model.cpp",
+    "app1-colmap/dronegs/Dockerfile",
+    "app1-colmap/dronegs/CMakeLists.txt",
+    "app1-colmap/Dockerfile.base",
+    "app1-colmap/Dockerfile.local-gaussian",
+    "scripts/ci/validate_cuda_containers.sh",
+    "scripts/ci/select_gpu_validation.py",
+    "scripts/ci/cuda_change_scope.py",
+    "scripts/ci/changed_paths.py",
+    ".github/workflows/dronegs-gpu-qualification.yml",
+])
+def test_exercised_gpu_or_harness_change_requests_physical_validation(path: str) -> None:
+    assert gpu_validation_reason([path]) == "gpu-validation-input-change"
 
 
-def test_new_gpu_architecture_requests_physical_gpu_validation() -> None:
-    assert (
-        gpu_validation_reason(
-            ["app1-colmap/dronegs/CMakeLists.txt"],
-            [
-                '-        "75-real;80-real;86-real;89-real")',
-                '+        "75-real;80-real;86-real;89-real;120-real")',
-            ],
-        )
-        == "gpu-architecture-change"
-    )
+@pytest.mark.parametrize("path", [
+    "docs/PRODUCTION_READINESS.md",
+    "docs/dronegs/GPL_COMPONENTS.md",
+    "THIRD_PARTY_NOTICES.md",
+    "LICENSE",
+    "requirements/colmap.txt",
+    "requirements/local-gaussian.txt",
+    "setup_deps.sh",
+    "app1-colmap/colmap-local/src/mapper.cc",
+    "app4-dashboard/frontend/app/page.tsx",
+])
+def test_input_not_exercised_by_gpu_suite_does_not_request_it(path: str) -> None:
+    assert gpu_validation_reason([path]) is None
 
 
-def test_ctest_definition_or_source_change_requests_validation() -> None:
-    assert (
-        gpu_validation_reason(
-            ["app1-colmap/dronegs/CMakeLists.txt"],
-            [
-                "-    add_test(NAME dronegs_cuda_tests COMMAND dronegs_cuda_tests)",
-                "+    add_test(NAME dronegs_cuda_tests COMMAND dronegs_cuda_tests --strict)",
-            ],
-        )
-        == "ctest-definition-change"
-    )
-    assert gpu_validation_reason(["app1-colmap/dronegs/tests/test_training.cu"], []) == "ctest-source-change"
-
-
-def test_cuda_source_or_validation_harness_change_requests_validation() -> None:
-    assert gpu_validation_reason(["app1-colmap/dronegs/cuda/trainer.cu"], []) == "cuda-source-change"
-    assert gpu_validation_reason(["app1-colmap/dronegs/include/dronegs/training.hpp"], []) == "cuda-interface-change"
-    assert gpu_validation_reason(["scripts/ci/validate_cuda_containers.sh"], []) == "gpu-validation-harness-change"
-
-
-def test_unrelated_changes_do_not_request_physical_gpu_validation() -> None:
-    assert gpu_validation_reason(["docs/PRODUCTION_READINESS.md"], []) is None
-    assert (
-        gpu_validation_reason(
-            [
-                ".github/workflows/dronegs-gpu-qualification.yml",
-                "scripts/ci/select_gpu_validation.py",
-            ],
-            [],
-        )
-        is None
-    )
-    assert (
-        gpu_validation_reason(
-            ["app1-colmap/dronegs/Dockerfile"],
-            ["-RUN apt-get update", "+RUN apt-get update && apt-get upgrade -y"],
-        )
-        is None
-    )
-    assert (
-        gpu_validation_reason(
-            ["app1-colmap/dronegs/CMakeLists.txt"],
-            ["-project(DroneGS VERSION 0.5.0", "+project(DroneGS VERSION 0.6.0"],
-        )
-        is None
-    )
-    assert (
-        gpu_validation_reason(
-            ["app1-colmap/dronegs/CMakeLists.txt"],
-            ["-set(CMAKE_CXX_STANDARD 23)", "+set(CMAKE_CXX_STANDARD 26)"],
-        )
-        is None
-    )
-
-
-def test_reordering_same_cuda_version_or_architecture_is_ignored() -> None:
-    assert (
-        gpu_validation_reason(
-            ["app1-colmap/dronegs/Dockerfile"],
-            [
-                "-FROM nvidia/cuda:12.9.2-devel-ubuntu24.04 AS first",
-                "+FROM nvidia/cuda:12.9.2-devel-ubuntu24.04 AS renamed",
-            ],
-        )
-        is None
-    )
+def test_hosted_build_policy_and_unit_tests_do_not_consume_gpu_runner() -> None:
+    for path in (
+        ".github/workflows/cuda-containers.yml",
+        "scripts/ci/select_cuda_builds.py",
+        "tests/test_cuda_build_selection.py",
+        "tests/test_gpu_validation_selection.py",
+        "tests/test_ci_selected_gate.py",
+    ):
+        assert gpu_validation_reason([path]) is None

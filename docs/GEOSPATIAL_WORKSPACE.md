@@ -14,48 +14,51 @@ Job in qualified Kubernetes mode. That executor streams the raster, performs
 SAM3/YOLO inference and publishes immutable JSON/GeoJSON as the fifth stage
 artifact.
 
-The API below is a separate post-publication campaign facility. It retains the
-Kafka processing/IA worker implementation for rerunning alternative models or
-prompts against an existing COG. A stage-Job-only deployment must provision
-those compatibility workers before enabling these campaign controls; the
-mission monitor must not present their state as a sixth DAG stage.
+The API below is a separate post-publication campaign facility that uses
+the same bounded Stage Job execution and immutable-artifact rules as mission
+detection. It does not require or publish Kafka compute events.
 
-`POST /maps/{vol_id}/analyses` creates an immutable analysis identity and an
-outbox event in the same PostgreSQL transaction. The existing processing and
-GPU inference workers then execute the campaign:
+`POST /maps/{vol_id}/analyses` validates that Stage Jobs are enabled, creates
+the immutable `AIAnalysisRun` and its first `detection` stage attempt in one
+PostgreSQL transaction, and binds the attempt to the exact selected raster
+artifact. The tenant-aware scheduler applies the same global, organization,
+mission and resource-class budgets used by mission stages.
 
-1. the processing worker opens the mission COG and writes overlapping JPEG
-   inference tiles under
-   `missions/{vol_id}/analyses/{run_id}/tiles/`;
-2. every tile is journaled in `ai_analysis_tiles` before its deterministic
-   Kafka event is sent;
-3. the IA worker runs YOLO OBB or SAM 3 and preserves `analysis_run_id` in the
-   response event;
-4. the processing worker writes each tile response as a verified GeoJSON
-   object before marking the receipt complete;
-5. after every receipt is present, detections are deduplicated across overlap
-   areas and a verified final `detections.geojson` is published;
-6. when `persist_results=true`, the final deduplicated objects are also rebuilt
-   in the indexed `map_features` PostGIS table.
+The executor then:
 
-The `persist_results=false` option does not write detection entities to
-PostgreSQL. Only campaign state and recovery receipts remain in the database;
-vectors stay in tile-scoped and final GeoJSON objects. The map API selects only
-object-store tiles intersecting the requested WGS84 viewport.
+1. restores the checksum-verified raster workspace for the bound artifact;
+2. builds a deterministic row-major tile plan for YOLO OBB or SAM 3;
+3. runs monolithically within the safety limit or partitions the plan into
+   bounded indexed shards;
+4. publishes one verified receipt for every shard, including shards with zero
+   detections;
+5. lets a separately scheduled CPU finalizer verify the complete plan, receipt
+   identities, model provenance and aggregate bounds before global overlap
+   deduplication;
+6. publishes immutable JSON and WGS84 `detections.geojson` outputs and, when
+   `persist_results=true`, replaces that analysis run's `map_features` rows in
+   the same finalization transaction.
+
+With `persist_results=false`, only campaign state, the immutable result
+artifact and recovery receipts remain durable; no detection feature rows are
+inserted. The vector endpoint reads the final GeoJSON artifact and filters it
+to the requested WGS84 viewport.
 
 ### Recovery semantics
 
-- API requests use the transactional outbox.
-- Tile and result keys are deterministic and uploads are size/SHA-256 verified.
-- A unique `(analysis_run_id, tile_index)` receipt makes replay idempotent.
-- A stale run with all receipts is finalized again.
-- Missing stale tiles are republished in bounded batches.
-- A run that failed before journaling its first tile is re-tiled.
-- Final PostGIS publication is a replace-in-transaction operation, so a
-  finalizer crash cannot leave duplicate features.
-- Operators can explicitly retry failed runs and cancel active runs from the
-  dashboard. Cancelled runs are retained for audit and are not implicitly
-  restarted.
+- Stage attempts have deterministic idempotency keys and exact parent
+  artifacts; a successful attempt is never overwritten.
+- A retry is accepted only for a failed campaign and creates a new attempt
+  generation while retaining the failed evidence.
+- Indexed completion requires the persisted plan plus one non-contradictory
+  durable receipt per shard before finalization can run.
+- Object downloads and publications verify declared size and SHA-256.
+- Final PostGIS publication is replace-in-transaction, so a finalizer crash
+  cannot leave duplicate features.
+- Cancellation marks the campaign and active attempt terminal and deletes the
+  bounded Kubernetes Job; cancelled campaigns are retained for audit.
+- Reconciliation can recreate a missing reserved Job within its dispatch
+  bound, but it never replays all missions globally.
 
 ## Map and feature API
 

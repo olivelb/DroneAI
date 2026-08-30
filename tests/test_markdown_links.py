@@ -54,3 +54,62 @@ def test_markdown_inventory_handles_unstaged_deletion_without_hiding_broken_link
     assert check_markdown_links.find_broken_links(documents, tmp_path) == (
         check_markdown_links.BrokenLink(document=retained, target="retired.md"),
     )
+
+
+
+def test_mermaid_checker_rejects_raw_sequence_semicolon_and_unclosed_block(tmp_path):
+    document = tmp_path / "diagram.md"
+    document.write_text(
+        """```mermaid
+sequenceDiagram
+    participant API
+    opt selected
+        API->>API: persist; release
+```
+""",
+        encoding="utf-8",
+    )
+
+    issues = check_markdown_links.find_mermaid_issues((document,))
+
+    assert [issue.line for issue in issues] == [5, 4]
+    assert "semicolon" in issues[0].message
+    assert "unclosed" in issues[1].message
+
+
+def test_mermaid_checker_accepts_balanced_sequence_and_non_sequence_semicolon(tmp_path):
+    document = tmp_path / "diagram.md"
+    document.write_text(
+        """```mermaid
+sequenceDiagram
+    opt selected
+        API->>DB: persist, release
+    end
+```
+
+```mermaid
+flowchart LR
+    A["semicolon; allowed"] --> B
+```
+""",
+        encoding="utf-8",
+    )
+
+    assert check_markdown_links.find_mermaid_issues((document,)) == ()
+
+
+def test_mermaid_checker_rejects_unclosed_fence(tmp_path):
+    document = tmp_path / "diagram.md"
+    document.write_text(
+        """```mermaid
+flowchart LR
+A --> B
+""",
+        encoding="utf-8",
+    )
+
+    issues = check_markdown_links.find_mermaid_issues((document,))
+
+    assert len(issues) == 1
+    assert issues[0].line == 1
+    assert issues[0].message == "unclosed Mermaid fence"

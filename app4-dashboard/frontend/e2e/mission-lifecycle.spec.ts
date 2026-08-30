@@ -791,3 +791,20 @@ test("analysis retry and GeoJSON download keep the mission-scoped API contract",
   await expect.poll(() => actions).toEqual(["retry"]);
   await expect(page.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
 });
+
+test("dashboard serves browser security headers", async ({ request }) => {
+  for (const path of ["/", "/favicon.ico"]) {
+    const response = await request.get(path);
+    expect(response.ok()).toBeTruthy();
+    const headers = response.headers();
+    expect(headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+    expect(headers["content-security-policy"]).toContain("object-src 'none'");
+    expect(headers["content-security-policy-report-only"]).toContain("script-src 'self'");
+    expect(headers["content-security-policy-report-only"]).toContain("worker-src 'self' blob:");
+    expect(headers["x-content-type-options"]).toBe("nosniff");
+    expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+    expect(headers["permissions-policy"]).toContain("camera=()");
+    expect(headers["strict-transport-security"]).toBe("max-age=31536000");
+    expect(headers["x-powered-by"]).toBeUndefined();
+  }
+});

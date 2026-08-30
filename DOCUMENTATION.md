@@ -46,9 +46,11 @@ The qualified Kubernetes data path is:
 7. For aerial maps, detection streams bounded raster tiles through SAM 3 or
    YOLO, deduplicates them and publishes JSON plus WGS84 GeoJSON with exact
    model provenance. Facade missions stop before this aerial stage.
-8. Each successful artifact atomically marks its run succeeded and releases
+8. Gaussian-viewer preparation may run as an optional non-blocking branch
+   after filtering; its failure does not invalidate the scientific map product.
+9. Each successful artifact atomically marks its run succeeded and releases
    only direct dependants. The frontend polls the exact selected mission and
-   renders the five-stage graph, retries, products and durable lifecycle logs.
+   renders the selected DAG, attempts, products and durable lifecycle logs.
 
 The qualified control path is database-first. Cancellation marks the mission
 terminal and deletes its active Job; executor heartbeats, deadlines and the
@@ -58,9 +60,10 @@ successful ancestor.
 
 The current deployment uses only bounded Stage Jobs. Independent map analyses
 also use detection Jobs with exact raster-artifact bindings. All Kafka compute
-workers and global mission replay have been removed. The supported profiles
-are Fast v2, Normal v3, HQ v4 and facade DRONEGS_FACADE_HD_V3. Opacity SH remains
-available through training, publication and rendering.
+workers and global mission replay have been removed. The supported aerial
+profiles are `fast-v2`, `normal-v3` and `high-quality-v4`. Facade products use
+`FACADE_HD_V4` with the `DRONEGS_FACADE_HD_V3` training identity. Opacity SH
+remains available through training, publication and rendering.
 
 ## Deployment topology
 
@@ -92,8 +95,8 @@ Current responsibilities:
 - define the Kafka broker and topic names used across services
 - define the default COLMAP worker workspace used when a mission does not
   select an explicitly mounted work drive
-- define the map service completion order (`COLMAP`, `TILER`, `IA`); a COLMAP
-  status carrying `details.terminal=true` completes a facade mission
+- define the version-two stage DAG, its direct dependencies, canonical
+  artifact kinds and portable resource classes
 - define the current `modern` COLMAP preset and qualified quality profiles
 - define parameter metadata used by the frontend to render editable controls
 - provide helper functions that merge mission overrides with the selected pipeline preset
@@ -373,6 +376,7 @@ sequenceDiagram
     participant GT as Gaussian Training Job
     participant GF as Gaussian Filtering Job
     participant RA as Rasterization Job
+    participant GV as Gaussian Viewer Job
     participant AI as Detection Job
 
     UI->>API: POST /mission
@@ -381,15 +385,20 @@ sequenceDiagram
     R->>S3: download dataset
     R->>R: prepare + COLMAP reconstruction
     R->>S3: publish verified workspace manifest
-    R->>DB: artifact edge + succeeded; release training
+    R->>DB: artifact edge + succeeded, release training
     API->>K8S: create Gaussian training Job
-    GT->>S3: restore reconstruction; publish trained model
-    GT->>DB: artifact edge + succeeded; release filtering
+    GT->>S3: restore reconstruction, publish trained model
+    GT->>DB: artifact edge + succeeded, release filtering
     API->>K8S: create Gaussian filtering Job
-    GF->>S3: restore training; publish filtered model
-    GF->>DB: artifact edge + succeeded; release rasterization
+    GF->>S3: restore training, publish filtered model
+    GF->>DB: artifact edge + succeeded, release rasterization and optional viewer
+    opt Gaussian viewer selected
+        API->>K8S: create Gaussian viewer Job
+        GV->>S3: restore filtering, publish viewer bundle
+        GV->>DB: non-blocking artifact edge + terminal state
+    end
     API->>K8S: create rasterization Job
-    RA->>S3: restore filtering; publish RGB/height workspace
+    RA->>S3: restore filtering, publish RGB/height workspace
     RA->>DB: artifact edge + succeeded
     alt Aerial map with detection selected
         RA->>DB: release detection
@@ -420,6 +429,8 @@ stateDiagram-v2
     Reconstruction --> GaussianTraining: verified workspace
     GaussianTraining --> GaussianFiltering: verified trained model
     GaussianFiltering --> Rasterization: verified filtered model
+    GaussianFiltering --> GaussianViewer: optional non-blocking branch
+    GaussianViewer --> CompletedViewer: bundle published or branch terminal
     Rasterization --> Detection: aerial detection selected
     Rasterization --> Completed: facade or detection omitted
     Detection --> Completed: JSON + GeoJSON published
@@ -482,8 +493,6 @@ scientific path.
 
 #### Modern profile
 
-#### Modern profile
-
 Characteristics:
 
 - feature type: SIFT CUDA, 2,400 px and 4,096 features by default
@@ -504,16 +513,17 @@ Characteristics:
 
 This is the default and the main intended runtime path.
 
-Facade jobs use the separate generic `FACADE_HD_V1` coverage-first recipe,
-qualified on the Cahors reference campaign. Every unique input image is
-retained by default; `SIMPLE_RADIAL` keeps
-the solve compatible with Caspar, and the bounded graph uses 48 maximum / 16
-minimum spatial neighbours plus six temporal neighbours. GPS proposes pairs
-only; RTK, gravity, GCP fitting and CRS alignment remain disabled. The profile
-uses 4200 px extraction/undistortion, 16,384 SIFT features/matched features, a
-four-hour mapping budget, then 30,000 DroneGS iterations at up to 4096 px with
-a two-million-Gaussian cap. The worker, API and dashboard all read this recipe
-from `shared/facade_process.py`. Its held-out product gates are 18 dB PSNR and
+Facade jobs use the `FACADE_HD_V4` coverage-first product contract and
+the `DRONEGS_FACADE_HD_V3` training identity, qualified on the Cahors
+reference campaign. Every unique input image is retained by default;
+`SIMPLE_RADIAL` keeps the solve compatible with Caspar, and the bounded graph
+uses 48 maximum / 16 minimum spatial neighbours plus six temporal neighbours.
+GPS proposes pairs only; RTK, gravity, GCP fitting and CRS alignment remain
+disabled. The profile uses 4,200 px extraction/undistortion, 16,384 SIFT
+features/matched features, a four-hour mapping budget, then 30,000 DroneGS
+iterations at up to 4,096 px with an adaptive 5–6 M Gaussian envelope. The
+worker, API and dashboard all read this recipe from
+`shared/facade_process.py`. Its held-out product gates are 18 dB PSNR and
 0.25 SSIM; the final Cahors detail-free run reached 21.616 dB / 0.564 while
 reducing aggregate loss from 0.4272 to 0.1588 in 11,370 seconds.
 
@@ -607,7 +617,7 @@ Why the CRS sidecar exists:
 
 - the orthomosaic must keep the real projected CRS across reruns
 - re-inferring the CRS incorrectly would break the mapping from orthomosaic pixels back to real-world coordinates
-- app3 and app2 depend on correct orthomosaic CRS metadata for GPS label reconstruction
+- the bounded detection executor and map API depend on exact raster transform and CRS metadata
 
 If GPS extraction has already been done, the worker reuses the persisted CRS
 only when the requested policy and source identity still match. Changing the
@@ -1079,8 +1089,8 @@ The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_orth
 ### Orthomosaic coordinate transform diagram
 
 This map-only diagram shows the exact coordinate-space transitions used by the
-Gaussian Splatting orthomosaic builder and later reused by app2 and app3. The
-HD-facade coordinate path is the local-frame branch in the preceding diagram
+Gaussian Splatting orthomosaic builder and later reused by the bounded
+detection executor and map API. The HD-facade coordinate path is the local-frame branch in the preceding diagram
 and is specified fully in
 [`docs/FACADE_ORTHOPHOTO.md`](docs/FACADE_ORTHOPHOTO.md).
 
@@ -1204,12 +1214,15 @@ This is done for:
 
 ### Geographic coordinate lifting
 
-If the tile event carries an orthomosaic transform and CRS, app2 also computes:
+The detection Stage Job restores the exact raster workspace and requires its
+orthomosaic transform and CRS. For every tile result it computes:
 
-1. projected coordinates from global pixels using the affine tuple
-2. geographic longitude and latitude by transforming to `EPSG:4326`
+1. projected coordinates from global pixels using the affine tuple;
+2. geographic longitude and latitude by transforming to `EPSG:4326`.
 
-These optional values reduce work for app3, but app3 can recompute them if necessary.
+The finalizer verifies every shard receipt against the persisted plan, performs
+overlap deduplication and publishes the immutable WGS84 GeoJSON. There is no
+downstream processing worker that can reconstruct missing coordinate metadata.
 
 ## Failure modes and fallbacks
 
@@ -1243,63 +1256,50 @@ reject late publication. Failed stages retain durable error evidence.
 
 These are the assumptions that must remain true for the current implementation to behave correctly.
 
-1. Mission input must be a normalized S3 prefix below `datasets/`.
+1. Mission input must be a normalized organization-owned S3 dataset prefix.
 2. The chosen work drive must be advertised through `WORK_DRIVES` and mounted
    below `/work`; otherwise app1 falls back to `/work/system`.
-3. The orthomosaic must keep its projected CRS metadata intact.
-4. The Sim3 path applies rotation and scale to Gaussian means/axes in float32 while the translation is kept as a float64 GeoTIFF origin. The PCA path keeps the model in COLMAP frame and passes `R_geo` to the renderer to preserve SH coefficient consistency.
-5. Reruns require the sparse SfM model (`sparse/{cameras,images,points3D}.bin`) and optionally the alignment transform (PCA fallback is used if absent).
-6. Inside worker containers, COLMAP GPU indices are relative to visible devices, so a single visible GPU always means index `0`.
-7. Tile events must carry the original orthomosaic transform and CRS.
-8. App3 must set `total_tiles` before tile events begin returning.
-9. `tile_index` uniqueness is the process-local aggregator's completion key.
-10. The final deduplicated GeoJSON is written by app3; raster annotation is a
-    viewer overlay rather than a second full-size GeoTIFF.
-11. Durable mission artifacts must be uploaded before temporary worker
-    directories are removed.
-12. GCP used to claim accuracy must remain outside pose, intrinsic and scene
-    optimization; horizontal and vertical product checks are evaluated only
-    after the corresponding artefact exists.
+3. Every stage attempt is bound to exact parent artifact UUIDs and a verified
+   checksum-addressed workspace manifest.
+4. The orthomosaic must retain its affine transform, projected CRS and raster
+   identity through detection and map publication.
+5. The Sim3 path applies rotation and scale to Gaussian means/axes in float32
+   while translation is kept as a float64 GeoTIFF origin. The PCA path keeps
+   the model in COLMAP frame and passes `R_geo` to preserve SH consistency.
+6. Reruns require the sparse SfM model
+   (`sparse/{cameras,images,points3D}.bin`) and optionally the alignment
+   transform; PCA fallback is used only when that transform is absent.
+7. Inside worker containers, COLMAP GPU indices are relative to visible
+   devices, so a single visible GPU always uses index `0`.
+8. Indexed detection completion requires the full persisted shard plan and one
+   non-contradictory durable receipt per shard, including zero-detection shards.
+9. The final deduplicated GeoJSON is published by the detection Stage Job;
+   raster annotation is a viewer overlay, not a second full-size GeoTIFF.
+10. Durable mission artifacts must be uploaded and verified before disposable
+    Job workspaces are removed.
+11. GCP used to claim accuracy must remain outside pose, intrinsic and scene
+    optimization; horizontal and vertical product checks run only after the
+    corresponding artifact exists.
 
 ## Operator-oriented stage map
 
-These are the major progress stages you will typically see on the dashboard.
+The dashboard exposes durable stage attempts rather than the retired
+COLMAP/TILER/IA service snapshot. The blocking aerial path is:
 
-From app1:
+1. `reconstruction`
+2. `gaussian_training`
+3. `gaussian_filtering`
+4. `rasterization`
+5. `detection`
 
-- `PREPARING`
-- `DOWNLOADING_IMAGES`
-- `COPYING_IMAGES`
-- `GPS_EXTRACTION`
-- `FEATURES`
-- `MATCHING`
-- `CALIBRATING`
-- `MAPPING`
-- `UNDISTORT`
-- `ALIGNING`
-- `GAUSS` (3D Gaussian Splatting training and ortho rendering)
-- `ORTHO`
-- `UPLOADING`
-- `CLEANUP`
-- `DONE`
-- `ERROR`
-- `CANCELLED`
-
-From app3:
-
-- `TILING_START`
-- `TILING_IN_PROGRESS`
-- `TILING_DONE`
-- `AGGREGATING_DETECTIONS`
-- `FINAL_IMAGE`
-- `DONE`
-- `ERROR`
-
-From app2:
-
-- `DETECTING`
-- `DONE` through the final success message path
-- `ERROR`
+`gaussian_viewer` is an optional non-blocking branch after
+`gaussian_filtering`. Facade missions omit aerial `detection`. Each attempt
+uses `blocked`, `queued`, `running`, `succeeded`, `failed` or `cancelled`;
+`current_step`, progress, heartbeat and durable logs provide the
+executor-specific detail. Reconstruction steps include preparation, feature
+extraction, matching, mapping and alignment; Gaussian and detection Jobs report
+their own bounded progress without recreating a service-level completion
+protocol.
 
 ## Recommended reading order for developers
 
@@ -1334,16 +1334,19 @@ Use this document for:
 - bounded detection and finalization
 - failure handling and invariants
 
-The remaining distributed limitations are deliberate and explicit:
+The remaining distributed limitations are explicit:
 
-- inbox/outbox currently covers the API control plane, not every worker output
-- no transaction can span Postgres, S3, GPU work, and Kafka
-- no automated dead-letter replay policy
-- no multi-replica or broker-failover integration test in CI
+- no transaction spans PostgreSQL, S3 and GPU work; verified manifests,
+  idempotency keys, leases and reconciliation provide convergence instead;
+- dead outbox entries require an explicit audited administrator replay;
+- CI exercises PostgreSQL, Kafka, MinIO, API and control-worker composition,
+  but target-cluster CNI, ingress, broker rebalance and multi-replica failover
+  still require environment qualification;
+- portable NetworkPolicy cannot restrict HTTPS by DNS name, so external port
+  443 remains a documented destination-agnostic boundary.
 
-The local orchestrator is the deterministic, infrastructure-free execution
-path. The authenticated distributed stack now provides organization-scoped
-ownership, object prefixes and PostgreSQL RLS. Public self-service exposure
-still requires OIDC/invitations and a distinct platform-support role;
-high-availability claims still require broker-rebalance, replica and
-service-restart fault campaigns.
+The local orchestrator remains the deterministic infrastructure-free path. The
+distributed stack provides organization-scoped ownership, object prefixes,
+PostgreSQL RLS, durable invitations/recovery and an isolated platform-support
+realm. Public federation still requires a selected OIDC provider and claims
+contract.

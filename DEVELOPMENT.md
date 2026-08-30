@@ -37,6 +37,9 @@ make static
 make coverage
 ```
 
+Branch coverage must remain at or above 65%. The current audited suite reports
+70%; increase the floor only with measured margin and critical-path tests.
+
 `make static` compiles Python sources, applies the repository and focused
 worker lint rules, runs strict worker type checking, validates shell scripts
 and GitHub Actions workflows, and rejects broken local Markdown links.
@@ -93,28 +96,23 @@ smallest relevant stage. The COLMAP worker package additionally enforces modern
 Bugbear/simplification/upgrade/Ruff/async rules and a McCabe ceiling of 15
 across the complete worker package. The same modern rules cover `shared/`, with
 an initial McCabe ceiling of 18; scientific Unicode such as sigma remains
-allowed in operator-facing validation messages. A progressive service-core
-ratchet requires the complete app2 and app3 workers to pass those modern rules
-too. Stable contracts,
-runtime boundaries, artifact helpers, mission coordination and every COLMAP stage also
-pass strict mypy checks. The same strict contract covers all 26 modules at the root of
-`shared/`, including the SQLAlchemy, transactional inbox/outbox and S3
-boundaries. Those dynamic integrations expose explicit session and S3 client
-contracts while keeping runtime-generated ORM/client behavior behind the
-boundary. Imports are skipped so missing or changing third-party stubs cannot
-weaken either strict contract.
-The complete app2 and app3 workers now pass that strict mypy gate as well. This covers
-NumPy/tensor conversion, typed detection records, raster tiling, durable tile
-journaling, campaign finalization and recovery. Kafka producers, raster
-readers, progress callbacks and dynamic ORM/JSON boundaries expose explicit
-local contracts. The complete app2 worker now passes the same strict gate:
-`main.py` is limited to Kafka composition, `sam3_backend.py` owns lazy model
-loading and segmentation, and `tile_detection_workflow.py` owns download,
-geolocation, publication and attempt-scoped progress state.
-The app3 entrypoint is likewise limited to Kafka lifecycle composition;
-`processing_dispatcher.py` routes validated events to the current analysis
-workflow and rejects detections without an analysis run ID. Shared overlap
-deduplication lives in `processing_core.py`.
+allowed in operator-facing validation messages. The service-core ratchet covers the current bounded detection runtime;
+there is no app3 service or Kafka compute composition to maintain. Stable
+contracts, runtime boundaries, artifact helpers, mission coordination and
+every COLMAP stage pass strict mypy checks. The same strict contract covers
+all 70 tracked Python modules at the root of `shared/`, including SQLAlchemy,
+transactional control-plane inbox/outbox and S3 boundaries. Dynamic ORM and
+client behavior remains behind explicit session and storage protocols; imports
+are skipped so third-party stubs cannot silently weaken the local contracts.
+
+The complete `app2-ia` bounded worker core passes the modern Ruff and strict
+mypy gates. `stage_executor.py` owns the one-shot Stage Job boundary,
+`detection_stage.py` and `detection_shard_stage.py` own raster inference and
+receipt publication, `sam3_backend.py` owns lazy model loading and segmentation,
+and `detection_core.py` owns typed records and overlap deduplication. Indexed
+fan-out and CPU finalization reuse the persisted shard plan and verified
+receipts. No runtime source remains under the retired `app3-processing` path.
+
 The dashboard API strict-typing ratchet covers the package boundary,
 RBAC/session security, Kafka/outbox publication, transactional status inbox
 and WebSocket fan-out, Kubernetes status records and image preview helpers.
@@ -181,23 +179,39 @@ COLMAP dependencies, builds both final CUDA runtime images, emits their Syft
 CycloneDX and Trivy HIGH/CRITICAL evidence, and rejects fixable HIGH and CRITICAL
 findings. These hosted jobs validate Docker recipes and toolchains without
 claiming to exercise a GPU. Pull requests may start the lightweight CUDA
-selector when relevant files change, but do not run either costly build job
-unless the diff changes an authoritative `FROM nvidia/cuda:...` line or the
-pinned `COLMAP_TAG` in `setup_deps.sh`. Merges do not start a second workflow.
-A manual `workflow_dispatch` is the only override for explicitly requested
-rebuilds after other CUDA, COLMAP, Dockerfile or validation changes. The
-lightweight selector and always-present `CUDA validation gate` run on every PR
-so branch protection can enforce the decision without requiring a costly
-build. The
-`dronegs-gpu-qualification.yml` workflow runs native CUDA tests only after an
-explicit manual dispatch or a GPU-relevant pull-request change selected by
+selector on every PR. Any CUDA Dockerfile, native source/header, CMake,
+copied dependency/license, GPU lockfile, build harness or selection-policy
+change invalidates the build evidence. The shared path classifier
+`scripts/ci/cuda_change_scope.py` includes deletions and both sides of renames;
+it does not depend on version-line changes. Unrelated application and prose
+changes stay exempt. Merges do not start a second CUDA workflow; manual
+`workflow_dispatch` explicitly selects all CUDA work.
+
+Hosted CUDA build/SBOM selection covers the complete Docker build context.
+Physical GPU selection is narrower: native DroneGS sources/tests/CMake, the
+three CUDA Dockerfiles, the GPU harness and their selection contracts. Changes
+to copied licences, COLMAP dependency sources or Python lockfiles rebuild and
+scan the images but do not consume a GPU runner because the native GPU suite
+does not exercise them. Unknown events still select both paths.
+
+The always-present `CUDA validation gate` and `GPU qualification gate`
+require a successful selector and an explicit boolean decision. Selected jobs
+must succeed; `skipped` is valid only for an explicit `false` selection.
+The general `CI gate` enforces the same contract. Configure all three names
+as required checks after provisioning the GPU runner. Missing
+`DRONEGS_GPU_CI=true`, or a fork PR that cannot safely run on the self-hosted
+runner, fails a selected GPU gate rather than treating it as qualified.
+Do not enable untrusted fork code on the runner to work around this restriction.
+
+The `dronegs-gpu-qualification.yml` workflow runs native CUDA tests only after an
+explicit manual dispatch or a GPU-relevant PR/merge-queue change selected by
 `select_gpu_validation.py`; it has no scheduled trigger. It uses the same
 development container on a self-hosted runner, then verifies driver injection
 in each production CUDA runtime image. It requires a repository runner labelled
 `gpu` and `cuda` plus the repository variable `DRONEGS_GPU_CI=true`. The workflow
 writes the commit, runner and result to the GitHub job summary and retains the
 complete `gpu-validation.log` as a commit-scoped artifact for 30
-days, including failed attempts. This artifact is the release evidence; a
+days, including failed attempts. This artifact is native GPU qualification evidence; a
 successful local run against an uncommitted working tree is useful
 qualification but does not replace the post-commit workflow result.
 
@@ -227,7 +241,8 @@ the Python, frontend and Actions updates to keep review volume bounded. Actions
 using the Node.js 24 runtime require runner version 2.327.1 or newer; verify the
 self-hosted GPU runner before manually requesting physical-GPU qualification.
 
-The hosted CI builds the dashboard API, processing worker, CUDA COLMAP base and
+The hosted CI builds the dashboard API and bounded IA runtime, while the frontend
+runtime is built and scanned in its own job. The CUDA workflow builds the COLMAP base and
 local Gaussian runtime images, then generates a CycloneDX JSON SBOM with Syft
 and a HIGH/CRITICAL JSON vulnerability report with Trivy for each image.
 Fixable HIGH and CRITICAL findings fail the image job; unfixed findings remain visible
@@ -235,11 +250,24 @@ in the report without making a release impossible. The commit-scoped
 `supply-chain-<image>-<sha>` artifacts are retained for 30 days, including
 failed jobs. Syft and Trivy container tags and multi-architecture digests are
 pinned in `.github/workflows/ci.yml` and
-`.github/workflows/cuda-containers.yml`. The API and processing images pin the
+`.github/workflows/cuda-containers.yml`. The API and bounded IA images pin the
 multi-architecture `python:3.12-slim` index digest, and both frontend stages
 pin the `node:20-alpine` index digest, so a rebuild cannot silently select a
 different upstream filesystem. Refresh these digests only as explicit,
-reviewed dependency updates. The frontend runtime stage also removes npm/npx:
+reviewed dependency updates.
+
+The tag-triggered `promote-images.yml` workflow is the only cryptographic
+production promotion path. It accepts a GitHub-verified signed platform tag on
+`main` only after successful commit-scoped CI, CUDA container, physical GPU and
+CodeQL runs. Hosted builders push five GHCR images, reject fixable
+HIGH/CRITICAL findings, publish BuildKit and GitHub provenance, sign every
+digest through Sigstore OIDC and emit a keyless-signed manifest containing
+image, SBOM and qualification identities. Configure the
+`production-promotion` GitHub environment with required reviewers before
+creating a release tag. The local publisher remains a manual preproduction
+tool and does not provide cryptographic provenance.
+
+The frontend runtime stage also removes npm/npx:
 the production Next.js server only needs Node.js, so package-manager tooling
 and its unused dependency tree are not shipped in the deployable image.
 
@@ -381,3 +409,56 @@ dependencies over WSL UNC paths. No Windows repository clone is needed.
 it afterwards. Omit it when Playwright should manage its own WSL server.
 Adapter identity is attached to the report. The small synthetic cleanup fixture
 does not qualify large-scene LOD transitions or scientific image quality.
+
+## Source security and browser policy
+
+`.github/workflows/codeql.yml` scans Python and JavaScript/TypeScript with
+the security-extended query suite on PR candidates, merge-queue candidates and
+manual runs. Its selector runs only the language affected by the candidate;
+unknown source representations and malformed diffs run both. A normal merge
+does not repeat the scan after the merge-queue result.
+CodeQL results still require review in GitHub; a workflow file is not a passed
+scan or a configured merge-blocking alert policy.
+
+The Next.js configuration enforces `base-uri`, `object-src` and
+`frame-ancestors` restrictions, disables the powered-by header, and sets
+nosniff, referrer, permissions and HSTS headers. A stricter CSP is report-only:
+Next inline hydration requires nonce/hash integration before enforcing
+`script-src 'self'`. Violations currently appear in browser diagnostics;
+no collection endpoint is configured. Qualify S3 upload URLs, tiles, WebSocket
+connections and PlayCanvas workers on the target deployment before enforcing
+that policy. HSTS intentionally excludes includeSubDomains and preload.
+
+
+## Reverse-proxy client identity
+
+Helm passes `dashboardApi.proxy.trustedCidrs` to Uvicorn's
+`--forwarded-allow-ips`. Development trusts loopback only. Staging and
+production reject missing, placeholder, wildcard, internet-wide and
+whitespace-bearing values; set the exact direct Traefik/load-balancer peers or
+pod-network CIDRs after inspecting the live route. This controls whether
+`request.client.host` can use the normalized forwarded client address for the
+peer rate-limit bucket. It does not prove the LB strips spoofed forwarding
+headers: qualify that behavior with two clients and a forged-header negative
+test in the target cluster.
+
+
+## NetworkPolicy baseline
+
+Protected Helm overlays enable six L3/L4 policies. API, control worker,
+frontend and dynamically created Stage Job pods are selected by stable labels,
+default-denied in both directions (Stage Jobs have no ingress allowance), then
+given DNS and explicit service-port egress. Only the configured ingress
+namespace reaches HTTP ports, and only the monitoring namespace reaches
+metrics. Stage Jobs receive no Kafka allowance, no service-account token and no
+dedicated Kubernetes API allowance.
+
+Portable Kubernetes NetworkPolicy cannot restrict an external HTTPS service by
+DNS name, so port 443 remains destination-agnostic for S3/model downloads and
+the control worker's Kubernetes API. Because this shared port also permits
+HTTPS from Stage Jobs, the policy alone does not prove that the API endpoint is
+network-unreachable; the absent service-account token is the authorization
+boundary. This is a documented residual boundary.
+Qualify the policies with the target CNI, DNS, external S3/model endpoints,
+metrics scraper, ingress, Stage Jobs and Job creation before rollout. A CNI
+with audited FQDN rules can narrow HTTPS later.

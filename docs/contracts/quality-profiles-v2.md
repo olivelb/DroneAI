@@ -1,23 +1,25 @@
 # Quality profiles v2
 
-> Historical v2 contract. The resident-block HQ qualification candidate and
-> its promotion gate are defined in
+> [!CAUTION]
+> Historical contract tied to the v2 profile revision. It is retained only
+> to interpret stored missions and dated benchmark evidence. It is not an
+> operator configuration guide. The current profile contract is
 > [`quality-profiles-v3.md`](quality-profiles-v3.md).
 
-DroneAI exposes three active end-to-end profiles through
-`GET /mission/parameters`. `fast-v1` remains the reproducible preview envelope;
-the new Normal and High Quality profiles calculate Gaussian capacity from the
+At that revision, DroneAI exposed three end-to-end profiles through
+`GET /mission/parameters`. `fast-v1` was the reproducible preview envelope;
+the then-current Normal and High Quality profiles calculated Gaussian capacity from the
 scene footprint, requested GSD and detected device memory. The previous
-`normal-v1` and `high-quality-v1` definitions remain accepted only so a stored
+`normal-v1` and `high-quality-v1` definitions remained accepted only so a stored
 mission can be inspected or replayed without silently changing its recipe.
 
-| Active profile | Purpose | Image width | SIFT features | Iterations | Gaussian policy | Downscale |
+| Historical profile | Purpose | Image width | SIFT features | Iterations | Gaussian policy | Downscale |
 |---|---|---:|---:|---:|---|---:|
 | `fast-v1` | Coverage and pipeline preview | 1,600 px | 2,048 | 7,500 | fixed 1.5 M | 8 |
 | `normal-v2` | Routine production | 2,400 px | 4,096 | 15,000 | adaptive, 3 M floor, 8 M ceiling, 16 px target spacing | 4 |
 | `high-quality-v2` | Qualified high-detail production | 4,096 px | 16,384 | 30,000 | adaptive, 5 M floor, 12 M ceiling, 8 px target spacing | 1 |
 
-`normal-v2` is the API and Dashboard default. Fast is intentionally a preview;
+`normal-v2` was the API and Dashboard default for this revision. Fast is intentionally a preview;
 its successful completion does not qualify visual sharpness or survey quality.
 
 ## Adaptive capacity contract

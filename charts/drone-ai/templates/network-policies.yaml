@@ -1,0 +1,149 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: drone-ai-app-default-deny
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values: [dashboard-api, dashboard-control-worker, dashboard-frontend]
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: drone-ai-stage-default-deny
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: droneai-stage
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dashboard-frontend-allow
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: dashboard-frontend
+  policyTypes: [Ingress, Egress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressNamespace | quote }}
+    ports:
+    - { protocol: TCP, port: 3000 }
+  egress:
+  - ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to:
+    - podSelector:
+        matchLabels:
+          app: dashboard-api
+    ports:
+    - { protocol: TCP, port: 8000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dashboard-api-allow
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: dashboard-api
+  policyTypes: [Ingress, Egress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressNamespace | quote }}
+    - podSelector:
+        matchLabels:
+          app: dashboard-frontend
+    ports:
+    - { protocol: TCP, port: 8000 }
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace | quote }}
+    ports:
+    - { protocol: TCP, port: {{ .Values.dashboardApi.observability.metricsPort }} }
+  egress:
+  - ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  # Portable policies cannot select external DNS names. HTTPS is destination
+  # agnostic here; DB/Kafka/MinIO ports remain explicit.
+  - ports:
+    - { protocol: TCP, port: 443 }
+    - { protocol: TCP, port: 5432 }
+    - { protocol: TCP, port: 9092 }
+    - { protocol: TCP, port: 9000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dashboard-control-worker-allow
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: dashboard-control-worker
+  policyTypes: [Ingress, Egress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace | quote }}
+    ports:
+    - { protocol: TCP, port: {{ .Values.dashboardApi.observability.metricsPort }} }
+  egress:
+  - ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - ports:
+    - { protocol: TCP, port: 443 }
+    - { protocol: TCP, port: 5432 }
+    - { protocol: TCP, port: 9092 }
+    - { protocol: TCP, port: 9000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: drone-ai-stage-egress
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: droneai-stage
+  policyTypes: [Egress]
+  egress:
+  - ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - ports:
+    - { protocol: TCP, port: 443 }
+    - { protocol: TCP, port: 5432 }
+    - { protocol: TCP, port: 9000 }
+{{- end }}

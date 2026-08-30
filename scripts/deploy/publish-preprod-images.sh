@@ -5,9 +5,9 @@ usage() {
     cat <<'EOF'
 Usage: publish-preprod-images.sh REGISTRY/PROJECT GIT_SHA
 
-Build and push the CPU DroneAI service images with one immutable Git commit
-tag. The registry project must already exist and `docker login REGISTRY` must
-have succeeded.
+Build and push the CPU service images from a clean checkout with its full Git
+commit tag. Tags are labels, not immutable deployment references. The registry
+project must already exist and `docker login REGISTRY` must have succeeded.
 
 GPU images are excluded by default. Set INCLUDE_GPU_IMAGES=1 only for an
 explicit GPU deployment. The local drone-colmap-base:GIT_SHA is then
@@ -25,8 +25,14 @@ readonly REPO_ROOT
 
 [[ "$REGISTRY_PROJECT" == */* ]] \
     || { printf 'REGISTRY/PROJECT must include the private Harbor project.\n' >&2; exit 2; }
-[[ "$IMAGE_TAG" =~ ^[0-9a-f]{7,40}$ ]] \
-    || { printf 'GIT_SHA must be a 7-40 character lower-case hexadecimal commit.\n' >&2; exit 2; }
+[[ "$IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]] \
+    || { printf 'GIT_SHA must be a full 40-character lower-case hexadecimal commit.\n' >&2; exit 2; }
+cd "$REPO_ROOT"
+[[ "$(git rev-parse HEAD)" == "$IMAGE_TAG" ]] \
+    || { printf 'GIT_SHA must equal the checked-out HEAD.\n' >&2; exit 2; }
+[[ -z "$(git status --porcelain --untracked-files=all)" ]] \
+    || { printf 'Publication requires a clean tracked and untracked worktree.\n' >&2; exit 2; }
+
 command -v docker >/dev/null 2>&1 || { printf 'docker is required.\n' >&2; exit 1; }
 docker info >/dev/null 2>&1 || { printf 'The Docker daemon is unavailable.\n' >&2; exit 1; }
 
@@ -48,14 +54,15 @@ if [[ "$INCLUDE_GPU_IMAGES" == "1" ]]; then
         docker build \
             --network=host \
             --progress=plain \
+            --label "org.opencontainers.image.revision=$IMAGE_TAG" \
             --tag "$COLMAP_BASE_IMAGE" \
             --file app1-colmap/Dockerfile.base \
             .
-    elif docker image inspect "$COLMAP_BASE_IMAGE" >/dev/null 2>&1; then
+    elif [[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$COLMAP_BASE_IMAGE" 2>/dev/null)" == "$IMAGE_TAG" ]]; then
         printf 'Reusing local %s.\n' "$COLMAP_BASE_IMAGE"
     else
         printf '%s\n' \
-            "GPU publication refused: $COLMAP_BASE_IMAGE is missing." \
+            "GPU publication refused: $COLMAP_BASE_IMAGE is missing or has a mismatched revision label." \
             'Set REBUILD_COLMAP_BASE=1 only when the long CUDA/COLMAP build is explicitly required.' >&2
         exit 1
     fi
@@ -86,10 +93,13 @@ for image in "${images[@]}"; do
     docker build "${build_args[@]}" \
         --network=host \
         --progress=plain \
+        --label "org.opencontainers.image.revision=$IMAGE_TAG" \
         --tag "$reference" \
         --file "${DOCKERFILES[$image]}" \
         .
     docker push "$reference"
+    # Record the pushed content references for the deployment overlay.
+    docker image inspect --format '{{json .RepoDigests}}' "$reference"
 done
 
-printf 'Published %s service images with immutable tag %s.\n' "${#images[@]}" "$IMAGE_TAG"
+printf 'Published %s service images for commit %s; deploy the recorded OCI digests.\n' "${#images[@]}" "$IMAGE_TAG"
