@@ -86,7 +86,8 @@ CycloneDX SBOM, a complete HIGH/CRITICAL Trivy report, a fixable-CVE gate, a
 gate requiring an active owner/reason/expiry waiver for every unfixed
 HIGH/CRITICAL finding, a GitHub artifact attestation and a keyless Sigstore
 signature. Waivers live in `security/unfixed-cve-waivers.json`, are scoped to
-one image identity and fail promotion after expiry. The final
+one image, package and installed-version identity and fail promotion after
+expiry. The final
 keyless-signed manifest binds all image digests, SBOM/report hashes and
 qualification run identities to one 40-character commit and platform tag.
 

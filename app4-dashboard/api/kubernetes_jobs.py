@@ -214,6 +214,54 @@ def stage_job_name(run_id: str) -> str:
     return f"droneai-{prefix}-{digest}"
 
 
+STAGE_JOB_TEMPLATE_HASH_ANNOTATION = "droneai.io/job-template-sha256"
+
+
+def _job_identity(job: JsonObject) -> JsonObject:
+    metadata = cast(JsonObject, job.get("metadata") or {})
+    return {
+        "apiVersion": job.get("apiVersion"),
+        "kind": job.get("kind"),
+        "metadata": {
+            "name": metadata.get("name"),
+            "namespace": metadata.get("namespace"),
+            "labels": metadata.get("labels"),
+        },
+        "spec": job.get("spec"),
+    }
+
+
+def stage_job_template_sha256(job: JsonObject) -> str:
+    payload = json.dumps(_job_identity(job), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _contains_expected(actual: Any, expected: Any) -> bool:
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and all(
+            key in actual and _contains_expected(actual[key], value)
+            for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return (
+            isinstance(actual, list)
+            and len(actual) == len(expected)
+            and all(_contains_expected(left, right) for left, right in zip(actual, expected))
+        )
+    return bool(actual == expected)
+
+
+def stage_job_matches_expected(existing: Any, expected: JsonObject) -> bool:
+    if not isinstance(existing, dict):
+        return False
+    annotations = (existing.get("metadata") or {}).get("annotations") or {}
+    expected_hash = stage_job_template_sha256(expected)
+    return (
+        annotations.get(STAGE_JOB_TEMPLATE_HASH_ANNOTATION) == expected_hash
+        and _contains_expected(_job_identity(cast(JsonObject, existing)), _job_identity(expected))
+    )
+
+
 def build_stage_job(request: StageJobRequest, config: StageJobConfig) -> JsonObject:
     resources = RESOURCE_CLASSES[request.resource_class]
     requests = {
@@ -365,12 +413,16 @@ def build_stage_job(request: StageJobRequest, config: StageJobConfig) -> JsonObj
                 "parallelism": config.indexed.parallelism,
             }
         )
-    return {
+    job: JsonObject = {
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {"name": name, "namespace": config.namespace, "labels": labels},
         "spec": job_spec,
     }
+    cast(JsonObject, job["metadata"])["annotations"] = {
+        STAGE_JOB_TEMPLATE_HASH_ANNOTATION: stage_job_template_sha256(job)
+    }
+    return job
 
 
 class KubernetesApiError(RuntimeError):

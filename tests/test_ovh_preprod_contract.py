@@ -84,6 +84,27 @@ def test_managed_service_bootstrap_accounts_are_scoped_and_sensitive() -> None:
     assert 'output "object_storage_endpoint"' in outputs
     assert 'https://s3.${lower(var.object_storage_region)}.io.cloud.ovh.net' in outputs
     assert 'output "object_storage_virtual_host"' in outputs
+    assert 'stage_identities = toset([' in services
+    for stage in (
+        "reconstruction",
+        "gaussian_training",
+        "gaussian_filtering",
+        "rasterization",
+        "detection",
+        "gaussian_viewer",
+    ):
+        assert f'"{stage}"' in services
+    assert 'resource "ovh_cloud_project_user" "stage"' in services
+    assert 'resource "ovh_cloud_project_user_s3_credential" "stage"' in services
+    assert 'resource "ovh_cloud_project_user_s3_policy" "stage"' in services
+    stage_policy = services.split(
+        'resource "ovh_cloud_project_user_s3_policy" "stage"', 1
+    )[1]
+    assert 'Sid    = "ReadWriteStageAssetsWithoutDelete"' in stage_policy
+    assert '"s3:GetObject"' in stage_policy and '"s3:PutObject"' in stage_policy
+    assert '"s3:DeleteObject"' not in stage_policy
+    assert 'output "stage_storage_access_key_ids"' in outputs
+    assert 'output "stage_storage_secret_access_keys"' in outputs
 
 
 def test_preprod_overlay_requires_immutable_images_and_external_secrets() -> None:

@@ -9,6 +9,7 @@ import json
 import subprocess
 from collections.abc import Callable
 from typing import Any, Final
+from urllib.parse import unquote, urlsplit
 
 STAGE_SECRETS: Final = {
     "reconstruction": "drone-ai-stage-reconstruction-preprod",
@@ -70,17 +71,76 @@ def _decode_secret(name: str, payload: Any) -> dict[str, bytes]:
     return decoded
 
 
+def _database_identity(
+    secret_name: str,
+    key: str,
+    value: bytes,
+) -> tuple[str, str, int, str]:
+    try:
+        parsed = urlsplit(value.decode("utf-8"))
+        port = parsed.port or 5432
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ValueError(f"{secret_name}: {key} is not a valid PostgreSQL URL") from error
+    username = unquote(parsed.username or "")
+    password = unquote(parsed.password or "")
+    hostname = (parsed.hostname or "").lower()
+    database = unquote(parsed.path.lstrip("/"))
+    if (
+        parsed.scheme not in {"postgres", "postgresql"}
+        or not username
+        or not password
+        or not hostname
+        or not database
+    ):
+        raise ValueError(
+            f"{secret_name}: {key} must contain a complete PostgreSQL URL"
+        )
+    return username, hostname, port, database
+
+
 def _reject_reused_stage_identities(secrets: dict[str, dict[str, bytes]]) -> None:
-    for key in ("stage-database-url", "s3-access-key"):
-        owners: dict[bytes, str] = {}
-        for stage, secret_name in STAGE_SECRETS.items():
-            value = secrets[secret_name][key]
-            previous = owners.get(value)
-            if previous is not None:
-                raise ValueError(
-                    f"Stage identities {previous} and {stage} reuse {key}"
-                )
-            owners[value] = stage
+    storage = secrets["drone-ai-storage-preprod"]
+    operator = _database_identity(
+        "drone-ai-storage-preprod", "database-url", storage["database-url"]
+    )
+    api = _database_identity(
+        "drone-ai-storage-preprod", "api-database-url", storage["api-database-url"]
+    )
+    if operator[0] == api[0]:
+        raise ValueError("API and operator PostgreSQL identities must be distinct")
+    if operator[1:] != api[1:]:
+        raise ValueError("API and operator PostgreSQL URLs must target the same database")
+
+    database_owners = {operator[0]: "operator", api[0]: "api"}
+    s3_owners = {
+        storage["s3-access-key"]: "application",
+        secrets["drone-ai-backup-preprod"]["s3-access-key"]: "backup",
+    }
+    if len(s3_owners) != 2:
+        raise ValueError("Application and backup S3 identities must be distinct")
+
+    for stage, secret_name in STAGE_SECRETS.items():
+        stage_database = _database_identity(
+            secret_name,
+            "stage-database-url",
+            secrets[secret_name]["stage-database-url"],
+        )
+        if stage_database[1:] != operator[1:]:
+            raise ValueError(
+                f"Stage {stage} PostgreSQL URL must target the preproduction database"
+            )
+        previous_database_owner = database_owners.get(stage_database[0])
+        if previous_database_owner is not None:
+            raise ValueError(
+                f"Stage {stage} reuses PostgreSQL identity {previous_database_owner}"
+            )
+        database_owners[stage_database[0]] = stage
+
+        s3_access_key = secrets[secret_name]["s3-access-key"]
+        previous_s3_owner = s3_owners.get(s3_access_key)
+        if previous_s3_owner is not None:
+            raise ValueError(f"Stage {stage} reuses S3 identity {previous_s3_owner}")
+        s3_owners[s3_access_key] = stage
 
 
 def verify_preprod_secrets(

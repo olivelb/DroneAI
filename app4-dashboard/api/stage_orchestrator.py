@@ -61,6 +61,7 @@ from .kubernetes_jobs import (
     StageJobToleration,
     StageJobWorkVolume,
     build_stage_job,
+    stage_job_matches_expected,
     stage_job_name,
 )
 
@@ -365,7 +366,6 @@ def settings_from_environment() -> StageOrchestratorSettings:
     plain_environment = tuple(
         (name, os.environ[name])
         for name in (
-            "KAFKA_BROKER",
             "S3_ENDPOINT",
             "S3_BUCKET",
             "S3_REGION",
@@ -377,7 +377,7 @@ def settings_from_environment() -> StageOrchestratorSettings:
     if enabled and protected_environment:
         plain_environment += (("DRONEAI_STAGE_RLS_REQUIRED", "true"),)
     secret_environment = _storage_secret_environment(storage_secret)
-    detection_environment = (
+    detection_environment: tuple[tuple[str, str], ...] = (
         ("HF_HOME", "/cache/huggingface"),
         ("HF_HUB_CACHE", "/cache/huggingface/hub"),
         ("TRANSFORMERS_CACHE", "/cache/huggingface/transformers"),
@@ -393,6 +393,13 @@ def settings_from_environment() -> StageOrchestratorSettings:
             ),
         ),
     )
+    sam3_artifact_sha256 = os.getenv(
+        "DRONEAI_STAGE_SAM3_ARTIFACT_SHA256", ""
+    ).strip()
+    if sam3_artifact_sha256:
+        detection_environment += (
+            ("SAM3_MODEL_SHA256", sam3_artifact_sha256),
+        )
     detection_secret_environment = (
         SecretEnvironment(
             "HF_TOKEN",
@@ -1015,6 +1022,11 @@ def _create_job(client: KubernetesJobClient, reserved: ReservedStageJob) -> None
     except KubernetesApiError as error:
         if error.status_code != 409:
             raise
+        existing = client.get(reserved.job_name)
+        if not stage_job_matches_expected(existing, job):
+            raise RuntimeError(
+                "Existing Kubernetes Job conflicts with the reserved Stage Job manifest"
+            ) from error
 
 
 def dispatch_reserved_jobs(

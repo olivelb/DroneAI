@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
-      image: nvidia/cuda:12.9.2-devel-ubuntu24.04
+      image: nvidia/cuda:12.9.2-devel-ubuntu24.04@sha256:16656a1ef115bca9e1f820c6349876f1486d2b3c9a0e615773799fe402960dc5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install native build dependencies
@@ -131,7 +131,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgis/postgis:16-3.4
+        image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
         env:
           POSTGRES_USER: droneai
           POSTGRES_PASSWORD: droneai-ci
@@ -480,6 +480,8 @@ jobs:
           --set-string dashboardFrontend.image="drone-dashboard-frontend@${CI_OCI_DIGEST}"
           --set-string dashboardApi.proxy.trustedCidrs="10.0.0.0/8"
           --set-string kafka.broker="kafka.ci.internal:9093"
+          --set-string networkPolicy.externalHttpsCidrs[0]="198.51.100.0/24"
+          --set-string stageJobs.sam3.artifactSha256="${CI_OCI_DIGEST#sha256:}"
           --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.gaussian_training.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
@@ -494,6 +496,9 @@ jobs:
           --set-string dashboardApi.image="drone-dashboard-api@${CI_OCI_DIGEST}"
           --set-string dashboardFrontend.image="drone-dashboard-frontend@${CI_OCI_DIGEST}"
           --set-string dashboardApi.proxy.trustedCidrs="10.0.0.0/8"
+          --set-string stageJobs.sam3.artifactSha256="${CI_OCI_DIGEST#sha256:}"
+          --set-string networkPolicy.externalHttpsCidrs[0]="198.51.100.0/24"
+          --set-string kafka.broker="kafka-preprod.ci.internal:9093"
           --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.gaussian_training.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"

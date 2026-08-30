@@ -8,11 +8,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+VulnerabilityFinding = tuple[str, str, str]
 
-def _unfixed_findings(report: Any) -> set[str]:
+
+def _unfixed_findings(report: Any) -> set[VulnerabilityFinding]:
     if not isinstance(report, dict):
         raise ValueError("Trivy report must be a JSON object")
-    findings: set[str] = set()
+    findings: set[VulnerabilityFinding] = set()
     results = report.get("Results") or []
     if not isinstance(results, list):
         raise ValueError("Trivy report Results must be an array")
@@ -31,7 +33,15 @@ def _unfixed_findings(report: Any) -> set[str]:
                 and severity in {"HIGH", "CRITICAL"}
                 and not fixed_version
             ):
-                findings.add(identifier)
+                package = vulnerability.get("PkgName")
+                installed_version = vulnerability.get("InstalledVersion")
+                if not isinstance(package, str) or not package.strip():
+                    raise ValueError(f"{identifier}: Trivy finding is missing PkgName")
+                if not isinstance(installed_version, str) or not installed_version.strip():
+                    raise ValueError(
+                        f"{identifier}: Trivy finding is missing InstalledVersion"
+                    )
+                findings.add((identifier, package, installed_version))
     return findings
 
 
@@ -41,16 +51,16 @@ def verify_unfixed_cves(
     *,
     image: str,
     today: dt.date,
-) -> set[str]:
+) -> set[VulnerabilityFinding]:
     if not isinstance(waiver_document, dict) or not isinstance(
         waiver_document.get("waivers"), list
     ):
         raise ValueError("Waiver document must contain a waivers array")
-    active: set[tuple[str, str]] = set()
+    active: set[tuple[str, str, str, str]] = set()
     for index, waiver in enumerate(waiver_document["waivers"]):
         if not isinstance(waiver, dict):
             raise ValueError(f"waivers[{index}] must be an object")
-        required = {"id", "image", "owner", "reason", "expires"}
+        required = {"id", "image", "package", "installed_version", "owner", "reason", "expires"}
         if set(waiver) != required:
             raise ValueError(f"waivers[{index}] must contain exactly {sorted(required)}")
         if not all(isinstance(waiver[key], str) and waiver[key].strip() for key in required):
@@ -63,13 +73,19 @@ def verify_unfixed_cves(
             raise ValueError(f"waivers[{index}].expires must be YYYY-MM-DD") from error
         if expires < today:
             raise ValueError(f"waiver {waiver['id']} for {waiver['image']} expired on {expires}")
-        key = (waiver["id"], waiver["image"])
+        key = (waiver["id"], waiver["image"], waiver["package"], waiver["installed_version"])
         if key in active:
-            raise ValueError(f"duplicate waiver for {waiver['id']} and {waiver['image']}")
+            raise ValueError(
+                f"duplicate waiver for {waiver['id']} {waiver['package']}@{waiver['installed_version']} and {waiver['image']}"
+            )
         active.add(key)
 
     findings = _unfixed_findings(report)
-    unwaived = sorted(identifier for identifier in findings if (identifier, image) not in active)
+    unwaived = sorted(
+        f"{identifier} {package}@{version}"
+        for identifier, package, version in findings
+        if (identifier, image, package, version) not in active
+    )
     if unwaived:
         raise ValueError(
             f"{image}: unwaived unfixed HIGH/CRITICAL vulnerabilities: {', '.join(unwaived)}"

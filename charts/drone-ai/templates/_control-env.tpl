@@ -52,6 +52,8 @@ dashboardApi.controlWorker.enabled is true.
   value: {{ .Values.stageJobs.sam3.repository | quote }}
 - name: DRONEAI_STAGE_SAM3_MODEL_REVISION
   value: {{ .Values.stageJobs.sam3.revision | quote }}
+- name: DRONEAI_STAGE_SAM3_ARTIFACT_SHA256
+  value: {{ .Values.stageJobs.sam3.artifactSha256 | quote }}
 - name: DRONEAI_STAGE_STORAGE_SECRET_NAME
   value: {{ include "drone-ai.storageSecretName" . | quote }}
 - name: DRONEAI_STAGE_DATABASE_URL_SECRET_KEY

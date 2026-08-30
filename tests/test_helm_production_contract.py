@@ -271,7 +271,10 @@ def test_helm_requires_digests_even_if_protected_image_guard_is_disabled() -> No
     for overlay in ("values-production.example.yaml", "values-ovh-preprod.example.yaml"):
         args = ["helm", "template", "test", str(CHART), "-f", str(CHART / overlay),
                 "--set", "global.requireImmutableImages=false",
-                "--set-string", "dashboardApi.proxy.trustedCidrs=10.0.0.0/8"]
+                "--set-string", "dashboardApi.proxy.trustedCidrs=10.0.0.0/8",
+                "--set-string", f"stageJobs.sam3.artifactSha256={'a' * 64}"]
+        if overlay == "values-production.example.yaml":
+            args += ["--set-string", "networkPolicy.externalHttpsCidrs[0]=198.51.100.0/24"]
         if overlay == "values-production.example.yaml":
             args += ["--set-string", "kafka.broker=kafka.test:9093"]
         for stage in ("reconstruction", "gaussian_training", "gaussian_filtering",
@@ -312,6 +315,8 @@ def test_protected_api_requires_narrow_trusted_proxy_cidrs() -> None:
         "--set-string", f"dashboardApi.image=api@{digest}",
         "--set-string", f"dashboardFrontend.image=frontend@{digest}",
         "--set-string", "kafka.broker=kafka.test:9093",
+        "--set-string", f"stageJobs.sam3.artifactSha256={'b' * 64}",
+        "--set-string", "networkPolicy.externalHttpsCidrs[0]=198.51.100.0/24",
     ]
     for stage in ("reconstruction", "gaussian_training", "gaussian_filtering",
                   "rasterization", "detection", "gaussian_viewer"):
@@ -357,6 +362,8 @@ def test_protected_network_policies_default_deny_and_allow_only_required_ports()
         "--set-string", f"dashboardFrontend.image=frontend@{digest}",
         "--set-string", "dashboardApi.proxy.trustedCidrs=10.0.0.0/8",
         "--set-string", "kafka.broker=kafka.test:9093",
+        "--set-string", f"stageJobs.sam3.artifactSha256={'c' * 64}",
+        "--set-string", "networkPolicy.externalHttpsCidrs[0]=198.51.100.0/24",
     ]
     for stage in ("reconstruction", "gaussian_training", "gaussian_filtering",
                   "rasterization", "detection", "gaussian_viewer"):
@@ -381,9 +388,20 @@ def test_protected_network_policies_default_deny_and_allow_only_required_ports()
         for rule in policies["drone-ai-stage-egress"]["spec"]["egress"]
         for port in rule["ports"]
     }
-    assert stage_ports == {53, 443, 5432, 9000}
+    assert stage_ports == {53, 443, 5432}
     assert 9092 not in stage_ports
     api_ingress = policies["dashboard-api-allow"]["spec"]["ingress"]
+    assert all(
+        rule.get("to", [{}])[0].get("ipBlock", {}).get("cidr") != "0.0.0.0/0"
+        for policy in policies.values()
+        for rule in policy["spec"].get("egress", [])
+    )
+    api_ports = {
+        port["port"]
+        for rule in policies["dashboard-api-allow"]["spec"]["egress"]
+        for port in rule["ports"]
+    }
+    assert 9093 in api_ports
     assert api_ingress[0]["from"][0]["namespaceSelector"]["matchLabels"][
         "kubernetes.io/metadata.name"
     ] == "traefik"

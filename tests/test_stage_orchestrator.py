@@ -567,6 +567,18 @@ class FakeJobClient:
         return {}
 
 
+class ConflictJobClient(FakeJobClient):
+    def __init__(self, existing):
+        super().__init__()
+        self.existing = existing
+
+    def create(self, job):
+        raise orchestrator.KubernetesApiError(409, "already exists")
+
+    def get(self, name):
+        return self.existing
+
+
 def test_reconciliation_tracks_heartbeat_and_fails_artifactless_success(
     stage_sessions,
     monkeypatch,
@@ -1278,3 +1290,56 @@ def test_detection_job_alone_receives_model_configuration_and_hf_token():
     )
     assert finalizer.config.secret_environment == ()
     assert finalizer.config.tolerations == ()
+
+
+def test_job_create_conflict_accepts_only_the_same_reserved_manifest(stage_sessions):
+    run_id = "1" * 32
+    _add_run(stage_sessions, "mission-conflict", "owner-a", run_id)
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(),
+            datetime.now(UTC),
+        )[0]
+    expected = orchestrator.build_stage_job(reserved.request, reserved.config)
+    expected["spec"]["suspend"] = False
+    expected["metadata"]["labels"]["batch.kubernetes.io/controller-uid"] = "server-default"
+
+    orchestrator._create_job(ConflictJobClient(expected), reserved)
+
+
+def test_job_create_conflict_rejects_an_existing_job_with_different_spec(
+    stage_sessions,
+):
+    run_id = "2" * 32
+    _add_run(stage_sessions, "mission-conflict-mismatch", "owner-a", run_id)
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(),
+            datetime.now(UTC),
+        )[0]
+    existing = orchestrator.build_stage_job(reserved.request, reserved.config)
+    existing["spec"]["template"]["spec"]["containers"][0]["image"] = (
+        "registry.example/untrusted@sha256:" + "f" * 64
+    )
+
+    with pytest.raises(RuntimeError, match="conflicts with the reserved"):
+        orchestrator._create_job(ConflictJobClient(existing), reserved)
+
+
+def test_job_create_conflict_rejects_a_forged_annotation(stage_sessions):
+    run_id = "3" * 32
+    _add_run(stage_sessions, "mission-conflict-forged", "owner-a", run_id)
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(),
+            datetime.now(UTC),
+        )[0]
+    expected = orchestrator.build_stage_job(reserved.request, reserved.config)
+    existing = json.loads(json.dumps(expected))
+    existing["spec"]["backoffLimit"] = 6
+
+    with pytest.raises(RuntimeError, match="conflicts with the reserved"):
+        orchestrator._create_job(ConflictJobClient(existing), reserved)

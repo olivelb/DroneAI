@@ -6,8 +6,10 @@ state and image-to-detection conversion behind one reusable boundary.
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
+import re
 from typing import Any, cast
 
 import cv2
@@ -40,6 +42,7 @@ class Sam3Backend:
         *,
         model_id: str | None = None,
         model_revision: str | None = None,
+        model_sha256: str | None = None,
         default_prompt: str | None = None,
         mask_threshold: float | None = None,
         logger: logging.Logger | None = None,
@@ -53,6 +56,20 @@ class Sam3Backend:
             SAM3_DEFAULT_MODEL_REVISION,
         )
         self.model_revision = immutable_revision(configured_revision)
+        self.expected_artifact_sha256 = (
+            model_sha256
+            if model_sha256 is not None
+            else os.getenv("SAM3_MODEL_SHA256", "")
+        ).strip().lower()
+        if self.expected_artifact_sha256 and not re.fullmatch(
+            r"[0-9a-f]{64}", self.expected_artifact_sha256
+        ):
+            raise ValueError("SAM3_MODEL_SHA256 must be a 64-character SHA-256")
+        if os.getenv("DRONEAI_ENV", "development").strip().lower() in {
+            "staging",
+            "production",
+        } and not self.expected_artifact_sha256:
+            raise RuntimeError("SAM3_MODEL_SHA256 is required in protected environments")
         self.default_prompt: str = (
             default_prompt
             or os.getenv(
@@ -101,6 +118,13 @@ class Sam3Backend:
             revision=self.model_revision,
         )
         self._artifact_sha256 = sha256_file(artifact_path)
+        if self.expected_artifact_sha256 and not hmac.compare_digest(
+            self._artifact_sha256,
+            self.expected_artifact_sha256,
+        ):
+            raise RuntimeError(
+                "Downloaded SAM3 artifact does not match SAM3_MODEL_SHA256"
+            )
         self._model = Sam3Model.from_pretrained(
             self.model_id,
             revision=self.model_revision,

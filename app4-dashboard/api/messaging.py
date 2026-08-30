@@ -7,15 +7,13 @@ from typing import Any, Protocol, cast
 
 from confluent_kafka import Producer
 
-from shared.config import (
-    KAFKA_BROKER,
-    TOPIC_CONTROL,
-)
+from shared.config import TOPIC_CONTROL
 from shared.event_contracts import (
     deterministic_tenant_event_id,
     make_event,
     tenant_correlation_id,
 )
+from shared.kafka_connection import kafka_connection_settings
 from shared.kafka_partitioning import tenant_mission_key
 from shared.kafka_reliability import publish_json
 from shared.tenancy import LEGACY_ORGANIZATION_ID, validate_organization_id
@@ -44,7 +42,7 @@ def get_producer() -> ProducerProtocol:
     if _producer is None:
         with _producer_lock:
             if _producer is None:
-                _producer = Producer({"bootstrap.servers": KAFKA_BROKER})
+                _producer = Producer(kafka_connection_settings().client_config())
     return _producer
 
 

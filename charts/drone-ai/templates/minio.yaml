@@ -196,7 +196,7 @@ spec:
       {{- end }}
       containers:
       - name: mc
-        image: minio/mc:latest
+        image: {{ .Values.minio.mcImage }}
         imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         command:
         - /bin/sh
