@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from shared import storage
 from shared.artifact_manifest import (
@@ -138,7 +138,7 @@ def _upload_workspace_manifest(
         verified = storage.upload_verified_file(manifest_path, manifest_key)
         if verified["sha256"] != expected_digest:
             raise OSError("Workspace manifest changed before S3 publication")
-        return verified
+        return cast(dict[str, int | str], verified)
     finally:
         manifest_path.unlink(missing_ok=True)
 
@@ -422,7 +422,9 @@ def restore_workspace_measured(
         if not selected_files:
             raise ValueError("Workspace selection matched no files")
     seen: set[str] = set()
-    restored_bytes = 0
+    logical_bytes = 0
+    downloaded_bytes = 0
+    reused_bytes = 0
     for entry in sorted(selected_files, key=lambda item: item.path):
         if cancellation_check is not None:
             cancellation_check()
@@ -433,7 +435,14 @@ def restore_workspace_measured(
         seen.add(relative_raw)
         local_path = destination_root / relative
         local_path.parent.mkdir(parents=True, exist_ok=True)
+        logical_bytes += expected_size
+        if local_path.is_file() and local_path.stat().st_size == expected_size:
+            actual_digest = str(sha256_file(local_path))
+            if actual_digest == expected_digest:
+                reused_bytes += expected_size
+                continue
         storage.download_file(entry.blob.key, local_path)
+        downloaded_bytes += expected_size
         actual_size = local_path.stat().st_size
         actual_digest = str(sha256_file(local_path))
         if actual_size != expected_size or actual_digest != expected_digest:
@@ -442,12 +451,11 @@ def restore_workspace_measured(
                 f"Workspace file verification failed for {relative_raw}: "
                 f"size={actual_size}/{expected_size}, sha256={actual_digest}/{expected_digest}"
             )
-        restored_bytes += actual_size
     return RestoredWorkspace(
-        size_bytes=restored_bytes,
+        size_bytes=logical_bytes,
         file_count=len(seen),
-        downloaded_bytes=manifest_bytes_total + restored_bytes,
-        reused_bytes=0,
+        downloaded_bytes=manifest_bytes_total + downloaded_bytes,
+        reused_bytes=reused_bytes,
         download_seconds=round(time.monotonic() - started_at, 6),
         manifest_size_bytes=manifest_bytes_total,
         manifest_schema_version=manifest.schema_version,
