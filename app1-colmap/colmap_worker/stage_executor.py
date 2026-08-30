@@ -40,7 +40,9 @@ from .stage_state import load_reconstruction_state
 def _workspace_path(run_id: str) -> Path:
     root = Path(os.getenv("DRONEAI_STAGE_WORK_ROOT", "/work")).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    return safe_child_path(root, run_id, field_name="stage run id")
+    return cast(
+        Path, safe_child_path(root, run_id, field_name="stage run id")
+    )
 
 
 def _restore_input_workspace(
