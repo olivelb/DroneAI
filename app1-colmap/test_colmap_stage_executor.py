@@ -1,4 +1,5 @@
 import importlib
+from dataclasses import dataclass
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -275,20 +276,41 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
     monkeypatch.setattr(stage_executor.runtime, "cancellation_state", cancellation)
     calls = []
     _mock_workspace_transfer(monkeypatch, calls)
-    state = (SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+
+    @dataclass(frozen=True)
+    class Preparation:
+        params: dict
+
+    state = (
+        Preparation(params={"gs_host_image_cache_mib": "0", "gs_iterations": "30000"}),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
     monkeypatch.setattr(stage_executor, "load_reconstruction_state", lambda _path: state)
     checkpoint = tmp_path / "trainer" / "final.ply"
     checkpoint.parent.mkdir()
     checkpoint.write_bytes(b"unfiltered")
     config = SimpleNamespace(dronegs_profile_id="normal-v3")
-    monkeypatch.setattr(
-        gaussian_stage,
-        "prepare_gaussian_product_run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            config=config,
-            trainer_backend="dronegs",
-        ),
-    )
+    config.dronegs_host_image_cache_mib = 32_768
+
+    def prepare(preparation, *_args, **_kwargs):
+        calls.append("prepare")
+        assert preparation.params == {
+            "gs_host_image_cache_mib": "32768",
+            "gs_iterations": "30000",
+        }
+        return SimpleNamespace(config=config, trainer_backend="dronegs")
+
+    monkeypatch.setattr(gaussian_stage, "prepare_gaussian_product_run", prepare)
+
+    def write_state(_workspace, preparation, _reconstruction, _alignment):
+        calls.append("state")
+        assert preparation.params == {
+            "gs_host_image_cache_mib": "32768",
+            "gs_iterations": "30000",
+        }
+
+    monkeypatch.setattr(stage_executor, "write_reconstruction_state", write_state)
     phase = SimpleNamespace(
         backend_name="dronegs",
         trainer_binary_sha256="d" * 64,
@@ -316,11 +338,20 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
     monkeypatch.setattr(phase_artifacts, "write_training_artifact", write_artifact)
 
     result = stage_executor.run_gaussian_training_stage(
-        _context("gaussian_training", input_kind="reconstruction_workspace"),
+        _context(
+            "gaussian_training",
+            input_kind="reconstruction_workspace",
+            parameters={
+                "colmap_params": {
+                    "gs_host_image_cache_mib": "32768",
+                    "gs_iterations": "1",
+                }
+            },
+        ),
         FakeControl(),
     )
 
-    assert calls == ["restore", "write", "publish"]
+    assert calls == ["restore", "prepare", "state", "write", "publish"]
     assert result.kind == "gaussian_training_workspace"
     assert result.metadata["gaussian_count"] == 1_500_000
     assert result.provenance["trainer_binary_sha256"] == "d" * 64

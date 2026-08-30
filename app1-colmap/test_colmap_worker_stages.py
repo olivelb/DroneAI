@@ -386,6 +386,11 @@ class TestColmapStageHelpers(unittest.TestCase):
                         "missions/vol-recipe/gaussian-checkpoints",
                     ),
                 ),
+                patch.object(
+                    gaussian_stage,
+                    "plan_host_image_cache",
+                    return_value=types.SimpleNamespace(limit_mib=32_768),
+                ) as host_cache_plan,
                 patch.object(gaussian_stage, "_checkpoint_callback", return_value=lambda *_: None),
             ):
                 product_run = gaussian_stage.prepare_gaussian_product_run(
@@ -403,6 +408,8 @@ class TestColmapStageHelpers(unittest.TestCase):
             self.assertEqual(config.resolution, 0.025)
             self.assertEqual(config.cap_max, DRONEGS_PRODUCTION_PROFILE_V1.cap_max)
             self.assertEqual(config.checkpoint_dir, checkpoint_dir)
+            self.assertEqual(config.dronegs_host_image_cache_mib, 32_768)
+            host_cache_plan.assert_called_once_with(0)
             self.assertEqual(
                 config.training_workspace_root,
                 os.path.join(training_root, "vol-recipe"),
