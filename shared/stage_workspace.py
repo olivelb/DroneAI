@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any
 
 from shared import storage
 from shared.artifact_manifest import (
@@ -138,7 +138,7 @@ def _upload_workspace_manifest(
         verified = storage.upload_verified_file(manifest_path, manifest_key)
         if verified["sha256"] != expected_digest:
             raise OSError("Workspace manifest changed before S3 publication")
-        return cast(dict[str, int | str], verified)
+        return verified
     finally:
         manifest_path.unlink(missing_ok=True)
 
