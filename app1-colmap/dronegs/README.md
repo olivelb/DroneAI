@@ -568,13 +568,25 @@ scientific or reconstruction parameters remain unchanged.
 
 For node-local recovery after an interrupted or failed `gaussian_training`
 Job, a retry may set `local_workspace_reuse_run_id` to the bounded identifier
-of an earlier workspace on the same configured work drive. Every file declared
-by the immutable upstream artifact is checked by size and SHA-256. Matching
-files are reused in place, while missing or changed files are restored from
-object storage before training starts. The borrowed workspace is preserved on
-success or failure, and the resulting stage provenance records its source run
-identifier. This recovery parameter is operational only and does not alter the
-immutable reconstruction artifact or scientific recipe.
+of an earlier failed Kubernetes attempt on the same configured work drive.
+The database authorizes reuse only when organization, mission, stage,
+scientific recipe and upstream artifact identifiers match and the source
+attempt is older. The executor then holds a non-blocking exclusive lease for
+the full retry, removes every path outside the authoritative artifact
+manifest, and checks each declared file by size and SHA-256. Matching files are
+reused in place, while missing or changed files are restored from object
+storage before training starts. The borrowed workspace is preserved on
+success or failure, and the resulting provenance records the complete source
+lineage, exact-inventory pruning and lease. This recovery parameter is
+operational only and does not alter the immutable reconstruction artifact or
+scientific recipe.
+
+When a crash leaves both `training.ckpt` and `training.ckpt.tmp`, the
+orchestrator prefers the primary file only when its DroneGS header is readable,
+otherwise it passes the temporary file to the native checksum, dataset and
+configuration validators without renaming either file. A checkpoint at
+exactly the requested iteration count is evaluated and exported without an
+additional optimizer step. A checkpoint beyond that count remains rejected.
 
 Checkpoint cadence is governed by the existing `--checkpoint-every` option.
 The performance comparator may vary it together with cache and prefetch
