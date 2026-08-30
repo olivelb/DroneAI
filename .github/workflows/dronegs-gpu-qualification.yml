@@ -2,6 +2,7 @@ name: DroneGS GPU qualification
 
 on:
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -26,7 +27,7 @@ jobs:
           fetch-depth: 0
       - name: Detect explicit dispatch or GPU-relevant change
         id: selection
-        run: python3 scripts/ci/select_gpu_validation.py
+        run: python3 -m scripts.ci.select_gpu_validation
       - name: Report selection
         run: echo "GPU qualification=${{ steps.selection.outputs.gpu_required }} reason=${{ steps.selection.outputs.reason }}"
 
@@ -64,3 +65,18 @@ jobs:
           path: gpu-validation.log
           if-no-files-found: warn
           retention-days: 30
+
+  gpu-gate:
+    name: GPU qualification gate
+    needs: [changes, cuda-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require physical GPU evidence when selected
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: >-
+          python3 -m scripts.ci.check_selected_jobs --selector changes
+          --job cuda-tests=gpu_required

@@ -9,9 +9,10 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 
 {{/*
 Full application image reference: registry/image:tag or registry/image@sha256.
-Production overlays accept only a Git commit tag or an OCI digest while local
-development retains the latest fallback. A digest embedded in the image value
-is already an immutable full repository reference and therefore ignores tag.
+Protected environments require an OCI digest, regardless of the optional
+local immutable-tag guard. Local development retains the latest fallback.
+A digest embedded in the image value ignores tag. imageRegistry is prepended
+in both cases; leave it empty when supplying full registry references.
 */}}
 {{- define "drone-ai.image" -}}
 {{- $registry := .root.Values.global.imageRegistry -}}
@@ -22,8 +23,12 @@ is already an immutable full repository reference and therefore ignores tag.
 {{- if and $hasDigestMarker (not $hasDigest) -}}
 {{- fail (printf "application image %q contains a malformed OCI SHA-256 digest" .image) -}}
 {{- end -}}
+{{- $protected := has .root.Values.dashboardApi.environment (list "staging" "production") -}}
+{{- if and $protected (not $hasDigest) -}}
+{{- fail (printf "application image %q must use an OCI digest in staging and production" .image) -}}
+{{- end -}}
 {{- if and .root.Values.global.requireImmutableImages (not $hasDigest) (not $hasGitSha) -}}
-{{- fail (printf "production application image %q must use a 7-40 character lower-case Git SHA tag or @sha256 digest" .image) -}}
+{{- fail (printf "application image %q must use a 7-40 character lower-case Git SHA tag or @sha256 digest" .image) -}}
 {{- end -}}
 {{- $repository := printf "%s%s" $registry .image -}}
 {{- if $hasDigest -}}

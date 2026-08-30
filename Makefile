@@ -146,6 +146,7 @@ scripts-check:
 
 docs-check:
 	$(PYTHON) tools/check_markdown_links.py
+	$(PYTHON) tools/check_documentation_contracts.py
 	$(PYTHON) tools/production_qualification.py check-tree docs/benchmarks
 	$(PYTHON) tools/export_event_schemas.py --check
 	$(PYTHON) tools/check_platform_version.py

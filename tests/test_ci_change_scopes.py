@@ -146,10 +146,22 @@ def test_ci_control_change_runs_all_lightweight_scopes_without_cuda() -> None:
     )
 
 
+def test_selector_unit_test_change_only_runs_python_suite() -> None:
+    assert _enabled("tests/test_ci_change_scopes.py") == {"python"}
+    assert _enabled("tests/test_ci_event_selection.py") == {"python"}
+
+
+def test_promotion_contract_changes_only_run_python_contracts() -> None:
+    assert _enabled(".github/workflows/promote-images.yml") == {"python"}
+    assert _enabled("tools/promotion_manifest.py") == {"python", "duplication"}
+    assert _enabled("tests/test_promotion_manifest.py") == {"python"}
+
+
 def test_python_baseline_is_312_across_tooling_and_ci() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert project["project"]["requires-python"] == ">=3.12,<3.13"
     assert project["tool"]["ruff"]["target-version"] == "py312"
+    assert project["tool"]["coverage"]["report"]["fail_under"] >= 65
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     bootstrap = (ROOT / "scripts" / "bootstrap-dev.sh").read_text(encoding="utf-8")
@@ -172,3 +184,17 @@ def test_every_database_model_and_migration_verifier_runs_real_migration_gate():
     assert paths
     for path in paths:
         assert "migrations" in _enabled(path), path
+
+
+def test_unknown_path_runs_every_scope_instead_of_silently_skipping() -> None:
+    assert _enabled("new-runtime/unknown.contract") == set(SCOPES)
+
+
+def test_license_change_runs_docs_without_all_general_ci() -> None:
+    assert _enabled("LICENSE", "THIRD_PARTY_NOTICES.md") == {"docs"}
+
+
+def test_merge_queue_is_classified_instead_of_unconditionally_running_everything() -> None:
+    source = (ROOT / "scripts/ci/select_ci_jobs.py").read_text()
+    assert 'event_name in {"pull_request", "merge_group"}' in source
+    assert "event_changed_paths" in source

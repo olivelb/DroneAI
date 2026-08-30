@@ -37,13 +37,14 @@ more uniform seed because DroneGS performs the later densification. See the
 | Mode | Intended use | Entry point |
 |---|---|---|
 | Test services | HTTP/control-plane dependencies without compute | `compose.test.yaml` |
-| Distributed dashboard | Single-node K3s deployment managed by Helm; local Jobs use a Git-SHA tag, protected environments require OCI digests | `STAGE_JOBS_IMAGE_TAG=<git-sha> ./deploy.sh distributed` |
+| Distributed dashboard | Single-node K3s deployment managed by Helm; local Jobs use a Git-SHA tag, protected environments require OCI digests | `./deploy.sh distributed --stage-jobs <7-to-40-character-git-revision>` |
 | Local runner | Infrastructure-free scientific diagnostics | `./tools/run_local_pipeline.sh` |
 
 DroneAI uses S3-compatible object storage for datasets and mission artifacts,
 Kafka for pipeline events, and PostgreSQL/PostGIS for mission and vector data.
 
-The qualified Kubernetes execution path is an append-only five-stage DAG. Each
+The qualified Kubernetes execution path contains five blocking scientific
+stages plus an optional non-blocking Gaussian-viewer branch. Each selected
 stage runs in its own bounded Job and publishes one checksum-addressed workspace
 before its dependant can start:
 
@@ -60,8 +61,10 @@ flowchart LR
     S3 --> GT["2 · Gaussian training Job"]
     GT --> GF["3 · Gaussian filtering Job"]
     GF --> RA["4 · Ortho / DEM rasterization Job"]
+    GF --> GV["Optional · Gaussian viewer bundle Job"]
     RA --> AI["5 · SAM3 or YOLO detection Job"]
     AI --> S3
+    GV --> S3
     DB --> API
     API --> UI
 ```
@@ -129,17 +132,14 @@ cd DroneAI
 ./deploy.sh distributed --stage-jobs "$(git rev-parse --short=7 HEAD)"
 ```
 
-For the distributed K3s deployment:
-
-```bash
-./deploy.sh distributed --stage-jobs "$(git rev-parse --short=7 HEAD)"
-```
-
 The deployment command prepares pinned external sources, builds the services,
 starts the required infrastructure and prints the dashboard URL. `HF_TOKEN` is
 optional for YOLO and required only for gated Hugging Face models such as SAM 3.
-The immutable Git SHA is required. Compose is retained only for isolated
-integration tests; it no longer launches compute workers.
+The local command requires a 7–40 character commit-derived image tag so every
+service and Stage Job uses the same locally built revision. Registry tags are
+not immutable provenance; staging and production accept only OCI digest
+references. Compose is retained only for isolated integration tests and does
+not launch compute workers.
 
 ## Documentation
 

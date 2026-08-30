@@ -559,6 +559,13 @@ from 256 through 65536 MiB remain available for controlled experiments. The
 native cache clamps this ceiling to the decoded RGB8 working set, so automatic
 mode does not preallocate the full budget.
 
+A `gaussian_training` retry may override only this operational cache ceiling
+through `colmap_params.gs_host_image_cache_mib`. The executor merges that value
+into the restored runtime copy, resolves `0` to an explicit host-aware limit,
+and persists the effective limit in the derived training workspace for every
+downstream Gaussian phase. The immutable reconstruction artifact and all
+scientific or reconstruction parameters remain unchanged.
+
 Checkpoint cadence is governed by the existing `--checkpoint-every` option.
 The performance comparator may vary it together with cache and prefetch
 tuning, but still requires the same trainer binary, scientific parameters and
