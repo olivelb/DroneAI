@@ -855,7 +855,7 @@ def reserve_ready_jobs(
             MissionStageRun.created_at,
             MissionStageRun.run_id,
         )
-        .with_for_update(skip_locked=True)
+        .with_for_update(of=MissionStageRun, skip_locked=True)
     )
     candidate_rows: list[tuple[MissionStageRun, Mission]] = []
     offset = 0
