@@ -295,8 +295,8 @@ void validate_options(const Options& options) {
         options.resize_factor != 4 && options.resize_factor != 8) {
         throw std::invalid_argument("--resize-factor must be 1, 2, 4, or 8");
     }
-    if (options.max_width == 0 || options.max_width > 4096) {
-        throw std::invalid_argument("--max-width must be between 1 and 4096");
+    if (options.max_width == 0 || options.max_width > 8192) {
+        throw std::invalid_argument("--max-width must be between 1 and 8192");
     }
     if (options.tile_mode != 1 && options.tile_mode != 2 && options.tile_mode != 4) {
         throw std::invalid_argument("--tile-mode must be 1, 2, or 4");

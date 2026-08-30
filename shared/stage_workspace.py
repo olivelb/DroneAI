@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -68,6 +69,8 @@ class RestoredWorkspace:
     download_seconds: float
     manifest_size_bytes: int
     manifest_schema_version: int = ARTIFACT_MANIFEST_VERSION
+    pruned_file_count: int = 0
+    pruned_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,8 @@ def workspace_transfer_provenance(
             "reused_bytes": restored.reused_bytes,
             "manifest_bytes": restored.manifest_size_bytes,
             "duration_seconds": restored.download_seconds,
+            "pruned_files": restored.pruned_file_count,
+            "pruned_bytes": restored.pruned_bytes,
         }
     return transfer
 
@@ -392,6 +397,40 @@ def resolve_workspace_files(
     return dict(resolved)
 
 
+def _prune_unmanaged_workspace_files(
+    root: Path,
+    managed_paths: set[str],
+) -> tuple[int, int]:
+    """Remove everything outside an authoritative materialized manifest."""
+
+    pruned_file_count = 0
+    pruned_bytes = 0
+    for directory, directory_names, file_names in os.walk(
+        root, topdown=False, followlinks=False
+    ):
+        current = Path(directory)
+        for name in file_names:
+            path = current / name
+            relative = path.relative_to(root).as_posix()
+            if relative in managed_paths and not path.is_symlink():
+                continue
+            stat = path.lstat()
+            pruned_bytes += stat.st_size
+            path.unlink()
+            pruned_file_count += 1
+        for name in directory_names:
+            path = current / name
+            if path.is_symlink():
+                stat = path.lstat()
+                pruned_bytes += stat.st_size
+                path.unlink()
+                pruned_file_count += 1
+            else:
+                with suppress(OSError):
+                    path.rmdir()
+    return pruned_file_count, pruned_bytes
+
+
 def restore_workspace_measured(
     manifest_key: str,
     destination: str | Path,
@@ -400,6 +439,7 @@ def restore_workspace_measured(
     cancellation_check: Callable[[], None] | None = None,
     selection: WorkspaceSelection | None = None,
     expected_organization_id: str,
+    exact_inventory: bool = False,
 ) -> RestoredWorkspace:
     started_at = time.monotonic()
     destination_root = Path(destination).resolve()
@@ -421,8 +461,18 @@ def restore_workspace_measured(
             raise ValueError(f"Workspace selection paths are missing: {sorted(missing_paths)}")
         if not selected_files:
             raise ValueError("Workspace selection matched no files")
+    if exact_inventory and selection is not None:
+        raise ValueError("Exact workspace inventory cannot use a partial selection")
+    managed_paths = {entry.path for entry in selected_files}
+    pruned_file_count, pruned_bytes = (0, 0)
+    if exact_inventory:
+        pruned_file_count, pruned_bytes = _prune_unmanaged_workspace_files(
+            destination_root, managed_paths
+        )
     seen: set[str] = set()
-    restored_bytes = 0
+    logical_bytes = 0
+    downloaded_bytes = 0
+    reused_bytes = 0
     for entry in sorted(selected_files, key=lambda item: item.path):
         if cancellation_check is not None:
             cancellation_check()
@@ -433,7 +483,14 @@ def restore_workspace_measured(
         seen.add(relative_raw)
         local_path = destination_root / relative
         local_path.parent.mkdir(parents=True, exist_ok=True)
+        logical_bytes += expected_size
+        if local_path.is_file() and local_path.stat().st_size == expected_size:
+            actual_digest = str(sha256_file(local_path))
+            if actual_digest == expected_digest:
+                reused_bytes += expected_size
+                continue
         storage.download_file(entry.blob.key, local_path)
+        downloaded_bytes += expected_size
         actual_size = local_path.stat().st_size
         actual_digest = str(sha256_file(local_path))
         if actual_size != expected_size or actual_digest != expected_digest:
@@ -442,13 +499,14 @@ def restore_workspace_measured(
                 f"Workspace file verification failed for {relative_raw}: "
                 f"size={actual_size}/{expected_size}, sha256={actual_digest}/{expected_digest}"
             )
-        restored_bytes += actual_size
     return RestoredWorkspace(
-        size_bytes=restored_bytes,
+        size_bytes=logical_bytes,
         file_count=len(seen),
-        downloaded_bytes=manifest_bytes_total + restored_bytes,
-        reused_bytes=0,
+        downloaded_bytes=manifest_bytes_total + downloaded_bytes,
+        reused_bytes=reused_bytes,
         download_seconds=round(time.monotonic() - started_at, 6),
         manifest_size_bytes=manifest_bytes_total,
         manifest_schema_version=manifest.schema_version,
+        pruned_file_count=pruned_file_count,
+        pruned_bytes=pruned_bytes,
     )

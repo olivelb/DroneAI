@@ -122,6 +122,32 @@ RESIDENT_DECODE_WORKERS = 4
 HIGH_RESIDENT_PREFETCH_DEPTH = 8
 HIGH_RESIDENT_DECODE_WORKERS = 8
 HIGH_RESIDENT_IMAGE_WIDTH = 4_096
+DRONEGS_CHECKPOINT_MAGIC = b"DRONEGS-CKPT-V1\0"
+
+
+def _resume_checkpoint_path(cell_output: str | Path) -> str | None:
+    """Choose a recovery candidate without replacing forensic checkpoint files."""
+
+    output = Path(cell_output)
+    if (output / "trainer_run.json").is_file():
+        return None
+    candidates = (
+        output / "training.ckpt",
+        output / "training.ckpt.tmp",
+    )
+    existing = [candidate for candidate in candidates if candidate.is_file()]
+    for candidate in existing:
+        try:
+            with candidate.open("rb") as handle:
+                if handle.read(len(DRONEGS_CHECKPOINT_MAGIC)) == (
+                    DRONEGS_CHECKPOINT_MAGIC
+                ):
+                    return str(candidate)
+        except OSError:
+            continue
+    # Never silently start a fresh run over recovery state. The native loader
+    # will produce the authoritative checksum/format error for this candidate.
+    return str(existing[0]) if existing else None
 
 
 def resident_image_cache_tuning(
@@ -1160,12 +1186,7 @@ def train_and_merge_gaussian_models(
             config.report_fn,
         )
 
-        checkpoint_path = os.path.join(cell_output, "training.ckpt")
-        resume_from = (
-            checkpoint_path
-            if os.path.isfile(checkpoint_path) and not os.path.isfile(os.path.join(cell_output, "trainer_run.json"))
-            else None
-        )
+        resume_from = _resume_checkpoint_path(cell_output)
         if resume_from:
             _report(
                 config.vol_id,

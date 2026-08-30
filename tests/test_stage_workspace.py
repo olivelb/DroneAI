@@ -141,6 +141,69 @@ def test_measured_restore_reports_logical_and_transferred_bytes(tmp_path, fake_s
     assert provenance["manifest_schema_version"] == 3
 
 
+def test_restore_reuses_verified_files_and_repairs_changed_files(tmp_path, fake_s3):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "stable.bin").write_bytes(b"stable")
+    (source / "changed.bin").write_bytes(b"authoritative")
+    published = stage_workspace.publish_workspace(
+        source,
+        "organizations/acme/missions/incremental-restore",
+        organization_id="acme",
+        default_role="stage-workspace",
+    )
+
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    (destination / "stable.bin").write_bytes(b"stable")
+    (destination / "changed.bin").write_bytes(b"stale-runtime")
+
+    restored = stage_workspace.restore_workspace_measured(
+        published.manifest_key,
+        destination,
+        published.checksum_sha256,
+        expected_organization_id="acme",
+    )
+
+    assert restored.size_bytes == len(b"stableauthoritative")
+    assert restored.reused_bytes == len(b"stable")
+    assert restored.downloaded_bytes == (
+        restored.manifest_size_bytes + len(b"authoritative")
+    )
+    assert (destination / "stable.bin").read_bytes() == b"stable"
+    assert (destination / "changed.bin").read_bytes() == b"authoritative"
+
+
+def test_exact_restore_prunes_unmanaged_files_and_symlinks(tmp_path, fake_s3):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "managed.bin").write_bytes(b"authoritative")
+    published = stage_workspace.publish_workspace(
+        source,
+        "organizations/acme/missions/exact-restore",
+        organization_id="acme",
+        default_role="stage-workspace",
+    )
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    (destination / "managed.bin").write_bytes(b"authoritative")
+    (destination / "rogue.bin").write_bytes(b"untrusted")
+    (destination / "rogue-link").symlink_to(tmp_path / "outside")
+
+    restored = stage_workspace.restore_workspace_measured(
+        published.manifest_key,
+        destination,
+        published.checksum_sha256,
+        expected_organization_id="acme",
+        exact_inventory=True,
+    )
+
+    assert restored.reused_bytes == len(b"authoritative")
+    assert restored.pruned_file_count == 2
+    assert restored.pruned_bytes >= len(b"untrusted")
+    assert sorted(path.name for path in destination.iterdir()) == ["managed.bin"]
+
+
 def test_v3_writer_publishes_only_incremental_files_and_restores_overlay(
     tmp_path,
     fake_s3,

@@ -1644,10 +1644,10 @@ TrainingMetrics train_ordered_mrnf(
             options.resume_from,
             checkpoint_dataset_fingerprint,
             checkpoint_configuration_fingerprint);
-        if (checkpoint_progress.completed_iteration >=
+        if (checkpoint_progress.completed_iteration >
             options.iterations) {
             throw std::runtime_error(
-                "checkpoint already reached the requested iteration count");
+                "checkpoint exceeds the requested iteration count");
         }
         metrics.completed_iterations =
             checkpoint_progress.completed_iteration;

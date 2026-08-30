@@ -11,7 +11,11 @@ from colmap_worker import stage_executor
 from colmap_worker.stages import gaussian as gaussian_stage
 from gaussian_ortho import phase_artifacts
 from gaussian_ortho import raster_product
-from shared.stage_execution import StageArtifactInput, StageExecutionContext
+from shared.stage_execution import (
+    LocalWorkspaceReuseAuthorization,
+    StageArtifactInput,
+    StageExecutionContext,
+)
 from shared.stage_workspace import PublishedWorkspace, RestoredWorkspace
 
 
@@ -45,6 +49,7 @@ def _context(
     *,
     input_kind=None,
     parameters=None,
+    reuse_authorization=None,
 ) -> StageExecutionContext:
     inputs = (
         (
@@ -76,6 +81,7 @@ def _context(
             "pipeline": "modern",
         },
         inputs=inputs,
+        local_workspace_reuse_authorization=reuse_authorization,
     )
 
 
@@ -193,6 +199,118 @@ def test_reconstruction_adapter_cleans_workspace_after_failure(tmp_path, monkeyp
     assert not (tmp_path / "work" / ("a" * 32)).exists()
 
 
+def test_gaussian_retry_preserves_bounded_local_recovery_workspace(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "work"
+    source_run_id = "b" * 32
+    source = root / source_run_id
+    source.mkdir(parents=True)
+    marker = source / "reconstruction.bin"
+    marker.write_bytes(b"verified")
+    monkeypatch.setenv("DRONEAI_STAGE_WORK_ROOT", str(root))
+    cancellation = FakeCancellationState()
+    monkeypatch.setattr(stage_executor.runtime, "cancellation_state", cancellation)
+    context = _context(
+        stage="gaussian_training",
+        input_kind="reconstruction_workspace",
+        parameters={"local_workspace_reuse_run_id": source_run_id},
+        reuse_authorization=LocalWorkspaceReuseAuthorization(
+            source_run_id=source_run_id,
+            source_attempt=2,
+            mission_id=1,
+            organization_id="acme-survey",
+            vol_id="quarry-001",
+            workspace_prefix="organizations/acme-survey/missions/quarry-001",
+            upstream_artifact_ids=("artifact-1",),
+        ),
+    )
+
+    workspace, authorization, lock_descriptor = (
+        stage_executor._prepare_gaussian_training_workspace(context)
+    )
+    stage_executor._cleanup_stage_workspace(
+        workspace,
+        preserve=True,
+        lock_descriptor=lock_descriptor,
+    )
+
+    assert workspace == source
+    assert authorization is not None
+    assert authorization.source_run_id == source_run_id
+    assert marker.read_bytes() == b"verified"
+    assert cancellation.started == [("acme-survey", "quarry-001", 3)]
+    assert cancellation.cleared == 1
+
+
+def test_gaussian_retry_rejects_unbounded_local_recovery_workspace(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DRONEAI_STAGE_WORK_ROOT", str(tmp_path / "work"))
+    context = _context(
+        stage="gaussian_training",
+        input_kind="reconstruction_workspace",
+        parameters={"local_workspace_reuse_run_id": "../outside"},
+        reuse_authorization=LocalWorkspaceReuseAuthorization(
+            source_run_id="../outside",
+            source_attempt=2,
+            mission_id=1,
+            organization_id="acme-survey",
+            vol_id="quarry-001",
+            workspace_prefix="organizations/acme-survey/missions/quarry-001",
+            upstream_artifact_ids=("artifact-1",),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="unsupported path characters"):
+        stage_executor._prepare_gaussian_training_workspace(context)
+
+
+def test_gaussian_retry_exclusively_locks_recovery_workspace(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "work"
+    source_run_id = "b" * 32
+    (root / source_run_id).mkdir(parents=True)
+    monkeypatch.setenv("DRONEAI_STAGE_WORK_ROOT", str(root))
+    monkeypatch.setattr(
+        stage_executor.runtime,
+        "cancellation_state",
+        FakeCancellationState(),
+    )
+    authorization = LocalWorkspaceReuseAuthorization(
+        source_run_id=source_run_id,
+        source_attempt=2,
+        mission_id=1,
+        organization_id="acme-survey",
+        vol_id="quarry-001",
+        workspace_prefix="organizations/acme-survey/missions/quarry-001",
+        upstream_artifact_ids=("artifact-1",),
+    )
+    context = _context(
+        stage="gaussian_training",
+        input_kind="reconstruction_workspace",
+        parameters={"local_workspace_reuse_run_id": source_run_id},
+        reuse_authorization=authorization,
+    )
+
+    workspace, _authorization, lock_descriptor = (
+        stage_executor._prepare_gaussian_training_workspace(context)
+    )
+    try:
+        with pytest.raises(RuntimeError, match="already leased"):
+            stage_executor._prepare_gaussian_training_workspace(context)
+    finally:
+        stage_executor._cleanup_stage_workspace(
+            workspace,
+            preserve=True,
+            lock_descriptor=lock_descriptor,
+        )
+
+
 def test_v3_workspace_publication_preserves_exact_parent_and_roles(
     tmp_path,
     monkeypatch,
@@ -239,11 +357,13 @@ def _mock_workspace_transfer(monkeypatch, calls):
         checksum,
         cancellation_check,
         expected_organization_id,
+        exact_inventory=False,
     ):
         calls.append("restore")
         assert manifest_key == "upstream/manifest.json"
         assert checksum == "b" * 64
         assert expected_organization_id == "acme-survey"
+        assert exact_inventory is False
         cancellation_check()
         Path(destination, ".droneai").mkdir(parents=True, exist_ok=True)
         return RestoredWorkspace(
@@ -361,9 +481,11 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
         "file_count": 2,
         "transferred_bytes": 200,
         "reused_bytes": 0,
-        "manifest_bytes": 77,
-        "duration_seconds": 0.25,
-    }
+            "manifest_bytes": 77,
+            "duration_seconds": 0.25,
+            "pruned_files": 0,
+            "pruned_bytes": 0,
+        }
     assert not written["model"].exists()
     assert cancellation.cleared == 1
 

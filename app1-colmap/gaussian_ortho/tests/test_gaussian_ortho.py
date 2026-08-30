@@ -32,6 +32,10 @@ from gaussian_ortho.partition import (
 )
 from gaussian_ortho.geo_writer import _geotiff_creation_options, write_geotiff
 from gaussian_ortho.camera_footprint import geographic_scene_frame
+from gaussian_ortho.generate_gaussian_orthophoto import (
+    DRONEGS_CHECKPOINT_MAGIC,
+    _resume_checkpoint_path,
+)
 
 if cp is not None:
     from gaussian_ortho.gaussian_model import GaussianModel, num_sh_coefficients, SH_C0
@@ -48,6 +52,39 @@ if cp is not None:
 
 
 requires_gpu = pytest.mark.skipif(cp is None, reason="CuPy is not installed")
+
+
+def test_resume_checkpoint_prefers_valid_primary(tmp_path):
+    output = tmp_path / "cell_0"
+    output.mkdir()
+    primary = output / "training.ckpt"
+    temporary = output / "training.ckpt.tmp"
+    primary.write_bytes(DRONEGS_CHECKPOINT_MAGIC + b"primary")
+    temporary.write_bytes(DRONEGS_CHECKPOINT_MAGIC + b"temporary")
+
+    assert _resume_checkpoint_path(output) == str(primary)
+
+
+def test_resume_checkpoint_falls_back_to_valid_temporary(tmp_path):
+    output = tmp_path / "cell_3"
+    output.mkdir()
+    primary = output / "training.ckpt"
+    temporary = output / "training.ckpt.tmp"
+    primary.write_bytes(b"broken")
+    temporary.write_bytes(DRONEGS_CHECKPOINT_MAGIC + b"complete")
+
+    assert _resume_checkpoint_path(output) == str(temporary)
+
+
+def test_resume_checkpoint_never_hides_invalid_recovery_state(tmp_path):
+    output = tmp_path / "cell_3"
+    output.mkdir()
+    temporary = output / "training.ckpt.tmp"
+    temporary.write_bytes(b"incomplete")
+
+    assert _resume_checkpoint_path(output) == str(temporary)
+    (output / "trainer_run.json").write_text("{}", encoding="utf-8")
+    assert _resume_checkpoint_path(output) is None
 
 
 # ---------------------------------------------------------------------------

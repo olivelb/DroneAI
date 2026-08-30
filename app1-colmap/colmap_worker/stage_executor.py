@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import json
 import shutil
@@ -12,6 +13,8 @@ from typing import Any, cast
 from pipeline_support import inspect_sparse_quality
 from shared.artifact_manifest import ManifestParent
 from shared.stage_execution import (
+    LOCAL_WORKSPACE_REUSE_RUN_ID_PARAMETER,
+    LocalWorkspaceReuseAuthorization,
     StageExecutionContext,
     StageExecutionControl,
     StageExecutionResult,
@@ -37,7 +40,9 @@ from .stage_state import load_reconstruction_state
 def _workspace_path(run_id: str) -> Path:
     root = Path(os.getenv("DRONEAI_STAGE_WORK_ROOT", "/work")).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    return cast(Path, safe_child_path(root, run_id, field_name="stage run id"))
+    return cast(
+        Path, safe_child_path(root, run_id, field_name="stage run id")
+    )
 
 
 def _restore_input_workspace(
@@ -46,6 +51,7 @@ def _restore_input_workspace(
     workspace: Path,
     *,
     expected_kind: str,
+    exact_inventory: bool = False,
 ) -> RestoredWorkspace:
     if len(context.inputs) != 1 or context.inputs[0].kind != expected_kind:
         raise ValueError(
@@ -61,6 +67,7 @@ def _restore_input_workspace(
         source.checksum_sha256,
         cancellation_check=control.raise_if_cancelled,
         expected_organization_id=context.organization_id,
+        exact_inventory=exact_inventory,
     )
     return restored
 
@@ -145,12 +152,94 @@ def _prepare_stage_workspace(context: StageExecutionContext) -> Path:
     return workspace
 
 
-def _cleanup_stage_workspace(workspace: Path) -> None:
+def _acquire_local_workspace_lock(root: Path, run_id: str) -> int:
+    lock_directory = root / ".workspace-locks"
+    lock_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = lock_directory / f"{run_id}.lock"
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        os.close(descriptor)
+        raise RuntimeError(
+            f"Local Gaussian recovery workspace is already leased: {run_id}"
+        ) from error
+    return descriptor
+
+
+def _release_local_workspace_lock(descriptor: int | None) -> None:
+    if descriptor is None:
+        return
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def _prepare_gaussian_training_workspace(
+    context: StageExecutionContext,
+) -> tuple[Path, LocalWorkspaceReuseAuthorization | None, int | None]:
+    raw_source_run_id = context.parameters.get(
+        LOCAL_WORKSPACE_REUSE_RUN_ID_PARAMETER
+    )
+    if raw_source_run_id is None:
+        return _prepare_stage_workspace(context), None, None
+    if not isinstance(raw_source_run_id, str):
+        raise ValueError("local_workspace_reuse_run_id must be a string")
+    authorization = context.local_workspace_reuse_authorization
+    if authorization is None or authorization.source_run_id != raw_source_run_id:
+        raise ValueError("Local Gaussian workspace reuse lacks durable authorization")
+    root = Path(os.getenv("DRONEAI_STAGE_WORK_ROOT", "/work")).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    workspace = safe_child_path(
+        root,
+        raw_source_run_id,
+        field_name="local Gaussian workspace run id",
+    )
+    if (
+        authorization.mission_id != context.mission_id
+        or authorization.organization_id != context.organization_id
+        or authorization.vol_id != context.vol_id
+        or authorization.workspace_prefix != context.workspace_prefix
+        or authorization.upstream_artifact_ids
+        != tuple(item.artifact_id for item in context.inputs)
+    ):
+        raise ValueError("Local Gaussian workspace authorization binding mismatch")
+    if workspace == _workspace_path(context.run_id):
+        raise ValueError("A Gaussian retry cannot reuse its own workspace")
+    if not workspace.is_dir():
+        raise ValueError(
+            f"Local Gaussian recovery workspace is missing: {workspace}"
+        )
+    lock_descriptor = _acquire_local_workspace_lock(root, raw_source_run_id)
+    try:
+        runtime.cancellation_state.start_mission(
+            context.vol_id,
+            context.mission_attempt,
+            organization_id=context.organization_id,
+        )
+    except Exception:
+        _release_local_workspace_lock(lock_descriptor)
+        raise
+    return workspace, authorization, lock_descriptor
+
+
+def _cleanup_stage_workspace(
+    workspace: Path,
+    *,
+    preserve: bool = False,
+    lock_descriptor: int | None = None,
+) -> None:
     try:
         runtime.cancellation_state.clear()
     finally:
-        if workspace.exists():
-            shutil.rmtree(workspace)
+        try:
+            if not preserve and workspace.exists():
+                shutil.rmtree(workspace)
+        finally:
+            _release_local_workspace_lock(lock_descriptor)
 
 
 _GAUSSIAN_OPERATIONAL_OVERRIDE_KEYS = frozenset({"gs_host_image_cache_mib"})
@@ -276,13 +365,16 @@ def run_gaussian_training_stage(
     control: StageExecutionControl,
 ) -> StageExecutionResult:
     """Train and publish an unfiltered Gaussian model from reconstruction."""
-    workspace = _prepare_stage_workspace(context)
+    workspace, reuse_authorization, lock_descriptor = (
+        _prepare_gaussian_training_workspace(context)
+    )
     try:
         restored = _restore_input_workspace(
             context,
             control,
             workspace,
             expected_kind="reconstruction_workspace",
+            exact_inventory=reuse_authorization is not None,
         )
         preparation, reconstruction, alignment = load_reconstruction_state(workspace)
         effective_parameters = _merge_gaussian_stage_parameters(
@@ -427,10 +519,33 @@ def run_gaussian_training_stage(
                     published,
                     restored,
                 ),
+                **(
+                    {
+                        "local_workspace_reuse": {
+                            "source_run_id": reuse_authorization.source_run_id,
+                            "source_attempt": reuse_authorization.source_attempt,
+                            "organization_id": reuse_authorization.organization_id,
+                            "mission_id": reuse_authorization.mission_id,
+                            "workspace_prefix": reuse_authorization.workspace_prefix,
+                            "upstream_artifact_ids": list(
+                                reuse_authorization.upstream_artifact_ids
+                            ),
+                            "verified_against_upstream_manifest": True,
+                            "exact_inventory": True,
+                            "exclusive_lock": True,
+                        }
+                    }
+                    if reuse_authorization is not None
+                    else {}
+                ),
             },
         )
     finally:
-        _cleanup_stage_workspace(workspace)
+        _cleanup_stage_workspace(
+            workspace,
+            preserve=reuse_authorization is not None,
+            lock_descriptor=lock_descriptor,
+        )
 
 
 def run_gaussian_filtering_stage(
