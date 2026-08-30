@@ -68,6 +68,8 @@ class RestoredWorkspace:
     download_seconds: float
     manifest_size_bytes: int
     manifest_schema_version: int = ARTIFACT_MANIFEST_VERSION
+    pruned_file_count: int = 0
+    pruned_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,8 @@ def workspace_transfer_provenance(
             "reused_bytes": restored.reused_bytes,
             "manifest_bytes": restored.manifest_size_bytes,
             "duration_seconds": restored.download_seconds,
+            "pruned_files": restored.pruned_file_count,
+            "pruned_bytes": restored.pruned_bytes,
         }
     return transfer
 
@@ -392,6 +396,42 @@ def resolve_workspace_files(
     return dict(resolved)
 
 
+def _prune_unmanaged_workspace_files(
+    root: Path,
+    managed_paths: set[str],
+) -> tuple[int, int]:
+    """Remove everything outside an authoritative materialized manifest."""
+
+    pruned_file_count = 0
+    pruned_bytes = 0
+    for directory, directory_names, file_names in os.walk(
+        root, topdown=False, followlinks=False
+    ):
+        current = Path(directory)
+        for name in file_names:
+            path = current / name
+            relative = path.relative_to(root).as_posix()
+            if relative in managed_paths and not path.is_symlink():
+                continue
+            stat = path.lstat()
+            pruned_bytes += stat.st_size
+            path.unlink()
+            pruned_file_count += 1
+        for name in directory_names:
+            path = current / name
+            if path.is_symlink():
+                stat = path.lstat()
+                pruned_bytes += stat.st_size
+                path.unlink()
+                pruned_file_count += 1
+            else:
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+    return pruned_file_count, pruned_bytes
+
+
 def restore_workspace_measured(
     manifest_key: str,
     destination: str | Path,
@@ -400,6 +440,7 @@ def restore_workspace_measured(
     cancellation_check: Callable[[], None] | None = None,
     selection: WorkspaceSelection | None = None,
     expected_organization_id: str,
+    exact_inventory: bool = False,
 ) -> RestoredWorkspace:
     started_at = time.monotonic()
     destination_root = Path(destination).resolve()
@@ -421,6 +462,14 @@ def restore_workspace_measured(
             raise ValueError(f"Workspace selection paths are missing: {sorted(missing_paths)}")
         if not selected_files:
             raise ValueError("Workspace selection matched no files")
+    if exact_inventory and selection is not None:
+        raise ValueError("Exact workspace inventory cannot use a partial selection")
+    managed_paths = {entry.path for entry in selected_files}
+    pruned_file_count, pruned_bytes = (0, 0)
+    if exact_inventory:
+        pruned_file_count, pruned_bytes = _prune_unmanaged_workspace_files(
+            destination_root, managed_paths
+        )
     seen: set[str] = set()
     logical_bytes = 0
     downloaded_bytes = 0
@@ -459,4 +508,6 @@ def restore_workspace_measured(
         download_seconds=round(time.monotonic() - started_at, 6),
         manifest_size_bytes=manifest_bytes_total,
         manifest_schema_version=manifest.schema_version,
+        pruned_file_count=pruned_file_count,
+        pruned_bytes=pruned_bytes,
     )

@@ -89,6 +89,143 @@ def _mission_with_reconstruction(scope, run_id="a" * 32):
         session.add_all([reconstruction, training])
 
 
+def _mission_with_failed_gaussian_retry(scope):
+    source_run_id = "1" * 32
+    retry_run_id = "2" * 32
+    artifact_id = "12345678-1234-5678-1234-567812345678"
+    recipe = {
+        "dag_version": 2,
+        "colmap_params": {"gs_host_image_cache_mib": "32768"},
+    }
+    with scope() as session:
+        mission = Mission(
+            vol_id="mission-reuse",
+            owner_subject="operator-a",
+            workspace_prefix="missions/mission-reuse",
+            status="processing",
+        )
+        session.add(mission)
+        session.flush()
+        reconstruction = MissionStageRun(
+            mission_id=mission.id,
+            stage="reconstruction",
+            attempt=0,
+            status="succeeded",
+            executor="kubernetes-job",
+            idempotency_key="3" * 64,
+        )
+        session.add(reconstruction)
+        session.flush()
+        session.add(
+            MissionArtifact(
+                artifact_id=artifact_id,
+                mission_id=mission.id,
+                stage_run_id=reconstruction.id,
+                kind="reconstruction_workspace",
+                uri="s3://drone-ai/reconstruction/manifest.json",
+                checksum_sha256="4" * 64,
+                artifact_metadata={"manifest_key": "reconstruction/manifest.json"},
+            )
+        )
+        session.add_all(
+            [
+                MissionStageRun(
+                    run_id=source_run_id,
+                    mission_id=mission.id,
+                    stage="gaussian_training",
+                    attempt=2,
+                    status="failed",
+                    executor="kubernetes-job",
+                    resource_class="gpu-high-memory",
+                    upstream_artifact_ids=[artifact_id],
+                    parameters=recipe,
+                    idempotency_key="5" * 64,
+                ),
+                MissionStageRun(
+                    run_id=retry_run_id,
+                    mission_id=mission.id,
+                    stage="gaussian_training",
+                    attempt=3,
+                    status="queued",
+                    executor="kubernetes-job",
+                    resource_class="gpu-high-memory",
+                    upstream_artifact_ids=[artifact_id],
+                    parameters={
+                        **recipe,
+                        "local_workspace_reuse_run_id": source_run_id,
+                    },
+                    idempotency_key="6" * 64,
+                ),
+            ]
+        )
+    return source_run_id, retry_run_id
+
+
+def test_context_authorizes_equivalent_failed_workspace_retry(execution_sessions):
+    source_run_id, retry_run_id = _mission_with_failed_gaussian_retry(
+        execution_sessions
+    )
+
+    context = stage_execution.load_stage_execution_context(
+        retry_run_id,
+        "gaussian_training",
+    )
+
+    authorization = context.local_workspace_reuse_authorization
+    assert authorization is not None
+    assert authorization.source_run_id == source_run_id
+    assert authorization.source_attempt == 2
+    assert authorization.mission_id == context.mission_id
+    assert authorization.organization_id == context.organization_id
+    assert authorization.workspace_prefix == context.workspace_prefix
+    assert authorization.upstream_artifact_ids == tuple(
+        item.artifact_id for item in context.inputs
+    )
+
+
+def test_context_rejects_workspace_retry_with_different_recipe(execution_sessions):
+    _source_run_id, retry_run_id = _mission_with_failed_gaussian_retry(
+        execution_sessions
+    )
+    with execution_sessions() as session:
+        retry = session.query(MissionStageRun).filter_by(run_id=retry_run_id).one()
+        retry.parameters = {
+            **retry.parameters,
+            "colmap_params": {"gs_host_image_cache_mib": "16384"},
+        }
+
+    with pytest.raises(ValueError, match="same mission, stage, recipe"):
+        stage_execution.load_stage_execution_context(
+            retry_run_id,
+            "gaussian_training",
+        )
+
+
+def test_context_rejects_workspace_retry_from_another_mission(execution_sessions):
+    source_run_id, retry_run_id = _mission_with_failed_gaussian_retry(
+        execution_sessions
+    )
+    with execution_sessions() as session:
+        other_mission = Mission(
+            vol_id="mission-other",
+            owner_subject="operator-b",
+            workspace_prefix="missions/mission-other",
+            status="processing",
+        )
+        session.add(other_mission)
+        session.flush()
+        source = session.query(MissionStageRun).filter_by(
+            run_id=source_run_id
+        ).one()
+        source.mission_id = other_mission.id
+
+    with pytest.raises(ValueError, match="same mission, stage, recipe"):
+        stage_execution.load_stage_execution_context(
+            retry_run_id,
+            "gaussian_training",
+        )
+
+
 def test_one_shot_success_publishes_immutable_artifact_and_releases_next_stage(
     execution_sessions,
 ):

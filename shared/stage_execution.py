@@ -56,6 +56,22 @@ class StageArtifactInput:
     metadata: dict[str, Any]
 
 
+LOCAL_WORKSPACE_REUSE_RUN_ID_PARAMETER = "local_workspace_reuse_run_id"
+
+
+@dataclass(frozen=True)
+class LocalWorkspaceReuseAuthorization:
+    """Durable same-mission authorization for one failed-stage workspace."""
+
+    source_run_id: str
+    source_attempt: int
+    mission_id: int
+    organization_id: str
+    vol_id: str
+    workspace_prefix: str
+    upstream_artifact_ids: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class StageExecutionContext:
     run_id: str
@@ -72,6 +88,9 @@ class StageExecutionContext:
     inputs: tuple[StageArtifactInput, ...]
     run_provenance: dict[str, Any] = field(default_factory=dict)
     analysis: dict[str, Any] | None = None
+    local_workspace_reuse_authorization: (
+        LocalWorkspaceReuseAuthorization | None
+    ) = None
 
     @property
     def object_namespace(self) -> MissionObjectNamespace:
@@ -151,6 +170,65 @@ def _require_stage_rls(session: Any) -> None:
         )
 
 
+def _reuse_recipe(parameters: object) -> dict[str, Any]:
+    if not isinstance(parameters, dict):
+        raise ValueError("Stage parameters must be an object")
+    recipe = dict(parameters)
+    recipe.pop(LOCAL_WORKSPACE_REUSE_RUN_ID_PARAMETER, None)
+    return recipe
+
+
+def _authorize_local_workspace_reuse(
+    session: Any,
+    mission: Mission,
+    run: MissionStageRun,
+    namespace: MissionObjectNamespace,
+) -> LocalWorkspaceReuseAuthorization | None:
+    """Authorize reuse only from an equivalent failed attempt of this mission."""
+
+    parameters = _reuse_recipe(run.parameters or {})
+    raw_source_run_id = cast(dict[str, Any], run.parameters or {}).get(
+        LOCAL_WORKSPACE_REUSE_RUN_ID_PARAMETER
+    )
+    if raw_source_run_id is None:
+        return None
+    if not isinstance(raw_source_run_id, str) or not raw_source_run_id:
+        raise ValueError("local_workspace_reuse_run_id must be a non-empty string")
+    if run.stage != "gaussian_training":
+        raise ValueError("Local workspace reuse is restricted to Gaussian training")
+    source = (
+        session.query(MissionStageRun)
+        .filter(MissionStageRun.run_id == raw_source_run_id)
+        .one_or_none()
+    )
+    same_lineage = (
+        source is not None
+        and source.id != run.id
+        and source.mission_id == mission.id
+        and source.stage == run.stage
+        and source.status == "failed"
+        and source.executor == "kubernetes-job"
+        and int(source.attempt) < int(run.attempt)
+        and tuple(source.upstream_artifact_ids or ())
+        == tuple(run.upstream_artifact_ids or ())
+        and _reuse_recipe(source.parameters or {}) == parameters
+    )
+    if not same_lineage:
+        raise ValueError(
+            "Local workspace reuse requires an equivalent failed Kubernetes "
+            "attempt from the same mission, stage, recipe, and upstream artifacts"
+        )
+    return LocalWorkspaceReuseAuthorization(
+        source_run_id=raw_source_run_id,
+        source_attempt=cast(int, source.attempt),
+        mission_id=cast(int, mission.id),
+        organization_id=cast(str, mission.organization_id),
+        vol_id=cast(str, mission.vol_id),
+        workspace_prefix=namespace.root,
+        upstream_artifact_ids=tuple(source.upstream_artifact_ids or []),
+    )
+
+
 def load_stage_execution_context(
     run_id: str,
     expected_stage: StageId,
@@ -213,19 +291,19 @@ def load_stage_execution_context(
             not current_analysis_attempt(analysis, run) or analysis.status == "cancelled"
         ):
             raise StageExecutionCancelled("Analysis attempt is no longer active")
-        artifacts = cast(
-            list[MissionArtifact],
-            session.query(MissionArtifact).filter(
-                MissionArtifact.mission_id == mission.id,
-                MissionArtifact.artifact_id.in_(run.upstream_artifact_ids or []),
-            ).all(),
-        )
+        artifacts = session.query(MissionArtifact).filter(
+            MissionArtifact.mission_id == mission.id,
+            MissionArtifact.artifact_id.in_(run.upstream_artifact_ids or []),
+        ).all()
         artifact_by_id = {
             cast(str, artifact.artifact_id): artifact for artifact in artifacts
         }
         input_ids = cast(list[str], run.upstream_artifact_ids or [])
         if set(artifact_by_id) != set(input_ids):
             raise ValueError("One or more durable upstream artifacts are missing")
+        local_workspace_reuse_authorization = _authorize_local_workspace_reuse(
+            session, mission, run, namespace
+        )
         now = datetime.now(UTC)
         record = cast(Any, run)
         record.status = "running"
@@ -252,6 +330,9 @@ def load_stage_execution_context(
                 "description": analysis.description or "", "color": analysis.color,
                 "tags": analysis.tags or [], "persist_results": analysis.persist_results,
             } if analysis is not None else None),
+            local_workspace_reuse_authorization=(
+                local_workspace_reuse_authorization
+            ),
             inputs=tuple(
                 StageArtifactInput(
                     artifact_id=artifact_id,
