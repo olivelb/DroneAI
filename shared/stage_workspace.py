@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -425,10 +426,8 @@ def _prune_unmanaged_workspace_files(
                 path.unlink()
                 pruned_file_count += 1
             else:
-                try:
+                with suppress(OSError):
                     path.rmdir()
-                except OSError:
-                    pass
     return pruned_file_count, pruned_bytes
 
 
