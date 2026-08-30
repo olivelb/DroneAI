@@ -153,6 +153,28 @@ def _cleanup_stage_workspace(workspace: Path) -> None:
             shutil.rmtree(workspace)
 
 
+_GAUSSIAN_OPERATIONAL_OVERRIDE_KEYS = frozenset({"gs_host_image_cache_mib"})
+
+
+def _merge_gaussian_stage_parameters(
+    reconstruction_parameters: dict[str, Any],
+    stage_parameters: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply retry-safe operational overrides to a restored Gaussian recipe."""
+
+    raw_colmap_parameters = stage_parameters.get("colmap_params")
+    if raw_colmap_parameters is None:
+        return dict(reconstruction_parameters)
+    if not isinstance(raw_colmap_parameters, dict):
+        raise ValueError("Gaussian stage colmap_params must be an object")
+    overrides = {
+        key: raw_colmap_parameters[key]
+        for key in _GAUSSIAN_OPERATIONAL_OVERRIDE_KEYS
+        if key in raw_colmap_parameters
+    }
+    return {**reconstruction_parameters, **overrides}
+
+
 def run_reconstruction_stage(
     context: StageExecutionContext,
     control: StageExecutionControl,
@@ -263,6 +285,12 @@ def run_gaussian_training_stage(
             expected_kind="reconstruction_workspace",
         )
         preparation, reconstruction, alignment = load_reconstruction_state(workspace)
+        effective_parameters = _merge_gaussian_stage_parameters(
+            preparation.params,
+            context.parameters,
+        )
+        if effective_parameters != preparation.params:
+            preparation = replace(preparation, params=effective_parameters)
         from gaussian_ortho.generate_gaussian_orthophoto import (
             GaussianPartitionModel,
             execute_gaussian_training_phase,
@@ -277,6 +305,15 @@ def run_gaussian_training_stage(
             alignment,
             str(workspace),
             context.vol_id,
+        )
+        resolved_cache_mib = str(product.config.dronegs_host_image_cache_mib)
+        if preparation.params.get("gs_host_image_cache_mib") != resolved_cache_mib:
+            preparation = replace(
+                preparation,
+                params={**preparation.params, "gs_host_image_cache_mib": resolved_cache_mib},
+            )
+        write_reconstruction_state(
+            workspace, preparation, reconstruction, alignment
         )
         phase = execute_gaussian_training_phase(
             product.config,

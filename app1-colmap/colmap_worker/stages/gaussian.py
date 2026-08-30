@@ -13,6 +13,7 @@ from PIL import Image as PILImage
 
 from pipeline_support import choose_dronegs_data_factor
 from shared import storage
+from gaussian_training.host_image_cache import plan_host_image_cache
 from shared.dronegs_profile import DRONEGS_PRODUCTION_PROFILE_V1
 from gaussian_ortho.generate_gaussian_orthophoto import GaussianOrthoConfig
 
@@ -185,6 +186,7 @@ def prepare_gaussian_product_run(
         data_factor=data_factor,
     )
     _report_config_warnings(vol_id, warnings)
+    host_cache_plan = plan_host_image_cache(resolved.host_image_cache_mib)
     checkpoint_s3_prefix = f"{preparation.mission_s3_prefix}/gaussian-checkpoints"
     if prepare_checkpoints:
         checkpoint_dir, checkpoint_s3_prefix = _prepare_checkpoint_store(
@@ -260,7 +262,7 @@ def prepare_gaussian_product_run(
         dronegs_photometric_finish=resolved.photometric_finish,
         dronegs_photometric_mse_percent=resolved.photometric_mse_percent,
         dronegs_checkpoint_every=resolved.checkpoint_every,
-        dronegs_host_image_cache_mib=resolved.host_image_cache_mib,
+        dronegs_host_image_cache_mib=host_cache_plan.limit_mib,
         dronegs_test_every=resolved.test_every,
         dronegs_test_split=resolved.test_split,
         dronegs_test_guard_percent=resolved.test_guard_percent,
