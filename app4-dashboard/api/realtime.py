@@ -19,12 +19,12 @@ from fastapi import WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
 from shared.config import (
-    KAFKA_BROKER,
     TOPIC_DEAD_LETTER,
     TOPIC_STATUS,
 )
 from shared.database import get_mission_audience, get_session
 from shared.inbox_outbox import process_inbox_transaction
+from shared.kafka_connection import kafka_connection_settings
 from shared.kafka_reliability import (
     message_location,
     process_message,
@@ -329,7 +329,7 @@ def consume_status_events(
     consumer_group = status_consumer_group(os.getenv("POD_NAME"))
     status_consumer = consumer or Consumer(
         reliable_consumer_config(
-            KAFKA_BROKER,
+            kafka_connection_settings(),
             consumer_group,
             offset_reset="latest",
         )

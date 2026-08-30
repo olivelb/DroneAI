@@ -44,6 +44,7 @@ API_TYPED_PATHS := \
 	app4-dashboard/api/control_leadership.py \
 	app4-dashboard/api/control_runtime.py \
 	app4-dashboard/api/control_worker.py \
+	app4-dashboard/api/control_worker_health.py \
 	app4-dashboard/api/health.py \
 	app4-dashboard/api/http_middleware.py \
 	app4-dashboard/api/observability.py \

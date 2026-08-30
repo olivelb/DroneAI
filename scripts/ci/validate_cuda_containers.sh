@@ -90,6 +90,11 @@ run_native_gpu_tests_in_development_image() {
                 -DDRONEGS_BUILD_BENCHMARKS=OFF
             cmake --build /tmp/dronegs-gpu
             ctest --test-dir /tmp/dronegs-gpu --output-on-failure
+            command -v compute-sanitizer
+            compute-sanitizer \
+                --tool memcheck \
+                --error-exitcode 99 \
+                /tmp/dronegs-gpu/dronegs_cuda_tests
         '
 }
 

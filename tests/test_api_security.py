@@ -368,6 +368,30 @@ def test_http_body_limit_rejects_before_route_parsing() -> None:
     assert called == []
 
 
+def test_http_body_limit_streams_a_valid_body_to_the_route() -> None:
+    application = FastAPI()
+    application.add_middleware(
+        http_middleware.RequestBodyLimitMiddleware,
+        max_body_bytes=4096,
+    )
+
+    @application.post("/bounded")
+    async def bounded(request: Request):
+        return {"body": (await request.body()).decode()}
+
+    response = TestClient(application).post("/bounded", content=b"still-readable")
+
+    assert response.status_code == 200
+    assert response.json() == {"body": "still-readable"}
+
+
+def test_http_body_limit_rejects_invalid_content_length() -> None:
+    application = FastAPI()
+    application.add_middleware(http_middleware.RequestBodyLimitMiddleware, max_body_bytes=4096)
+    response = TestClient(application).post("/missing", headers={"content-length": "invalid"})
+    assert response.status_code == 400
+
+
 def test_dataset_upload_quota_and_extension_are_enforced(monkeypatch):
     monkeypatch.setenv("DRONEAI_UPLOAD_MAX_FILES", "2")
     monkeypatch.setenv("DRONEAI_UPLOAD_MAX_FILE_BYTES", "4")

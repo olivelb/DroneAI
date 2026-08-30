@@ -39,8 +39,16 @@ overlay. Before installation, create:
   `credential-pepper`, each at least 32 characters;
 - during first adoption only, an `api-keys.json` bootstrap admin entry;
 - the ingress TLS Secret;
-- an externally operated, replicated and authenticated Kafka endpoint; the
+- an externally operated, replicated Kafka endpoint using `SSL` or `SASL_SSL`;
+  for SASL, create the referenced Secret with `username` and `password`, and
+  mount a separate TLS Secret only for a private CA or mTLS identity; the
   chart's single-broker PLAINTEXT Kafka remains development-only;
+- stable CIDRs for the production HTTPS egress proxy/gateway. Set them in
+  `networkPolicy.externalHttpsCidrs`; empty, placeholder and world-open ranges
+  are rejected in production;
+- the independently verified SHA-256 of the pinned SAM3
+  `model.safetensors`. Set `stageJobs.sam3.artifactSha256`; the worker checks it
+  before deserializing model weights;
 - Prometheus Operator CRDs and an alert receiver for the production-enabled
   `PrometheusRule` resources.
 
@@ -405,7 +413,8 @@ requires successful commit-scoped CI, CUDA-container, physical-GPU and CodeQL
 runs, including a manually dispatched successful `cuda-tests` job and its
 retained evidence artifact; builds the five image identities in hosted
 builders; repeats the fixable-CVE gate and rejects unfixed HIGH/CRITICAL CVEs
-without an active image-scoped entry in `security/unfixed-cve-waivers.json`;
+without an active image-, package- and installed-version-scoped entry in
+`security/unfixed-cve-waivers.json`;
 publishes BuildKit/GitHub provenance; signs each digest with
 Sigstore OIDC; and retains a signed release manifest with SBOM hashes and exact
 qualification run URLs. Repository code cannot configure environment approval:

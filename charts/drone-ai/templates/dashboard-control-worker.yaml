@@ -146,6 +146,11 @@ spec:
         volumeMounts:
         - name: tmp
           mountPath: /tmp
+        {{- if .Values.kafka.security.tls.existingSecret }}
+        - name: kafka-tls
+          mountPath: /var/run/secrets/droneai/kafka
+          readOnly: true
+        {{- end }}
         {{- if .Values.dashboardApi.observability.metricsEnabled }}
         ports:
         - name: metrics
@@ -180,4 +185,9 @@ spec:
       volumes:
       - name: tmp
         emptyDir: {}
+      {{- if .Values.kafka.security.tls.existingSecret }}
+      - name: kafka-tls
+        secret:
+          secretName: {{ .Values.kafka.security.tls.existingSecret }}
+      {{- end }}
 {{- end }}

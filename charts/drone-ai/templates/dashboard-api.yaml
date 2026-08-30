@@ -22,6 +22,23 @@
 {{- if and (eq .Values.dashboardApi.environment "production") (or (not $kafkaBroker) (contains "REPLACE_" $kafkaBroker)) }}
 {{- fail "kafka.broker must identify an explicit external service in production" }}
 {{- end }}
+{{- $kafkaProtocol := upper (trim .Values.kafka.security.protocol) }}
+{{- if and (eq .Values.dashboardApi.environment "production") (not (has $kafkaProtocol (list "SSL" "SASL_SSL"))) }}
+{{- fail "kafka.security.protocol must be SSL or SASL_SSL in production" }}
+{{- end }}
+{{- if and (eq .Values.dashboardApi.environment "production") (eq $kafkaProtocol "SASL_SSL") (or (not .Values.kafka.security.existingSecret) (contains "REPLACE_" .Values.kafka.security.existingSecret) (not .Values.kafka.security.saslMechanism)) }}
+{{- fail "kafka SASL_SSL requires an explicit existing Secret and mechanism in production" }}
+{{- end }}
+{{- if and (eq .Values.dashboardApi.environment "production") (not .Values.networkPolicy.externalHttpsCidrs) }}
+{{- fail "networkPolicy.externalHttpsCidrs must declare the production egress proxy/gateway CIDRs" }}
+{{- end }}
+{{- if eq .Values.dashboardApi.environment "production" }}
+{{- range $cidr := .Values.networkPolicy.externalHttpsCidrs }}
+{{- if or (contains "REPLACE_" $cidr) (eq $cidr "0.0.0.0/0") (eq $cidr "::/0") }}
+{{- fail "networkPolicy.externalHttpsCidrs must not contain placeholders or world-open CIDRs in production" }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if and $protectedStageJobEnvironment (not .Values.storage.existingSecret) }}
 {{- fail "storage.existingSecret is required in staging and production" }}
 {{- end }}
@@ -60,6 +77,9 @@
 {{- fail "processingWorker has been retired; use bounded detection Jobs" }}
 {{- end }}
 {{- if and .Values.stageJobs.enabled $protectedStageJobEnvironment }}
+{{- if not (regexMatch "^[0-9a-f]{64}$" .Values.stageJobs.sam3.artifactSha256) }}
+{{- fail "stageJobs.sam3.artifactSha256 must contain the independently verified model.safetensors SHA-256 in staging and production" }}
+{{- end }}
 {{- if eq .Values.stageJobs.databaseUrlSecretKey .Values.storage.databaseUrlSecretKey }}
 {{- fail "stageJobs.databaseUrlSecretKey must identify a non-owner PostgreSQL role distinct from the operator role in staging and production" }}
 {{- end }}
@@ -327,6 +347,11 @@ spec:
         volumeMounts:
         - name: tmp
           mountPath: /tmp
+        {{- if .Values.kafka.security.tls.existingSecret }}
+        - name: kafka-tls
+          mountPath: /var/run/secrets/droneai/kafka
+          readOnly: true
+        {{- end }}
         readinessProbe:
           httpGet:
             path: /ready
@@ -344,6 +369,11 @@ spec:
       volumes:
       - name: tmp
         emptyDir: {}
+      {{- if .Values.kafka.security.tls.existingSecret }}
+      - name: kafka-tls
+        secret:
+          secretName: {{ .Values.kafka.security.tls.existingSecret }}
+      {{- end }}
 ---
 # --- Service ---
 apiVersion: v1

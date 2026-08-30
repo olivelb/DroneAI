@@ -10,14 +10,17 @@ global:
     - name: drone-ai-registry
 
 kafka:
-  enabled: true
-  image: apache/kafka:3.7.0@sha256:41c20d65b0a2180b9deca056d47540771752e69fe9225d5748dd65a25a9675d7
-  broker: ""
-  persistence:
-    enabled: true
-    hostPath: ""
-    storageClass: csi-cinder-high-speed
-    size: 20Gi
+  enabled: false
+  broker: "REPLACE_EXTERNAL_KAFKA_BROKER:9093"
+  egressPort: 9093
+  security:
+    protocol: SASL_SSL
+    existingSecret: drone-ai-kafka-preprod
+    saslMechanism: SCRAM-SHA-512
+    usernameSecretKey: username
+    passwordSecretKey: password
+    tls:
+      existingSecret: ""
 
 minio:
   enabled: false
@@ -43,6 +46,10 @@ postgres:
     s3Bucket: droneai-preprod-backups-fe7dc125
     s3Region: GRA
 
+  externalHttpsCidrs:
+    - REPLACE_EXTERNAL_HTTPS_CIDR
+  databasePort: 5432
+  s3Port: 443
 networkPolicy:
   enabled: true
   ingressNamespace: traefik
@@ -116,6 +123,8 @@ dashboardFrontend:
 
 stageJobs:
   enabled: true
+  sam3:
+    artifactSha256: REPLACE_SAM3_ARTIFACT_SHA256
   executors:
     reconstruction:
       image: "REPLACE_REGISTRY_URL/droneai/drone-colmap@sha256:REPLACE_OCI_DIGEST"

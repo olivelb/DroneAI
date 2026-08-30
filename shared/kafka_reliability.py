@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 
 from shared.event_contracts import decode_event, make_event
+from shared.kafka_connection import KafkaConnectionSettings
 from shared.tenancy import validate_organization_id
 
 
@@ -103,19 +104,23 @@ def recreate_unassigned_consumer(
 
 
 def reliable_consumer_config(
-    broker: str,
+    connection: KafkaConnectionSettings | str,
     group_id: str,
     *,
     offset_reset: str,
     **extra: Any,
 ) -> dict[str, Any]:
-    config = {
-        "bootstrap.servers": broker,
+    config: dict[str, Any] = (
+        connection.client_config()
+        if isinstance(connection, KafkaConnectionSettings)
+        else {"bootstrap.servers": connection}
+    )
+    config.update({
         "group.id": group_id,
         "auto.offset.reset": offset_reset,
         "enable.auto.commit": False,
         "enable.auto.offset.store": False,
-    }
+    })
     config.update(extra)
     return config
 

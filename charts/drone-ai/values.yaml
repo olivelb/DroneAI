@@ -34,6 +34,11 @@ networkPolicy:
   enabled: false
   ingressNamespace: ingress-nginx
   monitoringNamespace: monitoring
+  # Protected environments must declare the stable CIDRs of their external
+  # HTTPS egress proxy/gateway; DNS names are not selectable by NetworkPolicy.
+  externalHttpsCidrs: []
+  databasePort: 5432
+  s3Port: 9000
 
 # --------------------------------------------------------------------------
 # Kafka
@@ -43,7 +48,19 @@ kafka:
   # Empty selects the in-chart Service. Set a host:port here when migrating to
   # an external Kafka service.
   broker: ""
-  image: apache/kafka:3.7.0
+  egressPort: 9092
+  security:
+    protocol: PLAINTEXT
+    existingSecret: ""
+    saslMechanism: ""
+    usernameSecretKey: username
+    passwordSecretKey: password
+    tls:
+      existingSecret: ""
+      caSecretKey: ca.crt
+      certificateSecretKey: tls.crt
+      privateKeySecretKey: tls.key
+  image: apache/kafka:3.7.0@sha256:41c20d65b0a2180b9deca056d47540771752e69fe9225d5748dd65a25a9675d7
   clusterId: "droneai-local-cluster-001"
   cancellationPollSeconds: 2
   # Created idempotently after each Helm install/upgrade. Partition counts can
@@ -67,7 +84,8 @@ kafka:
 # --------------------------------------------------------------------------
 minio:
   enabled: true
-  image: minio/minio:latest
+  image: minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+  mcImage: minio/mc:latest@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
   browserUploadCors:
     allowedOrigins:
       - "http://localhost:3000"
@@ -87,7 +105,7 @@ minio:
 # --------------------------------------------------------------------------
 postgres:
   enabled: true
-  image: postgis/postgis:16-3.5
+  image: postgis/postgis:16-3.5@sha256:8828b03e9a95269f808abe62aa83215b22a2d3710f54a55e8040327b7b5f9932
   persistence:
     hostPath: ""
     storageClass: ""
@@ -262,6 +280,8 @@ stageJobs:
     repository: facebook/sam3
     # Immutable model revision shared by monolithic and sharded detection Jobs.
     revision: 3c879f39826c281e95690f02c7821c4de09afae7
+    # Independent SHA-256 of model.safetensors; required in protected renders.
+    artifactSha256: ""
   enabled: false
   # Each stage Secret must expose a PostgreSQL URL for a non-owner,
   # NOBYPASSRLS executor role under this key. The generated development Secret

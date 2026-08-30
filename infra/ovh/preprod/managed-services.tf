@@ -76,3 +76,57 @@ resource "ovh_cloud_project_user_s3_policy" "backups" {
     ]
   })
 }
+
+locals {
+  stage_identities = toset([
+    "reconstruction",
+    "gaussian_training",
+    "gaussian_filtering",
+    "rasterization",
+    "detection",
+    "gaussian_viewer",
+  ])
+}
+
+resource "ovh_cloud_project_user" "stage" {
+  for_each = local.stage_identities
+
+  service_name = var.project_id
+  description  = "DroneAI ${var.environment} ${each.key} Stage executor"
+  role_names   = ["objectstore_operator"]
+}
+
+resource "ovh_cloud_project_user_s3_credential" "stage" {
+  for_each = local.stage_identities
+
+  service_name = ovh_cloud_project_user.stage[each.key].service_name
+  user_id      = ovh_cloud_project_user.stage[each.key].id
+}
+
+resource "ovh_cloud_project_user_s3_policy" "stage" {
+  for_each = local.stage_identities
+
+  service_name = ovh_cloud_project_user.stage[each.key].service_name
+  user_id      = ovh_cloud_project_user.stage[each.key].id
+  policy = jsonencode({
+    Statement = [
+      {
+        Sid      = "InspectStageAssetsBucket"
+        Effect   = "Allow"
+        Action   = ["s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"]
+        Resource = ["arn:aws:s3:::${ovh_cloud_project_storage.assets.name}"]
+      },
+      {
+        Sid    = "ReadWriteStageAssetsWithoutDelete"
+        Effect = "Allow"
+        Action = [
+          "s3:AbortMultipartUpload",
+          "s3:GetObject",
+          "s3:ListMultipartUploadParts",
+          "s3:PutObject",
+        ]
+        Resource = ["arn:aws:s3:::${ovh_cloud_project_storage.assets.name}/*"]
+      },
+    ]
+  })
+}

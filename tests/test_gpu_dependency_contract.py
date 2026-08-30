@@ -40,6 +40,8 @@ def test_active_cuda_runtime_contracts_are_aligned_to_12_9_2() -> None:
     ia_lock = (ROOT / "requirements" / "ia-extra.txt").read_text(encoding="utf-8")
 
     assert "nvidia/cuda:12.9.2-devel-ubuntu24.04" in workflow
+    assert "nvidia/cuda:12.9.2-devel-ubuntu24.04@sha256:" in workflow
+    assert "postgis/postgis:16-3.4@sha256:" in workflow
     assert "nvidia/cuda:12.9.2-base-ubuntu24.04" in deployment
     assert "nvidia/cuda:12.9.2-runtime-ubuntu24.04" in cloud_guide
     assert 'DRONEGS_CUDA_RUNTIME_VERSION="${DRONEGS_CUDA_RUNTIME_VERSION}"' in cmake
