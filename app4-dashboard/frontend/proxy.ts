@@ -1,13 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const buildContentSecurityPolicy = (nonce: string, isDevelopment: boolean) => [
+export const buildContentSecurityPolicy = (
+  nonce: string,
+  isDevelopment: boolean,
+  upgradeInsecureRequests: boolean,
+  allowLoopbackConnections: boolean,
+) => [
   "default-src 'self'",
   `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDevelopment ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https:",
+  `img-src 'self' data: blob: https:${allowLoopbackConnections
+    ? " http://localhost:* http://127.0.0.1:*"
+    : ""}`,
   "font-src 'self' data:",
   "worker-src 'self' blob:",
-  "connect-src 'self' https: wss:",
+  `connect-src 'self' https: wss:${allowLoopbackConnections
+    ? " http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*"
+    : ""}`,
   "manifest-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",
@@ -15,7 +24,7 @@ export const buildContentSecurityPolicy = (nonce: string, isDevelopment: boolean
   "frame-ancestors 'none'",
   "report-uri /api/csp-report",
   "report-to csp-endpoint",
-  ...(isDevelopment ? [] : ["upgrade-insecure-requests"]),
+  ...(upgradeInsecureRequests ? ["upgrade-insecure-requests"] : []),
 ].join("; ");
 
 export function proxy(request: NextRequest) {
@@ -23,6 +32,8 @@ export function proxy(request: NextRequest) {
   const policy = buildContentSecurityPolicy(
     nonce,
     process.env.NODE_ENV === "development",
+    request.nextUrl.protocol === "https:",
+    ["localhost", "127.0.0.1", "[::1]"].includes(request.nextUrl.hostname),
   );
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);

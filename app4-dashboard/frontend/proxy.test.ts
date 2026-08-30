@@ -20,7 +20,30 @@ describe("CSP proxy", () => {
   });
 
   it("allows unsafe-eval only for React development diagnostics", () => {
-    expect(buildContentSecurityPolicy("nonce", true)).toContain("'unsafe-eval'");
-    expect(buildContentSecurityPolicy("nonce", false)).not.toContain("'unsafe-eval'");
+    expect(buildContentSecurityPolicy("nonce", true, false, false)).toContain("'unsafe-eval'");
+    expect(buildContentSecurityPolicy("nonce", false, false, false)).not.toContain("'unsafe-eval'");
+  });
+
+  it("upgrades subresources only when the dashboard itself uses HTTPS", () => {
+    const secure = proxy(new NextRequest("https://droneai.example.com/"));
+    const loopback = proxy(new NextRequest("http://127.0.0.1:3000/"));
+    const securePolicy = secure.headers.get("content-security-policy") ?? "";
+    const loopbackPolicy = loopback.headers.get("content-security-policy") ?? "";
+
+    expect(securePolicy).toContain("upgrade-insecure-requests");
+    expect(securePolicy).not.toContain("http://127.0.0.1:*");
+    expect(loopbackPolicy).not.toContain("upgrade-insecure-requests");
+    expect(loopbackPolicy).toContain("img-src 'self' data: blob: https: http://localhost:*");
+    expect(loopbackPolicy).toContain("http://127.0.0.1:*");
+    expect(loopbackPolicy).toContain("ws://localhost:*");
+    expect(loopbackPolicy).toContain("ws://127.0.0.1:*");
+  });
+
+  it("does not expose loopback services from a public HTTP hostname", () => {
+    const response = proxy(new NextRequest("http://droneai.example.com/"));
+
+    expect(response.headers.get("content-security-policy")).not.toContain(
+      "http://127.0.0.1:*",
+    );
   });
 });
