@@ -731,10 +731,23 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
 
     const auto max_width_argument = std::find(
         values.begin(), values.end(), "--max-width");
+    const auto output_path_argument = std::find(
+        values.begin(), values.end(), "--output-path");
+    const auto run_manifest_argument = std::find(
+        values.begin(), values.end(), "--run-manifest");
     check(
         max_width_argument != values.end() &&
-            std::next(max_width_argument) != values.end(),
-        "CLI max-width argument is missing");
+            std::next(max_width_argument) != values.end() &&
+            output_path_argument != values.end() &&
+            std::next(output_path_argument) != values.end() &&
+            run_manifest_argument != values.end() &&
+            std::next(run_manifest_argument) != values.end(),
+        "CLI width validation arguments are missing");
+    const auto native_width_output =
+        data.parent_path() / "native-width-output";
+    *std::next(output_path_argument) = native_width_output.string();
+    *std::next(run_manifest_argument) =
+        (native_width_output / "trainer_run.json").string();
     *std::next(max_width_argument) = "5280";
     arguments = mutable_arguments(values);
     const auto native_width = dronegs::parse_options(
