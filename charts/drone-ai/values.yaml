@@ -186,6 +186,8 @@ dashboardApi:
       # replicas. Local single-process development can keep it disabled.
       enabled: false
       pollSeconds: 2
+    # Must exceed the leadership poll interval plus normal scheduler jitter.
+    healthMaxAgeSeconds: "15"
     resources:
       limits:
         memory: "1Gi"
@@ -225,8 +227,14 @@ dashboardApi:
     existingSecret: ""
     secretKey: api-keys.json
     sessionSecretKey: session-secret
+    # Optional JSON {"current":"kid","keys":{"kid":"secret",...}}.
+    # Keep no more than five keys and remove previous keys after max session age.
+    sessionSigningKeysSecretKey: session-signing-keys.json
     credentialPepperSecretKey: credential-pepper
     sessionMaxAgeSeconds: 28800
+  http:
+    # Large imagery is uploaded directly to S3; API control requests stay small.
+    maxBodyBytes: "2097152"
   uploads:
     # Strings prevent large byte counts from being rendered in scientific
     # notation by Helm/YAML before they reach the integer-only API parser.

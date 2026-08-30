@@ -11,6 +11,7 @@ security = importlib.import_module("app4-dashboard.api.security")
 dataset_uploads = importlib.import_module("app4-dashboard.api.dataset_uploads")
 api_main = importlib.import_module("app4-dashboard.api.main")
 rate_limit = importlib.import_module("app4-dashboard.api.rate_limit")
+http_middleware = importlib.import_module("app4-dashboard.api.http_middleware")
 auth_routes = importlib.import_module("app4-dashboard.api.routers.auth")
 
 
@@ -294,6 +295,77 @@ def test_cookie_authenticated_mutation_requires_trusted_origin(monkeypatch):
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Untrusted request origin"
+
+
+def test_session_key_ring_rotates_without_invalidating_previous_tokens(monkeypatch):
+    monkeypatch.setenv("DRONEAI_SESSION_SECRET", "legacy-session-secret-" + "x" * 32)
+    legacy_token = security.issue_session_token(
+        security.Principal("operations", "admin"),
+        3600,
+    )
+    legacy_without_kid = ".".join(legacy_token.split(".")[1:])
+    monkeypatch.setenv(
+        "DRONEAI_SESSION_SIGNING_KEYS_JSON",
+        json.dumps(
+            {
+                "current": "v2",
+                "keys": {
+                    "v2": "current-session-secret-" + "c" * 32,
+                    "v1": "legacy-session-secret-" + "x" * 32,
+                },
+            }
+        ),
+    )
+
+    new_token = security.issue_session_token(
+        security.Principal("operations", "admin"),
+        3600,
+    )
+
+    assert new_token.startswith("v2.")
+    assert security._verified_session_payload(new_token) is not None
+    assert security._verified_session_payload(legacy_without_kid) is not None
+
+    monkeypatch.setenv(
+        "DRONEAI_SESSION_SIGNING_KEYS_JSON",
+        json.dumps(
+            {
+                "current": "v2",
+                "keys": {"v2": "current-session-secret-" + "c" * 32},
+            }
+        ),
+    )
+    assert security._verified_session_payload(legacy_without_kid) is None
+
+
+def test_session_key_ring_rejects_invalid_current_key(monkeypatch):
+    monkeypatch.setenv(
+        "DRONEAI_SESSION_SIGNING_KEYS_JSON",
+        json.dumps({"current": "missing", "keys": {"v1": "s" * 32}}),
+    )
+
+    with pytest.raises(RuntimeError, match="current kid is missing"):
+        security.session_signing_keys()
+
+
+def test_http_body_limit_rejects_before_route_parsing() -> None:
+    application = FastAPI()
+    application.add_middleware(
+        http_middleware.RequestBodyLimitMiddleware,
+        max_body_bytes=4096,
+    )
+    called: list[bool] = []
+
+    @application.post("/bounded")
+    async def bounded(_request: Request):
+        called.append(True)
+        return {"status": "ok"}
+
+    response = TestClient(application).post("/bounded", content=b"x" * 4097)
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "Request body too large"}
+    assert called == []
 
 
 def test_dataset_upload_quota_and_extension_are_enforced(monkeypatch):

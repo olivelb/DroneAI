@@ -20,6 +20,7 @@ jobs:
     outputs:
       python: ${{ steps.selection.outputs.python }}
       javascript: ${{ steps.selection.outputs.javascript }}
+      c_cpp: ${{ steps.selection.outputs.c_cpp }}
       any: ${{ steps.selection.outputs.any }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,6 +46,8 @@ jobs:
             selected: ${{ needs.changes.outputs.python }}
           - language: javascript-typescript
             selected: ${{ needs.changes.outputs.javascript }}
+          - language: c-cpp
+            selected: ${{ needs.changes.outputs.c_cpp }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - if: matrix.selected == 'true'

@@ -51,55 +51,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p promotion-evidence
-          python - <<'PY'
-          import json
-          import os
-          import subprocess
-          from pathlib import Path
-
-          required = (
-              "ci.yml",
-              "cuda-containers.yml",
-              "dronegs-gpu-qualification.yml",
-              "codeql.yml",
-          )
-          records = []
-          for workflow in required:
-              result = subprocess.run(
-                  [
-                      "gh",
-                      "run",
-                      "list",
-                      "--workflow",
-                      workflow,
-                      "--commit",
-                      os.environ["GITHUB_SHA"],
-                      "--limit",
-                      "20",
-                      "--json",
-                      "databaseId,conclusion,headSha,url,workflowName",
-                  ],
-                  check=True,
-                  capture_output=True,
-                  text=True,
-              )
-              candidates = [
-                  item
-                  for item in json.loads(result.stdout)
-                  if item["headSha"] == os.environ["GITHUB_SHA"]
-                  and item["conclusion"] == "success"
-              ]
-              if not candidates:
-                  raise SystemExit(
-                      f"{workflow}: no successful run for {os.environ['GITHUB_SHA']}"
-                  )
-              records.append({"workflow_file": workflow, **candidates[0]})
-          Path("promotion-evidence/qualification-runs.json").write_text(
-              json.dumps(records, indent=2, sort_keys=True) + "\n",
-              encoding="utf-8",
-          )
-          PY
+          python3 -m scripts.ci.verify_release_qualification \
+            --commit "${GITHUB_SHA}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --output promotion-evidence/qualification-runs.json
       - name: Retain qualification run identities
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -162,13 +117,11 @@ jobs:
           IMAGE_NAME: ${{ matrix.name }}
         run: |
           set -euo pipefail
-          mkdir -p promotion-evidence .trivy-cache
-          docker run --rm +            --volume "${HOME}/.docker:/root/.docker:ro" +            --volume "${PWD}/promotion-evidence:/output" +            anchore/syft:v1.50.0@sha256:1288ea4c8b38767b4e620c1e312c8cb26b6e887a99b4f07ab6cd19fc6f225026 +            "registry:${IMAGE_REF}@${DIGEST}" +            --output "cyclonedx-json=/output/${IMAGE_NAME}.cdx.json"
-          docker run --rm +            --volume "${HOME}/.docker:/root/.docker:ro" +            --volume "${PWD}/.trivy-cache:/root/.cache" +            --volume "${PWD}/promotion-evidence:/output" +            aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c +            image --image-src remote --scanners vuln --severity HIGH,CRITICAL +            --format json --output "/output/${IMAGE_NAME}.trivy.json" +            "${IMAGE_REF}@${DIGEST}"
-          docker run --rm +            --volume "${HOME}/.docker:/root/.docker:ro" +            --volume "${PWD}/.trivy-cache:/root/.cache" +            aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c +            image --image-src remote --scanners vuln --ignore-unfixed +            --severity HIGH,CRITICAL --exit-code 1 "${IMAGE_REF}@${DIGEST}"
-          cosign sign --yes "${IMAGE_REF}@${DIGEST}"
-          cosign verify +            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/promote-images.yml@${GITHUB_REF}" +            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" +            "${IMAGE_REF}@${DIGEST}"
-          python tools/promotion_manifest.py record +            --name "${IMAGE_NAME}" --image "${IMAGE_REF}" --digest "${DIGEST}" +            --source-commit "${GITHUB_SHA}" +            --sbom "promotion-evidence/${IMAGE_NAME}.cdx.json" +            --vulnerability-report "promotion-evidence/${IMAGE_NAME}.trivy.json" +            --output "promotion-evidence/${IMAGE_NAME}.image.json"
+          bash scripts/ci/promote_image.sh \
+            --name "${IMAGE_NAME}" \
+            --image "${IMAGE_REF}" \
+            --digest "${DIGEST}" \
+            --source-commit "${GITHUB_SHA}"
       - name: Publish GitHub build provenance
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
@@ -229,13 +182,11 @@ jobs:
           DIGEST: ${{ steps.base.outputs.digest }}
         run: |
           set -euo pipefail
-          mkdir -p promotion-evidence .trivy-cache
-          docker run --rm --volume "${HOME}/.docker:/root/.docker:ro" +            --volume "${PWD}/promotion-evidence:/output" +            anchore/syft:v1.50.0@sha256:1288ea4c8b38767b4e620c1e312c8cb26b6e887a99b4f07ab6cd19fc6f225026 +            "registry:${BASE_REF}@${DIGEST}" +            --output "cyclonedx-json=/output/drone-colmap-base.cdx.json"
-          docker run --rm --volume "${HOME}/.docker:/root/.docker:ro" +            --volume "${PWD}/.trivy-cache:/root/.cache" +            --volume "${PWD}/promotion-evidence:/output" +            aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c +            image --image-src remote --scanners vuln --severity HIGH,CRITICAL +            --format json --output /output/drone-colmap-base.trivy.json +            "${BASE_REF}@${DIGEST}"
-          docker run --rm --volume "${HOME}/.docker:/root/.docker:ro" +            --volume "${PWD}/.trivy-cache:/root/.cache" +            aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c +            image --image-src remote --scanners vuln --ignore-unfixed +            --severity HIGH,CRITICAL --exit-code 1 "${BASE_REF}@${DIGEST}"
-          cosign sign --yes "${BASE_REF}@${DIGEST}"
-          cosign verify +            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/promote-images.yml@${GITHUB_REF}" +            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" +            "${BASE_REF}@${DIGEST}"
-          python tools/promotion_manifest.py record +            --name drone-colmap-base --image "${BASE_REF}" --digest "${DIGEST}" +            --source-commit "${GITHUB_SHA}" +            --sbom promotion-evidence/drone-colmap-base.cdx.json +            --vulnerability-report promotion-evidence/drone-colmap-base.trivy.json +            --output promotion-evidence/drone-colmap-base.image.json
+          bash scripts/ci/promote_image.sh \
+            --name drone-colmap-base \
+            --image "${BASE_REF}" \
+            --digest "${DIGEST}" \
+            --source-commit "${GITHUB_SHA}"
       - name: Publish base build provenance
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
@@ -262,12 +213,11 @@ jobs:
           DIGEST: ${{ steps.colmap.outputs.digest }}
         run: |
           set -euo pipefail
-          docker run --rm --volume "${HOME}/.docker:/root/.docker:ro" +            --volume "${PWD}/promotion-evidence:/output" +            anchore/syft:v1.50.0@sha256:1288ea4c8b38767b4e620c1e312c8cb26b6e887a99b4f07ab6cd19fc6f225026 +            "registry:${COLMAP_REF}@${DIGEST}" +            --output "cyclonedx-json=/output/drone-colmap.cdx.json"
-          docker run --rm --volume "${HOME}/.docker:/root/.docker:ro" +            --volume "${PWD}/.trivy-cache:/root/.cache" +            --volume "${PWD}/promotion-evidence:/output" +            aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c +            image --image-src remote --scanners vuln --severity HIGH,CRITICAL +            --format json --output /output/drone-colmap.trivy.json +            "${COLMAP_REF}@${DIGEST}"
-          docker run --rm --volume "${HOME}/.docker:/root/.docker:ro" +            --volume "${PWD}/.trivy-cache:/root/.cache" +            aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c +            image --image-src remote --scanners vuln --ignore-unfixed +            --severity HIGH,CRITICAL --exit-code 1 "${COLMAP_REF}@${DIGEST}"
-          cosign sign --yes "${COLMAP_REF}@${DIGEST}"
-          cosign verify +            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/promote-images.yml@${GITHUB_REF}" +            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" +            "${COLMAP_REF}@${DIGEST}"
-          python tools/promotion_manifest.py record +            --name drone-colmap --image "${COLMAP_REF}" --digest "${DIGEST}" +            --source-commit "${GITHUB_SHA}" +            --sbom promotion-evidence/drone-colmap.cdx.json +            --vulnerability-report promotion-evidence/drone-colmap.trivy.json +            --output promotion-evidence/drone-colmap.image.json
+          bash scripts/ci/promote_image.sh \
+            --name drone-colmap \
+            --image "${COLMAP_REF}" \
+            --digest "${DIGEST}" \
+            --source-commit "${GITHUB_SHA}"
       - name: Publish COLMAP build provenance
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
@@ -305,9 +255,21 @@ jobs:
       - name: Build and keyless-sign release manifest
         run: |
           set -euo pipefail
-          python tools/promotion_manifest.py assemble +            --records-directory promotion-evidence +            --qualification-runs promotion-evidence/qualification-runs.json +            --release-tag "${GITHUB_REF_NAME}" +            --source-commit "${GITHUB_SHA}" +            --output promotion-evidence/release-manifest.json
-          cosign sign-blob --yes +            --bundle promotion-evidence/release-manifest.sigstore.json +            promotion-evidence/release-manifest.json
-          cosign verify-blob +            --bundle promotion-evidence/release-manifest.sigstore.json +            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/promote-images.yml@${GITHUB_REF}" +            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" +            promotion-evidence/release-manifest.json
+          python3 tools/promotion_manifest.py assemble \
+            --records-directory promotion-evidence \
+            --qualification-runs promotion-evidence/qualification-runs.json \
+            --release-tag "${GITHUB_REF_NAME}" \
+            --source-commit "${GITHUB_SHA}" \
+            --output promotion-evidence/release-manifest.json
+          cosign sign-blob --yes \
+            --bundle promotion-evidence/release-manifest.sigstore.json \
+            promotion-evidence/release-manifest.json
+          cosign verify-blob \
+            --bundle promotion-evidence/release-manifest.sigstore.json \
+            --certificate-identity \
+              "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/promote-images.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            promotion-evidence/release-manifest.json
       - name: Retain signed release manifest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

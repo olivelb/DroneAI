@@ -450,7 +450,7 @@ durable admin credential, then remove `api-keys.json`. Keep `session-secret` and
 durable credential.
 
 The protected preproduction overlay always enables bounded stage Jobs and
-rejects fused compute. Before installing it, provision the five existing
+rejects fused compute. Before installing it, provision the six existing
 Secrets named by `stageJobs.credentialSecrets` in the preproduction values.
 Each must contain `stage-database-url`, `s3-access-key` and `s3-secret-key`,
 using a distinct non-owner `NOBYPASSRLS` database role and least-privilege
@@ -491,14 +491,18 @@ for Gaussian training and filtering; this SAM3 change does not reduce those
 independent envelopes. Repeat the focused canary on the chosen OVH SKU and
 architecture before activation.
 
-For the in-cluster PostgreSQL preproduction option, create or reconcile the
-external Secrets without printing their values:
+The former bootstrap helper is retired: it could not safely derive the distinct
+API RLS role and six Stage Job identities from Terraform outputs. Create or
+reconcile those Secrets through a password manager or external-secrets
+controller, then run the read-only preflight:
 
 ```bash
-export TERRAFORM_BIN="$HOME/.cache/codex/terraform-1.14.6/terraform"
 export KUBECONFIG="$HOME/.config/droneai/kubeconfig-preprod.yaml"
-scripts/deploy/bootstrap-ovh-preprod-secrets.sh
+scripts/deploy/verify-ovh-preprod-prerequisites.sh
 ```
+
+The preflight verifies every required key, minimum auth-secret lengths and that
+Stage Jobs do not reuse database or S3 principals. It never prints secret data.
 
 ## 8. Deploy the CPU control plane first
 
@@ -531,22 +535,21 @@ curl --fail https://api-droneai-preprod.olembo.fr/
 ```
 
 The configured OVHcloud workstation can perform the same CPU-only deployment
-with the qualified local executor values file. The wrapper resolves only non-secret
-Terraform outputs, reconciles Kubernetes Secrets separately and uses Helm
-`--atomic --wait --wait-for-jobs`:
+with the qualified local executor values file. The wrapper resolves only
+non-secret Terraform outputs, verifies externally managed Secrets read-only and
+uses Helm `--atomic --wait --wait-for-jobs`:
 
 ```bash
 export TERRAFORM_BIN="$HOME/.cache/codex/terraform-1.14.6/terraform"
 export KUBECONFIG="$HOME/.config/droneai/kubeconfig-preprod.yaml"
-scripts/deploy/deploy-ovh-preprod-cpu.sh
+API_IMAGE='<qualified-api-reference@sha256:...>' \
+FRONTEND_IMAGE='<qualified-frontend-reference@sha256:...>' \
+RELEASE_VALUES_FILE='charts/drone-ai/values-ovh-preprod.local.yaml' \
+  scripts/deploy/deploy-ovh-preprod-cpu.sh
 ```
 
-For an existing release, the wrapper reuses the deployed API and frontend
-digests and requires the control worker to match the API. Supply both
-`API_IMAGE` and `FRONTEND_IMAGE` explicitly for a new release, together
-with `RELEASE_VALUES_FILE` for the qualified executor overlay as described
-below. `IMAGE_TAG` is rejected; old tag-based releases require explicit
-migration to digests.
+Every deployment requires `RELEASE_VALUES_FILE`; Helm validates all API,
+frontend and executor references as OCI digests. `IMAGE_TAG` is rejected.
 
 At this stage Kafka, PostgreSQL, API, control workers and frontend run; GPU
 Stage Jobs remain pending until a qualified GPU pool is available.
@@ -862,12 +865,10 @@ RELEASE_VALUES_FILE="charts/drone-ai/values-ovh-preprod.local.yaml" \
 scripts/deploy/deploy-ovh-preprod-cpu.sh
 ```
 
-With both image variables omitted, the helper reuses the deployed API and
-frontend digests and checks that the control worker runs the same API image.
-A deployment still using tags is rejected: supply both qualified digest
-references explicitly for its migration. `IMAGE_TAG` no longer controls
-cloud deployment. Local `deploy.sh distributed --stage-jobs GIT_SHA` retains
-its development-only tag contract.
+The two image variables may be omitted only when the release values file itself
+contains their qualified digests. The helper never reuses live deployment state
+implicitly. Local `deploy.sh distributed --stage-jobs GIT_SHA` retains its
+development-only tag contract.
 
 
 ### Network policy qualification

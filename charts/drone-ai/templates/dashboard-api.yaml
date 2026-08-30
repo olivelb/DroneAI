@@ -12,6 +12,16 @@
 {{- if and $protectedStageJobEnvironment (not .Values.dashboardApi.observability.metricsEnabled) }}
 {{- fail "dashboardApi.observability.metricsEnabled must be true in staging and production" }}
 {{- end }}
+{{- if and (eq .Values.dashboardApi.environment "production") (not .Values.observability.alerts.enabled) }}
+{{- fail "observability.alerts.enabled must be true in production" }}
+{{- end }}
+{{- if and (eq .Values.dashboardApi.environment "production") .Values.kafka.enabled }}
+{{- fail "kafka.enabled must be false in production; use an externally operated Kafka service" }}
+{{- end }}
+{{- $kafkaBroker := trim .Values.kafka.broker }}
+{{- if and (eq .Values.dashboardApi.environment "production") (or (not $kafkaBroker) (contains "REPLACE_" $kafkaBroker)) }}
+{{- fail "kafka.broker must identify an explicit external service in production" }}
+{{- end }}
 {{- if and $protectedStageJobEnvironment (not .Values.storage.existingSecret) }}
 {{- fail "storage.existingSecret is required in staging and production" }}
 {{- end }}
@@ -248,6 +258,8 @@ spec:
           value: {{ .Values.dashboardApi.observability.metricsPort | quote }}
         - name: DRONEAI_SESSION_MAX_AGE_SECONDS
           value: {{ .Values.dashboardApi.auth.sessionMaxAgeSeconds | quote }}
+        - name: DRONEAI_HTTP_MAX_BODY_BYTES
+          value: {{ .Values.dashboardApi.http.maxBodyBytes | quote }}
         {{- if .Values.dashboardApi.auth.existingSecret }}
         - name: DRONEAI_API_KEYS_JSON
           valueFrom:
@@ -260,6 +272,12 @@ spec:
             secretKeyRef:
               name: {{ .Values.dashboardApi.auth.existingSecret }}
               key: {{ .Values.dashboardApi.auth.sessionSecretKey }}
+        - name: DRONEAI_SESSION_SIGNING_KEYS_JSON
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.dashboardApi.auth.existingSecret }}
+              key: {{ .Values.dashboardApi.auth.sessionSigningKeysSecretKey }}
+              optional: true
         - name: DRONEAI_CREDENTIAL_PEPPER
           valueFrom:
             secretKeyRef:

@@ -5,9 +5,19 @@ global:
   imagePullPolicy: IfNotPresent
   requireImmutableImages: true
 
+observability:
+  alerts:
+    enabled: true
+
+# Production uses an externally operated, replicated and authenticated Kafka
+# service. The chart's single-broker PLAINTEXT StatefulSet is development-only.
+kafka:
+  enabled: false
+  broker: "REPLACE_EXTERNAL_KAFKA_BROKER"
+
 networkPolicy:
   enabled: true
-  ingressNamespace: ingress-nginx
+  ingressNamespace: traefik
   monitoringNamespace: monitoring
 
 storage:
@@ -113,9 +123,9 @@ stageJobs:
 
 ingress:
   enabled: true
-  className: nginx
+  className: traefik
   annotations:
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
   hosts:
     - host: droneai.example.com
       paths:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import threading
 from contextlib import contextmanager
 
@@ -9,6 +10,7 @@ import pytest
 
 control_runtime = importlib.import_module("app4-dashboard.api.control_runtime")
 control_worker = importlib.import_module("app4-dashboard.api.control_worker")
+control_worker_health = importlib.import_module("app4-dashboard.api.control_worker_health")
 health = importlib.import_module("app4-dashboard.api.health")
 main = importlib.import_module("app4-dashboard.api.main")
 
@@ -144,12 +146,38 @@ def test_elected_worker_waits_then_runs_and_releases_leadership(monkeypatch):
         "start_control_loops",
         lambda _stop_event: supervisor,
     )
+    heartbeats = []
+    monkeypatch.setattr(control_worker, "record_heartbeat", heartbeats.append)
 
     control_worker._run_elected_loops(process_stop, 0.001)
 
     assert len(acquisition_attempts) == 2
     assert supervisor.stopped is True
     assert lease.released is True
+    assert heartbeats[0] == "follower"
+    assert heartbeats[1:] == ["leader", "leader"]
+
+
+def test_control_worker_probes_require_fresh_heartbeat_and_database(
+    monkeypatch,
+    tmp_path,
+):
+    path = tmp_path / "health.json"
+    monkeypatch.setenv("DRONEAI_CONTROL_HEALTH_PATH", str(path))
+    monkeypatch.setenv("DRONEAI_CONTROL_HEALTH_MAX_AGE_SECONDS", "15")
+    control_worker_health.record_heartbeat("leader")
+
+    assert control_worker_health.heartbeat_is_fresh()
+    monkeypatch.setattr(control_worker_health, "database_is_available", lambda: True)
+    assert control_worker_health.probe_is_healthy("ready")
+    monkeypatch.setattr(control_worker_health, "database_is_available", lambda: False)
+    assert not control_worker_health.probe_is_healthy("ready")
+    assert control_worker_health.probe_is_healthy("live")
+
+    payload = json.loads(path.read_text())
+    payload["checked_at"] -= 16
+    path.write_text(json.dumps(payload))
+    assert not control_worker_health.probe_is_healthy("live")
 
 
 def test_database_readiness_executes_a_real_query(monkeypatch):

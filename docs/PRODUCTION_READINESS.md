@@ -38,7 +38,11 @@ overlay. Before installation, create:
 - the API auth Secret with a distinct random `session-secret` and
   `credential-pepper`, each at least 32 characters;
 - during first adoption only, an `api-keys.json` bootstrap admin entry;
-- the ingress TLS Secret.
+- the ingress TLS Secret;
+- an externally operated, replicated and authenticated Kafka endpoint; the
+  chart's single-broker PLAINTEXT Kafka remains development-only;
+- Prometheus Operator CRDs and an alert receiver for the production-enabled
+  `PrometheusRule` resources.
 
 The API database role must be `NOSUPERUSER`, `NOBYPASSRLS` and must not own
 application tables. Provisioning grants, transaction semantics and the
@@ -123,6 +127,28 @@ kubectl -n drone-ai create secret generic drone-ai-api-auth \
 ```
 
 Do not pass any of these values as a command-line literal or commit the files.
+
+For zero-downtime session rotation, optionally add
+`session-signing-keys.json` with the bounded format below. New cookies carry the
+current `kid`; cookies signed by retained previous keys remain valid until their
+normal expiry. Keep at most five keys and remove an old key only after
+`dashboardApi.auth.sessionMaxAgeSeconds` has elapsed:
+
+```json
+{
+  "current": "2026-09",
+  "keys": {
+    "2026-09": "a-new-random-secret-of-at-least-32-characters",
+    "2026-08": "the-previous-random-secret-of-at-least-32-characters"
+  }
+}
+```
+
+The API rejects request bodies larger than
+`dashboardApi.http.maxBodyBytes` (2 MiB by default) before FastAPI parses JSON
+or forms. Imagery continues to upload directly to object storage. The frontend
+enforces a per-request nonce CSP for scripts, exposes a bounded
+`/api/csp-report` receiver and does not use a report-only script policy.
 
 After migration `0025`, use the bootstrap key once to call
 `POST /auth/bootstrap`, issue and verify durable admin credentials through
@@ -376,8 +402,11 @@ not reserve the GPU runner.
 Production images are promoted only by `promote-images.yml` from a
 GitHub-verified signed platform tag whose commit is on `main`. The workflow
 requires successful commit-scoped CI, CUDA-container, physical-GPU and CodeQL
-runs; builds the five image identities in hosted builders; repeats the
-fixable-CVE gate; publishes BuildKit/GitHub provenance; signs each digest with
+runs, including a manually dispatched successful `cuda-tests` job and its
+retained evidence artifact; builds the five image identities in hosted
+builders; repeats the fixable-CVE gate and rejects unfixed HIGH/CRITICAL CVEs
+without an active image-scoped entry in `security/unfixed-cve-waivers.json`;
+publishes BuildKit/GitHub provenance; signs each digest with
 Sigstore OIDC; and retains a signed release manifest with SBOM hashes and exact
 qualification run URLs. Repository code cannot configure environment approval:
 `production-promotion` must have required reviewers before the first tag.

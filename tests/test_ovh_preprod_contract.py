@@ -237,24 +237,21 @@ def test_preprod_publication_never_implicitly_builds_gpu_images() -> None:
     assert "registry_bootstrap_password" in wrapper
 
 
-def test_cpu_deployment_bootstraps_external_secrets_and_is_atomic() -> None:
+def test_cpu_deployment_requires_external_secrets_and_is_atomic() -> None:
     secrets = _read(ROOT / "scripts" / "deploy" / "bootstrap-ovh-preprod-secrets.sh")
     deploy = _read(ROOT / "scripts" / "deploy" / "deploy-ovh-preprod-cpu.sh")
 
-    assert "openssl rand -hex 32" in secrets
-    assert "drone-ai-postgres" in secrets
-    assert "drone-ai-storage-preprod" in secrets
-    assert "drone-ai-api-auth" in secrets
-    assert "drone-ai-backup-preprod" in secrets
-    assert "backup_storage_access_key_id" in secrets
-    assert "backup_storage_secret_access_key" in secrets
-    assert "unset api_key" in secrets
+    assert "This bootstrap is retired" in secrets
+    assert "kubectl create" not in secrets
+    assert "kubectl apply" not in secrets
     assert "set -x" not in secrets
-    assert "bootstrap-ovh-preprod-secrets.sh" in deploy
+    assert "verify-ovh-preprod-prerequisites.sh" in deploy
+    assert "bootstrap-ovh-preprod-secrets.sh" not in deploy
+    assert "RELEASE_VALUES_FILE is required" in deploy
     assert "--atomic --wait --wait-for-jobs --timeout 15m" in deploy
     assert "--dry-run=server --hide-secret" in deploy
-    assert "Reusing deployed CPU image digests" in deploy
     assert "API_IMAGE and FRONTEND_IMAGE must use full OCI digests" in deploy
+    assert "--create-namespace" not in deploy
     assert "processingWorker.tag" not in deploy
     assert "postgres.backup.s3Endpoint=${s3_endpoint}" in deploy
     assert "postgres.backup.s3Bucket=${backup_bucket}" in deploy

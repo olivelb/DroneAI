@@ -43,6 +43,9 @@ def test_active_cuda_runtime_contracts_are_aligned_to_12_9_2() -> None:
     assert "nvidia/cuda:12.9.2-base-ubuntu24.04" in deployment
     assert "nvidia/cuda:12.9.2-runtime-ubuntu24.04" in cloud_guide
     assert 'DRONEGS_CUDA_RUNTIME_VERSION="${DRONEGS_CUDA_RUNTIME_VERSION}"' in cmake
+    assert "DRONEGS_ENABLE_SANITIZERS" in cmake
+    assert "-fsanitize=address,undefined" in cmake
+    assert "-DDRONEGS_ENABLE_SANITIZERS=ON" in workflow
     assert "DRONEGS_CUDA_RUNTIME_VERSION" in manifest
     assert '\"cuda_runtime\": \"12.8\"' not in manifest
     assert "NVIDIA CUB | 2.8.2 from CUDA Toolkit 12.9.2" in license_inventory

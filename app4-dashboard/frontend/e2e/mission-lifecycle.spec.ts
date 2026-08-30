@@ -799,8 +799,11 @@ test("dashboard serves browser security headers", async ({ request }) => {
     const headers = response.headers();
     expect(headers["content-security-policy"]).toContain("frame-ancestors 'none'");
     expect(headers["content-security-policy"]).toContain("object-src 'none'");
-    expect(headers["content-security-policy-report-only"]).toContain("script-src 'self'");
-    expect(headers["content-security-policy-report-only"]).toContain("worker-src 'self' blob:");
+    expect(headers["content-security-policy"]).toContain("script-src 'self' 'nonce-");
+    expect(headers["content-security-policy"]).toContain("worker-src 'self' blob:");
+    expect(headers["content-security-policy"]).toContain("report-uri /api/csp-report");
+    expect(headers["content-security-policy-report-only"]).toBeUndefined();
+    expect(headers["report-to"]).toContain("/api/csp-report");
     expect(headers["x-content-type-options"]).toBe("nosniff");
     expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
     expect(headers["permissions-policy"]).toContain("camera=()");

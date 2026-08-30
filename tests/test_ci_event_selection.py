@@ -41,26 +41,29 @@ def test_malformed_or_unknown_event_requires_conservative_fallback(tmp_path: Pat
 
 def test_codeql_languages_are_selected_independently() -> None:
     assert codeql_scopes(["shared/security.py"]) == {
-        "python": True, "javascript": False, "any": True,
+        "python": True, "javascript": False, "c_cpp": False, "any": True,
     }
     assert codeql_scopes(["app4-dashboard/frontend/app/page.tsx"]) == {
-        "python": False, "javascript": True, "any": True,
+        "python": False, "javascript": True, "c_cpp": False, "any": True,
+    }
+    assert codeql_scopes(["app1-colmap/dronegs/src/model.cpp"]) == {
+        "python": False, "javascript": False, "c_cpp": True, "any": True,
     }
     assert codeql_scopes(["docs/OPERATIONS.md", "charts/drone-ai/values.yaml"]) == {
-        "python": False, "javascript": False, "any": False,
+        "python": False, "javascript": False, "c_cpp": False, "any": False,
     }
     assert codeql_scopes(["shared/unknown.template"]) == {
-        "python": True, "javascript": True, "any": True,
+        "python": True, "javascript": True, "c_cpp": True, "any": True,
     }
     assert codeql_scopes([".github/workflows/codeql.yml"]) == {
-        "python": True, "javascript": True, "any": True,
+        "python": True, "javascript": True, "c_cpp": True, "any": True,
     }
     assert codeql_scopes(["tests/test_ci_event_selection.py"]) == {
-        "python": True, "javascript": False, "any": True,
+        "python": True, "javascript": False, "c_cpp": False, "any": True,
     }
 
 
-def test_codeql_selector_manual_run_selects_both(monkeypatch, tmp_path: Path) -> None:
+def test_codeql_selector_manual_run_selects_all_languages(monkeypatch, tmp_path: Path) -> None:
     from scripts.ci.select_codeql import main
 
     output = tmp_path / "output"
@@ -68,5 +71,5 @@ def test_codeql_selector_manual_run_selects_both(monkeypatch, tmp_path: Path) ->
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
     assert main() == 0
     assert output.read_text().splitlines() == [
-        "python=true", "javascript=true", "any=true",
+        "python=true", "javascript=true", "c_cpp=true", "any=true",
     ]
