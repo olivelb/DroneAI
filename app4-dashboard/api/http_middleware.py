@@ -27,7 +27,7 @@ def configured_http_max_body_bytes() -> int:
     return value
 
 
-class RequestBodyLimitMiddleware(BaseHTTPMiddleware):
+class RequestBodyLimitMiddleware(BaseHTTPMiddleware):  # type: ignore[misc]
     """Reject oversized bodies before FastAPI parses route models or forms."""
 
     def __init__(self, app: Any, *, max_body_bytes: int) -> None:

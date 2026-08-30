@@ -436,6 +436,7 @@ def _verified_session_payload(token: str) -> dict[str, object] | None:
     except RuntimeError:
         return None
     parts = token.split(".")
+    candidate_secrets: tuple[str, ...]
     if len(parts) == 3:
         kid, encoded, signature = parts
         secret = signing_keys.keys.get(kid)
