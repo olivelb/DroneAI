@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -77,6 +78,7 @@ DETECTION_EFFECTIVE_PARALLELISM_KEY = "effective_shard_parallelism"
 DETECTION_INFERENCE_RESOURCE_CLASS_KEY = "detection_inference_resource_class"
 CANCELLATION_JOB_CLEANUP_AT_KEY = "cancellation_job_cleanup_at"
 GPU_ARCHITECTURE_LABEL = "droneai.io/gpu-architecture"
+JOB_EXECUTION_DIGEST_ANNOTATION = "droneai.io/execution-spec-sha256"
 SCHEDULER_CANDIDATE_PAGE_SIZE = 500
 
 
@@ -1006,15 +1008,71 @@ def _record_dispatch_error(
         sync_analysis_stage(session, run)
 
 
+def _job_execution_signature(job: dict[str, Any]) -> dict[str, Any]:
+    """Project a live Job onto execution-critical, non-defaulted fields."""
+
+    spec = cast(dict[str, Any], job.get("spec") or {})
+    template = cast(dict[str, Any], spec.get("template") or {})
+    pod = cast(dict[str, Any], template.get("spec") or {})
+    containers = cast(list[dict[str, Any]], pod.get("containers") or [])
+    stage = next(
+        (container for container in containers if container.get("name") == "stage"),
+        {},
+    )
+    volumes = cast(list[dict[str, Any]], pod.get("volumes") or [])
+    work_volume = next(
+        (volume for volume in volumes if volume.get("name") == "work"),
+        {},
+    )
+    return {
+        "runtimeClassName": pod.get("runtimeClassName"),
+        "serviceAccountName": pod.get("serviceAccountName"),
+        "nodeSelector": pod.get("nodeSelector"),
+        "tolerations": pod.get("tolerations"),
+        "image": stage.get("image"),
+        "command": stage.get("command"),
+        "env": stage.get("env"),
+        "resources": stage.get("resources"),
+        "workVolume": work_volume,
+    }
+
+
 def _create_job(client: KubernetesJobClient, reserved: ReservedStageJob) -> None:
     job = build_stage_job(reserved.request, reserved.config)
     if job["metadata"]["name"] != reserved.job_name:
         raise RuntimeError("Reserved stage Job identity does not match its manifest")
+    encoded = json.dumps(
+        job,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    execution_digest = hashlib.sha256(encoded).hexdigest()
+    metadata = cast(dict[str, Any], job["metadata"])
+    annotations = cast(
+        dict[str, str],
+        metadata.setdefault("annotations", {}),
+    )
+    annotations[JOB_EXECUTION_DIGEST_ANNOTATION] = execution_digest
     try:
         client.create(job)
     except KubernetesApiError as error:
         if error.status_code != 409:
             raise
+        existing = client.get(reserved.job_name)
+        existing_metadata = cast(dict[str, Any], existing.get("metadata") or {})
+        existing_annotations = cast(
+            dict[str, str],
+            existing_metadata.get("annotations") or {},
+        )
+        if (
+            existing_annotations.get(JOB_EXECUTION_DIGEST_ANNOTATION)
+            != execution_digest
+            or _job_execution_signature(existing)
+            != _job_execution_signature(job)
+        ):
+            raise RuntimeError(
+                "Existing Kubernetes Job does not match the reserved execution spec"
+            ) from error
 
 
 def dispatch_reserved_jobs(
