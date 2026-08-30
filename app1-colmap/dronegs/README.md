@@ -566,6 +566,16 @@ and persists the effective limit in the derived training workspace for every
 downstream Gaussian phase. The immutable reconstruction artifact and all
 scientific or reconstruction parameters remain unchanged.
 
+For node-local recovery after an interrupted or failed `gaussian_training`
+Job, a retry may set `local_workspace_reuse_run_id` to the bounded identifier
+of an earlier workspace on the same configured work drive. Every file declared
+by the immutable upstream artifact is checked by size and SHA-256. Matching
+files are reused in place, while missing or changed files are restored from
+object storage before training starts. The borrowed workspace is preserved on
+success or failure, and the resulting stage provenance records its source run
+identifier. This recovery parameter is operational only and does not alter the
+immutable reconstruction artifact or scientific recipe.
+
 Checkpoint cadence is governed by the existing `--checkpoint-every` option.
 The performance comparator may vary it together with cache and prefetch
 tuning, but still requires the same trainer binary, scientific parameters and

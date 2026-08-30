@@ -145,11 +145,48 @@ def _prepare_stage_workspace(context: StageExecutionContext) -> Path:
     return workspace
 
 
-def _cleanup_stage_workspace(workspace: Path) -> None:
+_GAUSSIAN_REUSE_WORKSPACE_RUN_ID_KEY = "local_workspace_reuse_run_id"
+
+
+def _prepare_gaussian_training_workspace(
+    context: StageExecutionContext,
+) -> tuple[Path, str | None]:
+    raw_source_run_id = context.parameters.get(
+        _GAUSSIAN_REUSE_WORKSPACE_RUN_ID_KEY
+    )
+    if raw_source_run_id is None:
+        return _prepare_stage_workspace(context), None
+    if not isinstance(raw_source_run_id, str):
+        raise ValueError("local_workspace_reuse_run_id must be a string")
+    root = Path(os.getenv("DRONEAI_STAGE_WORK_ROOT", "/work")).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    workspace = cast(
+        Path,
+        safe_child_path(
+            root,
+            raw_source_run_id,
+            field_name="local Gaussian workspace run id",
+        ),
+    )
+    if workspace == _workspace_path(context.run_id):
+        raise ValueError("A Gaussian retry cannot reuse its own workspace")
+    if not workspace.is_dir():
+        raise ValueError(
+            f"Local Gaussian recovery workspace is missing: {workspace}"
+        )
+    runtime.cancellation_state.start_mission(
+        context.vol_id,
+        context.mission_attempt,
+        organization_id=context.organization_id,
+    )
+    return workspace, raw_source_run_id
+
+
+def _cleanup_stage_workspace(workspace: Path, *, preserve: bool = False) -> None:
     try:
         runtime.cancellation_state.clear()
     finally:
-        if workspace.exists():
+        if not preserve and workspace.exists():
             shutil.rmtree(workspace)
 
 
@@ -276,7 +313,9 @@ def run_gaussian_training_stage(
     control: StageExecutionControl,
 ) -> StageExecutionResult:
     """Train and publish an unfiltered Gaussian model from reconstruction."""
-    workspace = _prepare_stage_workspace(context)
+    workspace, reused_from_run_id = _prepare_gaussian_training_workspace(
+        context
+    )
     try:
         restored = _restore_input_workspace(
             context,
@@ -427,10 +466,23 @@ def run_gaussian_training_stage(
                     published,
                     restored,
                 ),
+                **(
+                    {
+                        "local_workspace_reuse": {
+                            "source_run_id": reused_from_run_id,
+                            "verified_against_upstream_manifest": True,
+                        }
+                    }
+                    if reused_from_run_id is not None
+                    else {}
+                ),
             },
         )
     finally:
-        _cleanup_stage_workspace(workspace)
+        _cleanup_stage_workspace(
+            workspace,
+            preserve=reused_from_run_id is not None,
+        )
 
 
 def run_gaussian_filtering_stage(
