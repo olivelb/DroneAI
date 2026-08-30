@@ -42,7 +42,7 @@ def test_gpu_qualification_executes_native_cuda_tests_in_container() -> None:
     assert "workflow_dispatch:" in workflow
     assert "scripts.ci.select_gpu_validation" in workflow
     assert "needs.changes.outputs.gpu_required == 'true'" in workflow
-    assert "runs-on: [self-hosted, linux, x64, gpu, cuda]" in workflow
+    assert "runs-on: [self-hosted, linux, x64, gpu, cuda, msi]" in workflow
     assert "scripts/ci/validate_cuda_containers.sh gpu" in workflow
     assert "docker run --rm --gpus all" in script
     assert "-DDRONEGS_CUDA_ARCHITECTURES=native" in script
