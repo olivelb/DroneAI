@@ -24,6 +24,7 @@ def test_production_overlay_requires_immutable_application_images() -> None:
     assert 'regexMatch "@sha256:[0-9a-f]{64}$" .image' in helpers
     assert "Mutable application image tag found in the production render" in ci
     assert ci.count("--set-string") >= 8
+    assert '--set-string kafka.broker="kafka.ci.internal:9093"' in ci
     assert "${CI_OCI_DIGEST}" in ci
 
 

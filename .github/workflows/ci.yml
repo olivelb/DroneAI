@@ -479,6 +479,7 @@ jobs:
           --set-string dashboardApi.image="drone-dashboard-api@${CI_OCI_DIGEST}"
           --set-string dashboardFrontend.image="drone-dashboard-frontend@${CI_OCI_DIGEST}"
           --set-string dashboardApi.proxy.trustedCidrs="10.0.0.0/8"
+          --set-string kafka.broker="kafka.ci.internal:9093"
           --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.gaussian_training.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
