@@ -55,11 +55,13 @@ class KafkaConnectionSettings:
             raise RuntimeError("KAFKA_BROKER must not be empty")
         if self.security_protocol not in _SUPPORTED_PROTOCOLS:
             raise RuntimeError("KAFKA_SECURITY_PROTOCOL is not supported")
-        if environment.strip().lower() in _PROTECTED_ENVIRONMENTS:
-            if self.security_protocol not in _ENCRYPTED_PROTOCOLS:
-                raise RuntimeError(
-                    "Kafka transport must use SSL or SASL_SSL in staging and production"
-                )
+        if (
+            environment.strip().lower() in _PROTECTED_ENVIRONMENTS
+            and self.security_protocol not in _ENCRYPTED_PROTOCOLS
+        ):
+            raise RuntimeError(
+                "Kafka transport must use SSL or SASL_SSL in staging and production"
+            )
         if self.security_protocol.startswith("SASL"):
             if self.sasl_mechanism not in _SUPPORTED_SASL_MECHANISMS:
                 raise RuntimeError("KAFKA_SASL_MECHANISM is not supported")

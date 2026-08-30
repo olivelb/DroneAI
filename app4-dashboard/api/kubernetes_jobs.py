@@ -246,7 +246,7 @@ def _contains_expected(actual: Any, expected: Any) -> bool:
         return (
             isinstance(actual, list)
             and len(actual) == len(expected)
-            and all(_contains_expected(left, right) for left, right in zip(actual, expected))
+            and all(_contains_expected(left, right) for left, right in zip(actual, expected, strict=True))
         )
     return bool(actual == expected)
 
