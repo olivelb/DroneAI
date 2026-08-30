@@ -52,6 +52,18 @@ unset(_dronegs_cuda_version)
 
 option(DRONEGS_BUILD_TESTS "Build DroneGS native tests" ON)
 option(DRONEGS_BUILD_BENCHMARKS "Build DroneGS native benchmarks" OFF)
+option(DRONEGS_ENABLE_SANITIZERS "Enable ASan and UBSan for host C++ code" OFF)
+
+if(DRONEGS_ENABLE_SANITIZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(FATAL_ERROR "DRONEGS_ENABLE_SANITIZERS requires GCC or Clang")
+    endif()
+    add_compile_options(
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-omit-frame-pointer>
+        $<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address,undefined>)
+    add_link_options(
+        $<$<LINK_LANGUAGE:CXX>:-fsanitize=address,undefined>)
+endif()
 
 find_package(JPEG REQUIRED)
 find_package(Threads REQUIRED)

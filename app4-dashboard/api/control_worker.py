@@ -16,6 +16,7 @@ from .control_leadership import (
     try_acquire_control_leadership,
 )
 from .control_runtime import start_control_loops
+from .control_worker_health import clear_heartbeat, record_heartbeat
 
 
 logger = logging.getLogger("droneai.control-worker")
@@ -24,8 +25,10 @@ logger = logging.getLogger("droneai.control-worker")
 def _run_supervised_loops(stop_event: threading.Event) -> None:
     supervisor = start_control_loops(stop_event)
     try:
+        record_heartbeat("single")
         while not stop_event.wait(5):
             supervisor.raise_if_unhealthy()
+            record_heartbeat("single")
     finally:
         supervisor.stop()
 
@@ -44,6 +47,7 @@ def _run_elected_loops(
             process_stop_event.wait(poll_seconds)
             continue
         if leadership is None:
+            record_heartbeat("follower")
             process_stop_event.wait(poll_seconds)
             continue
 
@@ -52,9 +56,11 @@ def _run_elected_loops(
         logger.info("Control worker acquired PostgreSQL leadership")
         try:
             supervisor = start_control_loops(leader_stop_event)
+            record_heartbeat("leader")
             while not process_stop_event.wait(poll_seconds):
                 leadership.raise_if_unhealthy()
                 supervisor.raise_if_unhealthy()
+                record_heartbeat("leader")
         except ControlLeadershipError:
             logger.exception("Control worker lost PostgreSQL leadership")
         finally:
@@ -78,6 +84,7 @@ def run(stop_event: threading.Event | None = None) -> None:
     # Every replica validates the protected deployment contract before it can
     # become a follower. A failover must never activate a misconfigured pod.
     bounded_stage_jobs_enabled()
+    clear_heartbeat()
     metrics_server = start_metrics_server()
     try:
         if control_leader_election_enabled():

@@ -83,7 +83,10 @@ builders create the API, frontend, IA, CUDA/COLMAP base and COLMAP runtime
 images in `ghcr.io/<owner>/droneai`. The runtime consumes the exact base digest.
 Every image receives a BuildKit max-mode provenance/SBOM attestation, a
 CycloneDX SBOM, a complete HIGH/CRITICAL Trivy report, a fixable-CVE gate, a
-GitHub artifact attestation and a keyless Sigstore signature. The final
+gate requiring an active owner/reason/expiry waiver for every unfixed
+HIGH/CRITICAL finding, a GitHub artifact attestation and a keyless Sigstore
+signature. Waivers live in `security/unfixed-cve-waivers.json`, are scoped to
+one image identity and fail promotion after expiry. The final
 keyless-signed manifest binds all image digests, SBOM/report hashes and
 qualification run identities to one 40-character commit and platform tag.
 

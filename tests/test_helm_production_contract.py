@@ -24,6 +24,7 @@ def test_production_overlay_requires_immutable_application_images() -> None:
     assert 'regexMatch "@sha256:[0-9a-f]{64}$" .image' in helpers
     assert "Mutable application image tag found in the production render" in ci
     assert ci.count("--set-string") >= 8
+    assert '--set-string kafka.broker="kafka.ci.internal:9093"' in ci
     assert "${CI_OCI_DIGEST}" in ci
 
 
@@ -88,7 +89,11 @@ def test_protected_overlays_expose_operational_metrics_and_alert_thresholds() ->
     assert "metricsEnabled: false" in defaults
     for values in (production, preproduction):
         assert "metricsEnabled: true" in values
+    assert "alerts:\n    enabled: true" in production
     assert "metricsEnabled must be true in staging and production" in api
+    assert "observability.alerts.enabled must be true in production" in api
+    assert "kafka.enabled must be false in production" in api
+    assert "kafka.broker must identify an explicit external service" in api
     for workload in (api, control_worker):
         assert "prometheus.io/scrape" in workload
         assert "DRONEAI_METRICS_ENABLED" in workload
@@ -237,6 +242,10 @@ def test_control_worker_is_separate_from_http_api_and_probes_are_meaningful() ->
     assert "kind: PodDisruptionBudget" in worker
     assert "DRONEAI_CONTROL_LEADER_ELECTION" in worker
     assert "DRONEAI_CONTROL_LEADER_POLL_SECONDS" in worker
+    assert "DRONEAI_CONTROL_HEALTH_MAX_AGE_SECONDS" in worker
+    assert "app4-dashboard.api.control_worker_health" in worker
+    assert "livenessProbe:" in worker
+    assert "readinessProbe:" in worker
     assert "controlWorker.replicaCount must be at least 2" in api
     assert "controlWorker.leaderElection.enabled must be true" in api
     for protected_values in (
@@ -263,6 +272,8 @@ def test_helm_requires_digests_even_if_protected_image_guard_is_disabled() -> No
         args = ["helm", "template", "test", str(CHART), "-f", str(CHART / overlay),
                 "--set", "global.requireImmutableImages=false",
                 "--set-string", "dashboardApi.proxy.trustedCidrs=10.0.0.0/8"]
+        if overlay == "values-production.example.yaml":
+            args += ["--set-string", "kafka.broker=kafka.test:9093"]
         for stage in ("reconstruction", "gaussian_training", "gaussian_filtering",
                       "rasterization", "detection", "gaussian_viewer"):
             args += ["--set-string", f"stageJobs.executors.{stage}.image=registry.test/worker@{digest}"]
@@ -300,6 +311,7 @@ def test_protected_api_requires_narrow_trusted_proxy_cidrs() -> None:
         "-f", str(CHART / "values-production.example.yaml"),
         "--set-string", f"dashboardApi.image=api@{digest}",
         "--set-string", f"dashboardFrontend.image=frontend@{digest}",
+        "--set-string", "kafka.broker=kafka.test:9093",
     ]
     for stage in ("reconstruction", "gaussian_training", "gaussian_filtering",
                   "rasterization", "detection", "gaussian_viewer"):
@@ -344,6 +356,7 @@ def test_protected_network_policies_default_deny_and_allow_only_required_ports()
         "--set-string", f"dashboardApi.image=api@{digest}",
         "--set-string", f"dashboardFrontend.image=frontend@{digest}",
         "--set-string", "dashboardApi.proxy.trustedCidrs=10.0.0.0/8",
+        "--set-string", "kafka.broker=kafka.test:9093",
     ]
     for stage in ("reconstruction", "gaussian_training", "gaussian_filtering",
                   "rasterization", "detection", "gaussian_viewer"):
@@ -373,7 +386,7 @@ def test_protected_network_policies_default_deny_and_allow_only_required_ports()
     api_ingress = policies["dashboard-api-allow"]["spec"]["ingress"]
     assert api_ingress[0]["from"][0]["namespaceSelector"]["matchLabels"][
         "kubernetes.io/metadata.name"
-    ] == "ingress-nginx"
+    ] == "traefik"
 
     disabled = subprocess.run(
         [*args, "--set", "networkPolicy.enabled=false"],
@@ -381,3 +394,37 @@ def test_protected_network_policies_default_deny_and_allow_only_required_ports()
     )
     assert disabled.returncode != 0
     assert "networkPolicy.enabled must be true" in disabled.stderr
+
+
+def test_production_render_rejects_internal_or_implicit_kafka() -> None:
+    import shutil
+    import subprocess
+    import pytest
+
+    if not shutil.which("helm"):
+        pytest.skip("Helm render is mandatory in the dedicated CI job")
+    digest = "sha256:" + "d" * 64
+    base = [
+        "helm", "template", "test", str(CHART),
+        "-f", str(CHART / "values-production.example.yaml"),
+        "--set-string", f"dashboardApi.image=api@{digest}",
+        "--set-string", f"dashboardFrontend.image=frontend@{digest}",
+        "--set-string", "dashboardApi.proxy.trustedCidrs=10.0.0.0/8",
+    ]
+    for stage in ("reconstruction", "gaussian_training", "gaussian_filtering",
+                  "rasterization", "detection", "gaussian_viewer"):
+        base += ["--set-string", f"stageJobs.executors.{stage}.image=worker@{digest}"]
+
+    internal = subprocess.run(
+        [*base, "--set", "kafka.enabled=true", "--set-string", "kafka.broker=kafka.test:9093"],
+        capture_output=True, text=True,
+    )
+    assert internal.returncode != 0
+    assert "kafka.enabled must be false in production" in internal.stderr
+
+    implicit = subprocess.run(
+        [*base, "--set-string", "kafka.broker=REPLACE_EXTERNAL_KAFKA_BROKER"],
+        capture_output=True, text=True,
+    )
+    assert implicit.returncode != 0
+    assert "kafka.broker must identify an explicit external service" in implicit.stderr

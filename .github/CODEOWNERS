@@ -1,0 +1,10 @@
+# Critical release, identity, data and infrastructure boundaries.
+/.github/workflows/ @olivelb
+/scripts/ci/ @olivelb
+/alembic/ @olivelb
+/shared/identity.py @olivelb
+/shared/platform_identity.py @olivelb
+/app4-dashboard/api/security.py @olivelb
+/charts/ @olivelb
+/infra/ @olivelb
+/security/ @olivelb

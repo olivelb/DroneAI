@@ -7,6 +7,9 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 CUDA_WORKFLOW = ROOT / ".github" / "workflows" / "cuda-containers.yml"
 PROMOTION_WORKFLOW = ROOT / ".github" / "workflows" / "promote-images.yml"
+PROMOTE_IMAGE_SCRIPT = ROOT / "scripts" / "ci" / "promote_image.sh"
+QUALIFICATION_SCRIPT = ROOT / "scripts" / "ci" / "verify_release_qualification.py"
+UNFIXED_CVE_SCRIPT = ROOT / "scripts" / "ci" / "verify_unfixed_cves.py"
 PINNED_PYTHON_BASE = re.compile(
     r"^FROM python:3\.12-slim@sha256:[0-9a-f]{64}$",
 )
@@ -166,10 +169,11 @@ def test_frontend_runtime_has_immutable_supply_chain_evidence() -> None:
     assert "--job frontend-container=frontend_container" in workflow
 
 
-def test_source_security_covers_python_and_typescript_without_gpu_or_secrets() -> None:
+def test_source_security_covers_python_typescript_and_cpp_without_gpu_or_secrets() -> None:
     workflow = (WORKFLOWS / "codeql.yml").read_text()
     assert "language: python" in workflow
     assert "language: javascript-typescript" in workflow
+    assert "language: c-cpp" in workflow
     assert "matrix.selected == 'true'" in workflow
     assert "security-events: write" in workflow
     assert "build-mode: none" in workflow
@@ -208,7 +212,13 @@ def test_signed_promotion_is_tag_bound_qualified_and_environment_gated() -> None
         "dronegs-gpu-qualification.yml",
         "codeql.yml",
     ):
-        assert f'              "{required}",' in workflow
+        assert f'    "{required}",' in QUALIFICATION_SCRIPT.read_text(encoding="utf-8")
+    assert "scripts.ci.verify_release_qualification" in workflow
+    qualification = QUALIFICATION_SCRIPT.read_text(encoding="utf-8")
+    assert 'run.get("event") != "workflow_dispatch"' in qualification
+    assert 'job.get("name") == GPU_JOB' in qualification
+    assert 'cuda_job.get("conclusion") != "success"' in qualification
+    assert "dronegs-gpu-validation-{commit}" in qualification
 
 
 def test_signed_promotion_binds_digest_sbom_scan_provenance_and_signature() -> None:
@@ -219,12 +229,31 @@ def test_signed_promotion_binds_digest_sbom_scan_provenance_and_signature() -> N
     assert "attestations: write" in workflow
     assert workflow.count("provenance: mode=max") == 3
     assert workflow.count("sbom: true") == 3
-    assert "anchore/syft:v1.50.0@sha256:" in workflow
-    assert "aquasec/trivy:0.73.0@sha256:" in workflow
-    assert workflow.count("--ignore-unfixed") == 3
-    assert workflow.count("cosign sign --yes") == 3
-    assert workflow.count("cosign verify") >= 4
+    promotion_script = PROMOTE_IMAGE_SCRIPT.read_text(encoding="utf-8")
+    assert "anchore/syft:v1.50.0@sha256:" in promotion_script
+    assert "aquasec/trivy:0.73.0@sha256:" in promotion_script
+    assert "--ignore-unfixed" in promotion_script
+    assert "scripts.ci.verify_unfixed_cves" in promotion_script
+    assert "security/unfixed-cve-waivers.json" in promotion_script
+    assert "cosign sign --yes" in promotion_script
+    assert "cosign verify" in promotion_script
+    assert workflow.count("scripts/ci/promote_image.sh") == 3
+    assert not re.search(r"(?:^|\s)\+\s+(?:--|[A-Za-z])", workflow)
     assert workflow.count("actions/attest-build-provenance@") == 3
     assert "COLMAP_BASE_IMAGE=${{ env.BASE_REF }}@${{ steps.base.outputs.digest }}" in workflow
     assert "tools/promotion_manifest.py assemble" in workflow
     assert "release-manifest.sigstore.json" in workflow
+
+
+def test_critical_boundaries_have_explicit_code_ownership() -> None:
+    codeowners = (ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
+    for path in (
+        "/.github/workflows/",
+        "/scripts/ci/",
+        "/alembic/",
+        "/app4-dashboard/api/security.py",
+        "/charts/",
+        "/infra/",
+        "/security/",
+    ):
+        assert path in codeowners

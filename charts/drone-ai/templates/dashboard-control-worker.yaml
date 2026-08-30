@@ -133,6 +133,8 @@ spec:
           value: {{ .Values.dashboardApi.controlWorker.leaderElection.enabled | quote }}
         - name: DRONEAI_CONTROL_LEADER_POLL_SECONDS
           value: {{ .Values.dashboardApi.controlWorker.leaderElection.pollSeconds | quote }}
+        - name: DRONEAI_CONTROL_HEALTH_MAX_AGE_SECONDS
+          value: {{ .Values.dashboardApi.controlWorker.healthMaxAgeSeconds | quote }}
         - name: DRONEAI_METRICS_ENABLED
           value: {{ .Values.dashboardApi.observability.metricsEnabled | quote }}
         - name: DRONEAI_METRICS_PORT
@@ -151,6 +153,30 @@ spec:
         {{- end }}
         resources:
           {{- toYaml .Values.dashboardApi.controlWorker.resources | nindent 10 }}
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - -m
+            - app4-dashboard.api.control_worker_health
+            - --mode
+            - live
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - python
+            - -m
+            - app4-dashboard.api.control_worker_health
+            - --mode
+            - ready
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
       volumes:
       - name: tmp
         emptyDir: {}

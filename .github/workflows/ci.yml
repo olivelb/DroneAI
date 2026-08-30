@@ -71,15 +71,19 @@ jobs:
       - name: Configure native tests
         run: >-
           cmake -S app1-colmap/dronegs -B build/dronegs-core -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DCMAKE_CUDA_ARCHITECTURES=75
           -DDRONEGS_BUILD_TESTS=ON
           -DDRONEGS_BUILD_BENCHMARKS=OFF
+          -DDRONEGS_ENABLE_SANITIZERS=ON
       - name: Build CPU test targets
         run: >-
           cmake --build build/dronegs-core
           --target dronegs_core_tests dronegs_rasterization_tests
       - name: Run CPU contract tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: >-
           ctest --test-dir build/dronegs-core --output-on-failure
           -R "dronegs_(core|rasterization)_tests"
@@ -475,6 +479,7 @@ jobs:
           --set-string dashboardApi.image="drone-dashboard-api@${CI_OCI_DIGEST}"
           --set-string dashboardFrontend.image="drone-dashboard-frontend@${CI_OCI_DIGEST}"
           --set-string dashboardApi.proxy.trustedCidrs="10.0.0.0/8"
+          --set-string kafka.broker="kafka.ci.internal:9093"
           --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.gaussian_training.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"

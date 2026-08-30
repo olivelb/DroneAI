@@ -207,8 +207,9 @@ The `dronegs-gpu-qualification.yml` workflow runs native CUDA tests only after a
 explicit manual dispatch or a GPU-relevant PR/merge-queue change selected by
 `select_gpu_validation.py`; it has no scheduled trigger. It uses the same
 development container on a self-hosted runner, then verifies driver injection
-in each production CUDA runtime image. It requires a repository runner labelled
-`gpu` and `cuda` plus the repository variable `DRONEGS_GPU_CI=true`. The workflow
+in each production CUDA runtime image. It requires the dedicated repository
+runner labelled `msi`, `gpu` and `cuda` plus the repository variable
+`DRONEGS_GPU_CI=true`. The workflow
 writes the commit, runner and result to the GitHub job summary and retains the
 complete `gpu-validation.log` as a commit-scoped artifact for 30
 days, including failed attempts. This artifact is native GPU qualification evidence; a

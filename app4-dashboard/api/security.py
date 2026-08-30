@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import time
 from base64 import urlsafe_b64decode, urlsafe_b64encode
@@ -75,6 +76,12 @@ class WebSocketAuthorization:
     principal: Principal
     token: str
     peer: str
+
+
+@dataclass(frozen=True)
+class SessionSigningKeys:
+    current_kid: str
+    keys: dict[str, str]
 
 
 def _principal_from_identity(identity: AuthenticatedIdentity) -> Principal:
@@ -314,8 +321,7 @@ def validate_production_configuration() -> None:
         raise RuntimeError(
             "Every production API key requires an explicit organization_id"
         )
-    if len(os.getenv("DRONEAI_SESSION_SECRET", "")) < 32:
-        raise RuntimeError("DRONEAI_SESSION_SECRET must contain at least 32 characters in production")
+    session_signing_keys()
     credential_pepper()
     for name in ("S3_ACCESS_KEY", "S3_SECRET_KEY", "DATABASE_URL"):
         value = os.getenv(name, "").strip()
@@ -344,13 +350,51 @@ def _decode_base64(value: str) -> bytes:
     return urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
+def session_signing_keys() -> SessionSigningKeys:
+    """Return the active session key and bounded verification key-ring."""
+
+    raw = os.getenv("DRONEAI_SESSION_SIGNING_KEYS_JSON", "").strip()
+    if not raw:
+        secret = os.getenv("DRONEAI_SESSION_SECRET", "")
+        if len(secret) < 32:
+            raise RuntimeError(
+                "DRONEAI_SESSION_SECRET must contain at least 32 characters"
+            )
+        return SessionSigningKeys(current_kid="legacy", keys={"legacy": secret})
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            "DRONEAI_SESSION_SIGNING_KEYS_JSON must be valid JSON"
+        ) from error
+    if not isinstance(payload, dict):
+        raise RuntimeError("DRONEAI_SESSION_SIGNING_KEYS_JSON must be an object")
+    current_kid = payload.get("current")
+    keys = payload.get("keys")
+    if not isinstance(current_kid, str) or not re.fullmatch(
+        r"[A-Za-z0-9_-]{1,32}", current_kid
+    ):
+        raise RuntimeError("Session signing current kid is invalid")
+    if not isinstance(keys, dict) or not 1 <= len(keys) <= 5:
+        raise RuntimeError("Session signing keys must contain between 1 and 5 entries")
+    validated: dict[str, str] = {}
+    for kid, secret in keys.items():
+        if not isinstance(kid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", kid):
+            raise RuntimeError("Session signing key id is invalid")
+        if not isinstance(secret, str) or len(secret) < 32:
+            raise RuntimeError(f"Session signing key {kid} must contain at least 32 characters")
+        validated[kid] = secret
+    if current_kid not in validated:
+        raise RuntimeError("Session signing current kid is missing from keys")
+    return SessionSigningKeys(current_kid=current_kid, keys=validated)
+
+
 def issue_session_token(
     principal: Principal,
     max_age_seconds: int,
 ) -> str:
-    secret = os.getenv("DRONEAI_SESSION_SECRET", "")
-    if len(secret) < 32:
-        raise RuntimeError("DRONEAI_SESSION_SECRET must contain at least 32 characters")
+    signing_keys = session_signing_keys()
+    secret = signing_keys.keys[signing_keys.current_kid]
     payload = {
         "subject": principal.subject,
         "role": principal.role,
@@ -381,26 +425,45 @@ def issue_session_token(
             sha256,
         ).digest()
     )
-    return f"{encoded}.{signature}"
+    return f"{signing_keys.current_kid}.{encoded}.{signature}"
 
 
 def _verified_session_payload(token: str) -> dict[str, object] | None:
     """Decode a session token only after its signature has been verified."""
 
-    secret = os.getenv("DRONEAI_SESSION_SECRET", "")
-    if len(secret) < 32:
+    try:
+        signing_keys = session_signing_keys()
+    except RuntimeError:
         return None
-    encoded, separator, signature = token.partition(".")
-    if not separator or not encoded or not signature:
+    parts = token.split(".")
+    candidate_secrets: tuple[str, ...]
+    if len(parts) == 3:
+        kid, encoded, signature = parts
+        secret = signing_keys.keys.get(kid)
+        candidate_secrets = (secret,) if secret is not None else ()
+    elif len(parts) == 2:
+        # Legacy tokens had no kid. Trying the bounded ring enables a gradual
+        # first migration without logging users out.
+        encoded, signature = parts
+        candidate_secrets = tuple(signing_keys.keys.values())
+    else:
         return None
-    expected = _encode_base64(
-        hmac_new(
-            secret.encode("utf-8"),
-            encoded.encode("ascii"),
-            sha256,
-        ).digest()
+    if not encoded or not signature:
+        return None
+    verified = any(
+        secrets.compare_digest(
+            signature,
+            _encode_base64(
+                hmac_new(
+                    secret.encode("utf-8"),
+                    encoded.encode("ascii"),
+                    sha256,
+                ).digest()
+            ),
+        )
+        for secret in candidate_secrets
     )
-    if not secrets.compare_digest(signature, expected):
+    if not verified:
         return None
     try:
         payload = json.loads(_decode_base64(encoded))
