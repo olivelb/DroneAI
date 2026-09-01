@@ -585,6 +585,28 @@ valid PLY nor restarts 30,000 iterations. A compatible result that still fails
 the new threshold fails fast; a newly accepted result discards the large
 optimizer checkpoint after promotion.
 
+Resident training also publishes a lightweight `cell_recovery.json` contract
+for every completed cell. The contract binds the source reconstruction,
+projected bounds, selected cameras and native crops, subset policy, training
+recipe, trainer binary, promoted PLY manifest, passed canary, and core/buffer
+population. A retry validates this record before exporting the cell subset or
+reading either large PLY. Compatible completed cells are therefore skipped
+directly and processing resumes at the first incomplete or incompatible cell.
+
+Host cache size, decode/prefetch worker counts, scratch/output paths, resume
+cursor, automatic-selection metadata, qualification policy label and canary
+thresholds are operational controls; changing them does not invalidate a
+scientifically compatible completed cell.
+
+The cell artifacts are synchronized to durable S3 storage in dependency order:
+`point_cloud.ply`, `buffer.ply`, `trainer_run.json`, `canary_result.json`, then
+`cell_recovery.json`. Publishing the marker last prevents a restarted pod from
+accepting a partially synchronized cell. Outputs created before this contract
+remain safe: they take the legacy full-validation path once, then receive a
+recovery record after their buffer/core validation succeeds. A hash-bound sync
+receipt is stored after the marker; it suppresses redundant large uploads while
+causing an interrupted synchronization to resume on the next local recovery.
+
 ### GPU index normalization
 
 The worker runs COLMAP inside a container, so CUDA device indices are relative to the devices exposed through `CUDA_VISIBLE_DEVICES`, not the host's global GPU numbering.
@@ -772,6 +794,11 @@ the source photograph and expanded by a 128 px margin. DroneGS decodes that
 native JPEG region directly and then composes `tile_mode` inside it, avoiding
 any intermediate image resampling or JPEG recompression. A single partition
 (1×1) remains the default until resident-cap and streamed-product gates pass.
+After point-quality, restricted-track, native-crop and capacity filtering, an
+image is retained only if at least one of its original COLMAP observations
+still references an exported 3D point. Images with zero retained 3D support,
+including held-out views, are removed before DroneGS scheduling; a cell with no
+supported image fails during subset preparation rather than after GPU startup.
 
 #### Step 3: Training
 

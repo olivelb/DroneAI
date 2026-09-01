@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -55,7 +56,7 @@ def test_training_workspace_root_is_operational_and_falls_back_to_checkpoints(
 def test_scientific_subset_report_excludes_operational_preparation_data():
     report = {
         "exported_points": 42,
-        "track_scope": "selected-cameras-and-native-crops-v1",
+        "track_scope": "selected-cameras-native-crops-and-supported-images-v2",
         "timings_seconds": {"total": 1.5},
         "image_transport": {"strategy": "symlink"},
         "process_peak_rss_kib": 2048,
@@ -63,8 +64,204 @@ def test_scientific_subset_report_excludes_operational_preparation_data():
 
     assert workflow._scientific_subset_report(report) == {
         "exported_points": 42,
-        "track_scope": "selected-cameras-and-native-crops-v1",
+        "track_scope": "selected-cameras-native-crops-and-supported-images-v2",
     }
+
+
+def test_cell_recipe_parameters_ignore_host_and_qualification_controls():
+    baseline = workflow.TrainingRequest(
+        data_path="workspace-a",
+        output_path="output-a",
+        dataset_fingerprint="dataset-a",
+        tile_mode_auto=False,
+        dronegs=workflow.DroneGSTuning(
+            profile_id="custom",
+            prefetch_depth=2,
+            decode_workers=2,
+            host_image_cache_mib=2_048,
+            canary_min_psnr=18.0,
+            canary_min_ssim=0.25,
+        ),
+    )
+    operational_change = replace(
+        baseline,
+        data_path="workspace-b",
+        output_path="output-b",
+        dataset_fingerprint="dataset-b",
+        tile_mode_auto=True,
+        dronegs=replace(
+            baseline.dronegs,
+            qualification_policy_id="qualification-v2",
+            prefetch_depth=8,
+            decode_workers=8,
+            host_image_cache_mib=32_768,
+            save_eval_images=False,
+            resume_from="training.ckpt",
+            canary_min_psnr=20.0,
+            canary_min_ssim=0.50,
+        ),
+    )
+
+    expected = workflow._portable_training_parameters(baseline)
+    assert workflow._portable_training_parameters(operational_change) == expected
+    assert workflow._portable_training_parameters(
+        replace(baseline, iterations=baseline.iterations + 1)
+    ) != expected
+
+
+def test_completed_cell_sync_publishes_data_before_marker_and_receipt(tmp_path):
+    output = tmp_path / "cell_13"
+    output.mkdir()
+    for name in (
+        "point_cloud.ply",
+        "buffer.ply",
+        "trainer_run.json",
+        "canary_result.json",
+        "cell_recovery.json",
+    ):
+        (output / name).write_bytes(name.encode("ascii"))
+
+    published: list[tuple[str, int]] = []
+    config = SimpleNamespace(
+        iterations=30_000,
+        checkpoint_callback=lambda path, iteration: published.append(
+            (path.name, iteration)
+        ),
+    )
+
+    workflow._sync_completed_cell(config, output)
+
+    assert published == [
+        ("point_cloud.ply", 30_000),
+        ("buffer.ply", 30_000),
+        ("trainer_run.json", 30_000),
+        ("canary_result.json", 30_000),
+        ("cell_recovery.json", 30_000),
+        (".cell_recovery.s3-synced", 30_000),
+    ]
+    assert (output / ".cell_recovery.s3-synced").read_text(
+        encoding="ascii"
+    ).strip()
+
+
+def test_completed_cell_sync_stops_before_marker_and_retries(tmp_path):
+    output = tmp_path / "cell_13"
+    output.mkdir()
+    for name in (
+        "point_cloud.ply",
+        "buffer.ply",
+        "trainer_run.json",
+        "canary_result.json",
+        "cell_recovery.json",
+    ):
+        (output / name).write_bytes(name.encode("ascii"))
+
+    attempts: list[str] = []
+
+    def fail_buffer(path, _iteration):
+        attempts.append(path.name)
+        return path.name != "buffer.ply"
+
+    config = SimpleNamespace(
+        iterations=30_000,
+        checkpoint_callback=fail_buffer,
+    )
+    workflow._sync_completed_cell(config, output)
+
+    assert attempts == ["point_cloud.ply", "buffer.ply"]
+    assert not (output / ".cell_recovery.s3-synced").exists()
+
+    attempts.clear()
+    config.checkpoint_callback = lambda path, _iteration: (
+        attempts.append(path.name) or True
+    )
+    workflow._sync_completed_cell(config, output)
+    assert attempts[-2:] == [
+        "cell_recovery.json",
+        ".cell_recovery.s3-synced",
+    ]
+
+    attempts.clear()
+    workflow._sync_completed_cell(config, output)
+    assert attempts == []
+
+
+def test_completed_cell_recovery_uses_lightweight_model_validation(monkeypatch):
+    recovery = SimpleNamespace(dataset_fingerprint="dataset:sha256:complete")
+    request_template = SimpleNamespace(
+        dataset_fingerprint="pending-cell-dataset"
+    )
+    bounds = SimpleNamespace()
+    reusable_calls = []
+
+    monkeypatch.setattr(
+        workflow,
+        "load_cell_recovery_record",
+        lambda output, **expected: (
+            recovery
+            if output == "cell-output"
+            and expected == {
+                "expected_cell_label": "cell_13",
+                "expected_recipe_sha256": "recipe",
+                "expected_bounds": bounds,
+                "expected_trainer_binary_sha256": "a" * 64,
+            }
+            else pytest.fail("unexpected recovery lookup")
+        ),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "replace",
+        lambda request, **changes: SimpleNamespace(
+            **(vars(request) | changes)
+        ),
+    )
+
+    def reusable(request, **options):
+        reusable_calls.append((request, options))
+        return object()
+
+    monkeypatch.setattr(workflow, "_reusable_dronegs_result", reusable)
+
+    result = workflow._recover_completed_cell(
+        cell_output="cell-output",
+        cell_label="cell_13",
+        cell_recipe="recipe",
+        cell_bounds=bounds,
+        request_template=request_template,
+        trainer_binary_sha256="a" * 64,
+    )
+
+    assert result is recovery
+    assert reusable_calls[0][0].dataset_fingerprint == (
+        "dataset:sha256:complete"
+    )
+    assert reusable_calls[0][1] == {
+        "trainer_binary_sha256": "a" * 64,
+        "verify_ply_content": False,
+    }
+
+
+def test_missing_cell_recovery_does_not_validate_a_large_model(monkeypatch):
+    monkeypatch.setattr(
+        workflow,
+        "load_cell_recovery_record",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "_reusable_dronegs_result",
+        lambda *_args, **_kwargs: pytest.fail("large model was inspected"),
+    )
+
+    assert workflow._recover_completed_cell(
+        cell_output="cell-output",
+        cell_label="cell_13",
+        cell_recipe="recipe",
+        cell_bounds=SimpleNamespace(),
+        request_template=SimpleNamespace(),
+        trainer_binary_sha256="a" * 64,
+    ) is None
 
 
 def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch):

@@ -348,8 +348,9 @@ class TestColmapStageHelpers(unittest.TestCase):
                 ),
                 patch.object(worker_runtime, "report_mission_progress") as report,
             ):
-                callback(checkpoint, 10)
+                synced = callback(checkpoint, 10)
 
+        self.assertFalse(synced)
         self.assertIn("remains locally durable", report.call_args.kwargs["log"])
 
     def test_gaussian_product_run_resolves_one_reusable_typed_recipe(self):
