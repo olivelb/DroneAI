@@ -581,15 +581,16 @@ A completed Gaussian training result is reusable according to its immutable
 training contract, not according to the current PSNR/SSIM acceptance
 thresholds. If only a canary threshold changes, app1 recomputes the canary from
 the persisted manifest and evaluation metrics. It neither quarantines the
-valid PLY nor restarts 30,000 iterations. A compatible result that still fails
-the new threshold fails fast; a newly accepted result discards the large
-optimizer checkpoint after promotion.
+valid PLY nor restarts 30,000 iterations. A compatible result that misses the
+new threshold emits a structured cell warning and remains reusable. The large
+optimizer checkpoint is discarded after successful model promotion.
 
 Resident training also publishes a lightweight `cell_recovery.json` contract
 for every completed cell. The contract binds the source reconstruction,
 projected bounds, selected cameras and native crops, subset policy, training
-recipe, trainer binary, promoted PLY manifest, passed canary, and core/buffer
-population. A retry validates this record before exporting the cell subset or
+recipe, trainer binary, promoted PLY manifest, recorded canary, and core/buffer
+population. The canary may be passed or failed; a failed result remains an
+explicit quality warning. A retry validates this record before exporting the cell subset or
 reading either large PLY. Compatible completed cells are therefore skipped
 directly and processing resumes at the first incomplete or incompatible cell.
 

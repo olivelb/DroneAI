@@ -438,6 +438,13 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
         training_state=SimpleNamespace(
             final_ply=str(checkpoint),
             merged_model=SimpleNamespace(num_gaussians=1_500_000),
+            quality_alerts=(
+                {
+                    "severity": "warning",
+                    "cell": "cell_24",
+                    "failed_metrics": ["psnr"],
+                },
+            ),
         ),
     )
     monkeypatch.setattr(
@@ -474,6 +481,10 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
     assert calls == ["restore", "prepare", "state", "write", "publish"]
     assert result.kind == "gaussian_training_workspace"
     assert result.metadata["gaussian_count"] == 1_500_000
+    assert result.metadata["quality_status"] == "warning"
+    assert result.metadata["quality_alert_count"] == 1
+    assert result.quality_metrics["quality_status"] == "warning"
+    assert result.quality_metrics["quality_alerts"][0]["cell"] == "cell_24"
     assert result.provenance["trainer_binary_sha256"] == "d" * 64
     assert result.provenance["workspace_transfer"]["restore"] == {
         "manifest_schema_version": 3,

@@ -75,6 +75,7 @@ class GaussianTrainingArtifact:
     facade_subset_result: dict[str, object] | None
     capacity_plan: GaussianCapacityPlan | None = None
     partition_models: tuple[GaussianPartitionArtifact, ...] = ()
+    quality_alerts: tuple[dict[str, object], ...] = ()
 
 @dataclass(frozen=True)
 class GaussianFilteredPartitionArtifact:
@@ -170,6 +171,28 @@ def _required_str(payload: dict[str, Any], name: str) -> str:
     return value
 
 
+def _quality_alerts(payload: dict[str, Any]) -> tuple[dict[str, object], ...]:
+    raw_alerts = payload.get("quality_alerts", [])
+    if not isinstance(raw_alerts, list):
+        raise ValueError("Gaussian training quality alerts are invalid")
+    alerts: list[dict[str, object]] = []
+    for raw in raw_alerts:
+        if not isinstance(raw, dict):
+            raise ValueError("Gaussian training quality alert is invalid")
+        alert = cast(dict[str, object], raw)
+        failed = alert.get("failed_metrics")
+        if (
+            alert.get("severity") != "warning"
+            or not isinstance(alert.get("cell"), str)
+            or not isinstance(failed, list)
+            or not failed
+            or any(not isinstance(metric, str) for metric in failed)
+        ):
+            raise ValueError("Gaussian training quality alert is inconsistent")
+        alerts.append(alert)
+    return tuple(alerts)
+
+
 def _verified_config_sha256(
     payload: dict[str, Any],
     config: GaussianOrthoConfig,
@@ -229,6 +252,9 @@ def write_training_artifact(
         "trainer_binary_sha256": phase.trainer_binary_sha256,
         "gaussian_count": int(total_gaussians),
         "facade_subset_result": phase.training_state.facade_subset_result,
+        "quality_alerts": list(
+            getattr(phase.training_state, "quality_alerts", ())
+        ),
         "capacity_plan": (
             capacity_plan.as_dict()
             if capacity_plan is not None
@@ -287,6 +313,7 @@ def read_training_artifact(
             else None
         ),
         partition_models=tuple(partitions),
+        quality_alerts=_quality_alerts(payload),
     )
     if sum(part.core_gaussian_count for part in partitions) not in {
         0,
@@ -313,6 +340,7 @@ def hydrate_training_phase(
             final_ply=str(artifact.model_path),
             facade_subset_result=artifact.facade_subset_result,
             partition_models=(),
+            quality_alerts=artifact.quality_alerts,
         ),
         backend_name=artifact.backend_name,
         trainer_binary_sha256=artifact.trainer_binary_sha256,
@@ -342,6 +370,7 @@ def hydrate_partitioned_training_phase(
                 )
                 for partition in artifact.partition_models
             ),
+            quality_alerts=artifact.quality_alerts,
         ),
         backend_name=artifact.backend_name,
         trainer_binary_sha256=artifact.trainer_binary_sha256,

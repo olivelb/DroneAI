@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 import json
 import os
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -306,16 +306,15 @@ def _reusable_dronegs_result(
         return None
     canary = evaluate_quality_canary(manifest, request.dronegs)
     write_quality_canary(output, canary)
-    if canary["failed_metrics"]:
-        raise RuntimeError("DroneGS quality canary failed: " + ", ".join(canary["failed_metrics"]))
-    # The promoted PLY + manifest + canary are the durable result. Keeping the
-    # much larger optimizer checkpoint after a successful recovery wastes disk.
+    # Completed training remains reusable even when quality is below policy;
+    # the structured canary is surfaced as a cell-scoped warning downstream.
     (output / "training.ckpt").unlink(missing_ok=True)
     return TrainingResult(
         backend="dronegs",
         ply_path=ply_path,
         manifest_path=manifest_path,
         effective_seed=request.seed,
+        quality_canary=canary,
     )
 
 
@@ -762,6 +761,7 @@ class GaussianTrainingState:
     facade_subset_result: dict[str, object] | None
     preparation_reports: tuple[dict[str, object], ...] = ()
     partition_models: tuple[GaussianPartitionModel, ...] = ()
+    quality_alerts: tuple[dict[str, object], ...] = ()
 
     @property
     def total_gaussians(self) -> int:
@@ -1172,6 +1172,64 @@ def _portable_training_parameters(request: TrainingRequest) -> dict[str, object]
     return cast(dict[str, object], payload)
 
 
+def _cell_quality_alert(
+    cell_label: str,
+    canary: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    if not canary:
+        return None
+    failed = canary.get("failed_metrics")
+    if not isinstance(failed, list) or not failed:
+        return None
+    return {
+        "severity": "warning",
+        "cell": cell_label,
+        "qualification_policy_id": canary.get("qualification_policy_id"),
+        "failed_metrics": list(failed),
+        "psnr": canary.get("psnr"),
+        "minimum_psnr": canary.get("minimum_psnr"),
+        "ssim": canary.get("ssim"),
+        "minimum_ssim": canary.get("minimum_ssim"),
+        "held_out_image_count": canary.get("held_out_image_count"),
+    }
+
+
+def _report_cell_quality_alert(
+    config: GaussianOrthoConfig,
+    progress: int,
+    alert: Mapping[str, object],
+) -> None:
+    failed_metrics = cast(list[str], alert["failed_metrics"])
+    details = ", ".join(
+        f"{metric}={alert.get(metric)!r} "
+        f"(minimum={alert.get(f'minimum_{metric}')!r})"
+        for metric in failed_metrics
+    )
+    _report(
+        config.vol_id,
+        "GAUSS",
+        progress,
+        f"[DroneGS] Quality warning for {alert['cell']}: {details}; "
+        "continuing with the completed cell",
+        config.report_fn,
+    )
+
+
+def _record_cell_quality_alert(
+    alerts: list[dict[str, object]],
+    *,
+    config: GaussianOrthoConfig,
+    progress: int,
+    cell_label: str,
+    canary: Mapping[str, object] | None,
+) -> None:
+    alert = _cell_quality_alert(cell_label, canary)
+    if alert is None:
+        return
+    alerts.append(alert)
+    _report_cell_quality_alert(config, progress, alert)
+
+
 def _sync_completed_cell(
     config: GaussianOrthoConfig,
     cell_output: str | Path,
@@ -1214,7 +1272,6 @@ def _recover_completed_cell(
     cell_label: str,
     cell_recipe: str,
     cell_bounds: CellBounds,
-    request_template: TrainingRequest,
     trainer_binary_sha256: str,
 ) -> CellRecoveryRecord | None:
     recovery = load_cell_recovery_record(
@@ -1226,16 +1283,9 @@ def _recover_completed_cell(
     )
     if recovery is None:
         return None
-    recovery_request = replace(
-        request_template,
-        dataset_fingerprint=recovery.dataset_fingerprint,
-    )
-    if _reusable_dronegs_result(
-        recovery_request,
-        trainer_binary_sha256=trainer_binary_sha256,
-        verify_ply_content=False,
-    ) is None:
-        return None
+    # The recipe and compact record already bind the scientific request,
+    # trainer, manifest, canary and file sizes. Do not re-run model/canary
+    # validation for every completed cell on each process restart.
     return recovery
 
 
@@ -1271,6 +1321,7 @@ def train_and_merge_gaussian_models(
     facade_subset_result: dict[str, object] | None = None
     preparation_reports: list[dict[str, object]] = []
     facade_partition_reports: list[dict[str, object]] = []
+    quality_alerts: list[dict[str, object]] = []
     sparse_dir = os.path.join(config.dense_path, "sparse", "0")
     if not os.path.isdir(sparse_dir):
         sparse_dir = os.path.join(config.dense_path, "sparse")
@@ -1368,10 +1419,16 @@ def train_and_merge_gaussian_models(
                 cell_label=cell_label,
                 cell_recipe=cell_recipe,
                 cell_bounds=durable_bounds,
-                request_template=request_template,
                 trainer_binary_sha256=trainer_binary_sha256,
             )
             if recovery is not None:
+                _record_cell_quality_alert(
+                    quality_alerts,
+                    config=config,
+                    progress=pct_end,
+                    cell_label=cell_label,
+                    canary=recovery.quality_canary,
+                )
                 remember_partition_subset(
                     cell_label,
                     cell_workspace,
@@ -1549,9 +1606,17 @@ def train_and_merge_gaussian_models(
                 config.vol_id,
                 "GAUSS",
                 pct_end,
-                f"[DroneGS] Reusing completed, canary-approved {cell_label}",
+                f"[DroneGS] Reusing completed {cell_label}",
                 config.report_fn,
             )
+
+        _record_cell_quality_alert(
+            quality_alerts,
+            config=config,
+            progress=pct_end,
+            cell_label=cell_label,
+            canary=getattr(training_result, "quality_canary", None),
+        )
 
         model = model_class(
             sh_degree=config.sh_degree,
@@ -1669,6 +1734,7 @@ def train_and_merge_gaussian_models(
         facade_subset_result=facade_subset_result,
         preparation_reports=tuple(preparation_reports),
         partition_models=tuple(partition_models),
+        quality_alerts=tuple(quality_alerts),
     )
 
 

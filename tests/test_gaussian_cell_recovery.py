@@ -98,12 +98,22 @@ def _write_manifest(output: Path, *, dataset_fingerprint: str) -> None:
     )
 
 
-def _write_completed_cell(output: Path, recipe: str) -> None:
+def _write_completed_cell(
+    output: Path,
+    recipe: str,
+    *,
+    failed_metrics: tuple[str, ...] = (),
+) -> None:
     output.mkdir()
     dataset_fingerprint = "dataset:sha256:fixture"
     _write_manifest(output, dataset_fingerprint=dataset_fingerprint)
     (output / "canary_result.json").write_text(
-        json.dumps({"status": "passed", "failed_metrics": []}),
+        json.dumps(
+            {
+                "status": "failed" if failed_metrics else "passed",
+                "failed_metrics": list(failed_metrics),
+            }
+        ),
         encoding="utf-8",
     )
     buffer = output / "buffer.ply"
@@ -166,10 +176,34 @@ def test_completed_cell_record_loads_without_hashing_large_models(
     assert record.core_gaussian_count == 80
     assert record.subset_report == {"selected_images": 10}
     assert record.bounds == _bounds()
+    assert record.quality_canary == {
+        "status": "passed",
+        "failed_metrics": [],
+    }
     assert hashed_names == [
         "trainer_run.json",
         "canary_result.json",
     ]
+
+
+def test_completed_cell_with_quality_warning_is_a_recovery_point(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "cell_0"
+    recipe = _recipe()
+    _write_completed_cell(output, recipe, failed_metrics=("psnr",))
+
+    record = load_cell_recovery_record(
+        output,
+        expected_cell_label="cell_0",
+        expected_recipe_sha256=recipe,
+        expected_bounds=_bounds(),
+        expected_trainer_binary_sha256="a" * 64,
+    )
+
+    assert record is not None
+    assert record.quality_canary["status"] == "failed"
+    assert record.quality_canary["failed_metrics"] == ["psnr"]
 
 
 def test_completed_cell_record_rejects_changed_recipe_or_small_contract(

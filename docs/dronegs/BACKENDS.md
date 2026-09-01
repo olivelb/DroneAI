@@ -77,27 +77,32 @@ the native trainer refuses the checkpoint.
 The adapter polls cancellation every 250 ms even when DroneGS is silent. It
 sends SIGTERM to the complete process group, waits up to ten seconds, then
 sends SIGKILL. The latest atomic local/S3 checkpoint is preserved. Recovery
-state is deleted only after the PLY, strict manifest, passed canary and final
+state is deleted only after the PLY, strict manifest, recorded canary and final
 Gaussian artifacts have all been promoted.
 
 Completed-result reuse additionally requires the current dataset fingerprint,
 trainer binary SHA-256, exact requested and effective training profiles, PLY
 size and PLY SHA-256. Canary thresholds are
 acceptance policy rather than training compatibility: changing only a
-threshold re-evaluates the persisted metrics without retraining.
+threshold re-evaluates the persisted metrics without retraining or rejecting
+the completed model.
 
 ## Canary contract
 
 Production V1 reserves cameras where
 `scene_index % gs_test_every == 0` (`gs_test_every=8`). Training must produce a
-completed manifest and meet both configured thresholds:
+completed manifest and evaluates it against both configured thresholds:
 
 - `gs_canary_min_psnr=18.0`;
 - `gs_canary_min_ssim=0.25`.
 
-The adapter atomically writes `canary_result.json`. A failed canary stops the
-orthomosaic pipeline while preserving the PLY, manifest, evaluation pairs and
-checkpoint for diagnosis.
+The adapter atomically writes `canary_result.json`. A failed resident-cell
+canary is a structured quality warning: the cell label, failed metrics,
+measurements and thresholds are retained in the training artifact and stage
+quality metrics, while later cells and downstream stages continue. Training
+or artifact-integrity failures remain blocking. Completed warned cells are
+durable recovery points and are not retrained or revalidated on process
+restart.
 
 The modulo split remains useful for frozen benchmark parity but is correlated
 for sequential flights. Custom profiles can select deterministic

@@ -21,7 +21,8 @@ from .partition import CellBounds, cell_bounds_from_dict
 
 
 CELL_RECOVERY_FILENAME = "cell_recovery.json"
-CELL_RECOVERY_SCHEMA_VERSION = 1
+CELL_RECOVERY_SCHEMA_VERSION = 2
+SUPPORTED_CELL_RECOVERY_SCHEMA_VERSIONS = frozenset({1, 2})
 CELL_SUBSET_CONTRACT = "supported-colmap-observations-v2"
 CELL_RECIPE_PREFIX = "droneai-gaussian-cell-recipe-v1"
 
@@ -39,6 +40,7 @@ class CellRecoveryRecord:
     core_gaussian_count: int
     bounds: CellBounds
     subset_report: dict[str, object]
+    quality_canary: dict[str, object]
 
 
 def _canonical(payload: Mapping[str, object]) -> bytes:
@@ -94,6 +96,27 @@ def _required_integer(payload: Mapping[str, Any], key: str) -> int:
     return value
 
 
+def _quality_failures(canary: object) -> tuple[str, ...]:
+    if not isinstance(canary, dict):
+        raise ValueError("cell recovery quality canary is invalid")
+    status = canary.get("status")
+    failures = canary.get("failed_metrics")
+    if (
+        status not in {"passed", "failed"}
+        or not isinstance(failures, list)
+        or any(not isinstance(metric, str) or not metric for metric in failures)
+        or (status == "passed" and failures)
+        or (status == "failed" and not failures)
+    ):
+        raise ValueError("cell recovery quality canary is inconsistent")
+    return tuple(failures)
+
+
+def _quality_canary(canary: object) -> dict[str, object]:
+    _quality_failures(canary)
+    return cast(dict[str, object], canary)
+
+
 def write_cell_recovery_record(
     output_dir: str | Path,
     *,
@@ -117,12 +140,7 @@ def write_cell_recovery_record(
     manifest = load_run_manifest(manifest_path)
     validate_run_manifest(manifest)
     canary = json.loads(canary_path.read_text(encoding="utf-8"))
-    if (
-        not isinstance(canary, dict)
-        or canary.get("status") != "passed"
-        or canary.get("failed_metrics")
-    ):
-        raise ValueError("cell recovery requires a passed quality canary")
+    failed_metrics = _quality_failures(canary)
     if manifest.get("trainer_binary_sha256") != trainer_binary_sha256:
         raise ValueError("cell recovery trainer identity mismatch")
     if manifest.get("dataset", {}).get("fingerprint") != dataset_fingerprint:
@@ -159,6 +177,8 @@ def write_cell_recovery_record(
         "core_gaussian_count": core_gaussian_count,
         "bounds": bounds.as_dict(),
         "subset_report": dict(subset_report),
+        "quality_status": canary["status"],
+        "failed_metrics": list(failed_metrics),
     }
     path = output / CELL_RECOVERY_FILENAME
     atomic_write_json(path, payload)
@@ -184,7 +204,7 @@ def load_cell_recovery_record(
             return None
         record = cast(dict[str, Any], payload)
         if (
-            record.get("schema_version") != CELL_RECOVERY_SCHEMA_VERSION
+            record.get("schema_version") not in SUPPORTED_CELL_RECOVERY_SCHEMA_VERSIONS
             or record.get("cell_label") != expected_cell_label
             or record.get("recipe_sha256") != expected_recipe_sha256
             or record.get("trainer_binary_sha256")
@@ -205,6 +225,7 @@ def load_cell_recovery_record(
         manifest = load_run_manifest(manifest_path)
         validate_run_manifest(manifest)
         canary = json.loads(canary_path.read_text(encoding="utf-8"))
+        failed_metrics = _quality_failures(canary)
         dataset_fingerprint = _required_string(record, "dataset_fingerprint")
         point_cloud_sha256 = _required_string(record, "point_cloud_sha256")
         point_cloud_bytes = _required_integer(record, "point_cloud_bytes")
@@ -219,9 +240,13 @@ def load_cell_recovery_record(
             or artifact.get("bytes") != point_cloud_bytes
             or point_cloud_path.stat().st_size != point_cloud_bytes
             or buffer_path.stat().st_size != buffer_bytes
-            or not isinstance(canary, dict)
-            or canary.get("status") != "passed"
-            or canary.get("failed_metrics")
+        ):
+            return None
+        if record.get("schema_version") == 1 and failed_metrics:
+            return None
+        if record.get("schema_version") == 2 and (
+            record.get("quality_status") != canary["status"]
+            or record.get("failed_metrics") != list(failed_metrics)
         ):
             return None
         subset_report = record.get("subset_report")
@@ -247,6 +272,7 @@ def load_cell_recovery_record(
             core_gaussian_count=core_gaussian_count,
             bounds=bounds,
             subset_report=cast(dict[str, object], subset_report),
+            quality_canary=_quality_canary(canary),
         )
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return None

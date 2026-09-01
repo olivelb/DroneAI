@@ -508,6 +508,13 @@ class TestColmapStageHelpers(unittest.TestCase):
                     merged_model=None,
                     final_ply=None,
                     facade_subset_result=None,
+                    quality_alerts=(
+                        {
+                            "severity": "warning",
+                            "cell": "cell_24",
+                            "failed_metrics": ["psnr"],
+                        },
+                    ),
                     partition_models=(
                         GaussianPartitionModel(
                             bounds=bounds,
@@ -533,6 +540,10 @@ class TestColmapStageHelpers(unittest.TestCase):
             self.assertEqual(partition_artifact.gaussian_count, 1_200_000)
             self.assertEqual(len(partition_artifact.partition_models), 1)
             self.assertEqual(partition_artifact.partition_models[0].bounds, bounds)
+            self.assertEqual(
+                partition_artifact.quality_alerts,
+                partition_phase.training_state.quality_alerts,
+            )
 
             partition_geometry = GaussianRenderGeometry(
                 geo_origin=np.array([600_000.0, 4_900_000.0, 120.0]),
