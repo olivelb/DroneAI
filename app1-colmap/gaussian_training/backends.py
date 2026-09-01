@@ -30,7 +30,7 @@ from .manifest_contract import (
 
 ProgressCallback = Callable[[int, float, int], None]
 CancellationCheck = Callable[[], None]
-CheckpointCallback = Callable[[Path, int], None]
+CheckpointCallback = Callable[[Path, int], bool | None]
 SUPPORTED_STRATEGIES = {"mrnf"}
 SUPPORTED_DRONEGS_PRUNING_POLICIES = {"spatial-bounds"}
 SUPPORTED_DRONEGS_RASTER_PROFILES = {"fastgs"}

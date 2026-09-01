@@ -125,10 +125,10 @@ def _checkpoint_callback(
     durable_checkpoint_dir: str,
     checkpoint_s3_prefix: str,
     vol_id: str,
-) -> Callable[[Path, int], None]:
+) -> Callable[[Path, int], bool]:
     checkpoint_root = Path(durable_checkpoint_dir).resolve()
 
-    def persist(checkpoint_path: Path, iteration: int) -> None:
+    def persist(checkpoint_path: Path, iteration: int) -> bool:
         relative = checkpoint_path.resolve().relative_to(checkpoint_root)
         s3_key = f"{checkpoint_s3_prefix}/{relative.as_posix()}"
         try:
@@ -139,6 +139,7 @@ def _checkpoint_callback(
                 95,
                 log=f"Durable DroneGS checkpoint synced at iteration {iteration}.",
             )
+            return True
         except Exception as sync_error:
             runtime.report_mission_progress(
                 vol_id,
@@ -146,6 +147,7 @@ def _checkpoint_callback(
                 95,
                 log=f"DroneGS checkpoint remains locally durable; S3 sync failed: {sync_error}",
             )
+            return False
 
     return persist
 

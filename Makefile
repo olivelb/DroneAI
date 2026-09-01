@@ -8,6 +8,7 @@ GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/__init__.py \
 	app1-colmap/gaussian_ortho/camera_footprint.py \
 	app1-colmap/gaussian_ortho/capacity_planning.py \
+	app1-colmap/gaussian_ortho/cell_recovery.py \
 	app1-colmap/gaussian_ortho/colmap_loader.py \
 	app1-colmap/gaussian_ortho/colmap_subset.py \
 	app1-colmap/gaussian_ortho/coverage_quality.py \
