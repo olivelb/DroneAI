@@ -109,6 +109,33 @@ def test_cell_recipe_parameters_ignore_host_and_qualification_controls():
     ) != expected
 
 
+def test_failed_cell_canary_becomes_a_structured_warning():
+    alert = workflow._cell_quality_alert(
+        "cell_24",
+        {
+            "qualification_policy_id": "facade-v1",
+            "failed_metrics": ["psnr"],
+            "psnr": 16.65,
+            "minimum_psnr": 18.0,
+            "ssim": 0.49,
+            "minimum_ssim": 0.25,
+            "held_out_image_count": 13,
+        },
+    )
+
+    assert alert == {
+        "severity": "warning",
+        "cell": "cell_24",
+        "qualification_policy_id": "facade-v1",
+        "failed_metrics": ["psnr"],
+        "psnr": 16.65,
+        "minimum_psnr": 18.0,
+        "ssim": 0.49,
+        "minimum_ssim": 0.25,
+        "held_out_image_count": 13,
+    }
+
+
 def test_completed_cell_sync_publishes_data_before_marker_and_receipt(tmp_path):
     output = tmp_path / "cell_13"
     output.mkdir()
@@ -186,13 +213,9 @@ def test_completed_cell_sync_stops_before_marker_and_retries(tmp_path):
     assert attempts == []
 
 
-def test_completed_cell_recovery_uses_lightweight_model_validation(monkeypatch):
+def test_completed_cell_recovery_uses_only_the_compact_record(monkeypatch):
     recovery = SimpleNamespace(dataset_fingerprint="dataset:sha256:complete")
-    request_template = SimpleNamespace(
-        dataset_fingerprint="pending-cell-dataset"
-    )
     bounds = SimpleNamespace()
-    reusable_calls = []
 
     monkeypatch.setattr(
         workflow,
@@ -211,35 +234,19 @@ def test_completed_cell_recovery_uses_lightweight_model_validation(monkeypatch):
     )
     monkeypatch.setattr(
         workflow,
-        "replace",
-        lambda request, **changes: SimpleNamespace(
-            **(vars(request) | changes)
-        ),
+        "_reusable_dronegs_result",
+        lambda *_args, **_kwargs: pytest.fail("completed cell was revalidated"),
     )
-
-    def reusable(request, **options):
-        reusable_calls.append((request, options))
-        return object()
-
-    monkeypatch.setattr(workflow, "_reusable_dronegs_result", reusable)
 
     result = workflow._recover_completed_cell(
         cell_output="cell-output",
         cell_label="cell_13",
         cell_recipe="recipe",
         cell_bounds=bounds,
-        request_template=request_template,
         trainer_binary_sha256="a" * 64,
     )
 
     assert result is recovery
-    assert reusable_calls[0][0].dataset_fingerprint == (
-        "dataset:sha256:complete"
-    )
-    assert reusable_calls[0][1] == {
-        "trainer_binary_sha256": "a" * 64,
-        "verify_ply_content": False,
-    }
 
 
 def test_missing_cell_recovery_does_not_validate_a_large_model(monkeypatch):
@@ -259,7 +266,6 @@ def test_missing_cell_recovery_does_not_validate_a_large_model(monkeypatch):
         cell_label="cell_13",
         cell_recipe="recipe",
         cell_bounds=SimpleNamespace(),
-        request_template=SimpleNamespace(),
         trainer_binary_sha256="a" * 64,
     ) is None
 

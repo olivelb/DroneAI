@@ -3,8 +3,6 @@ import importlib
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP1_ROOT = REPO_ROOT / "app1-colmap"
 if str(APP1_ROOT) not in sys.path:
@@ -111,11 +109,13 @@ def test_completed_training_is_rechecked_without_retraining(monkeypatch, tmp_pat
     assert json.loads(canary_path.read_text(encoding="utf-8"))["status"] == "passed"
 
     strict = _request(output, minimum_ssim=0.35)
-    with pytest.raises(RuntimeError, match="quality canary failed: ssim"):
-        generator._reusable_dronegs_result(
-            strict,
-            trainer_binary_sha256="trainer-hash",
-        )
+    warned = generator._reusable_dronegs_result(
+        strict,
+        trainer_binary_sha256="trainer-hash",
+    )
+    assert warned is not None
     assert (output / "trainer_run.json").is_file()
     assert (output / "point_cloud.ply").is_file()
-    assert json.loads(canary_path.read_text(encoding="utf-8"))["status"] == "failed"
+    failed = json.loads(canary_path.read_text(encoding="utf-8"))
+    assert failed["status"] == "failed"
+    assert warned.quality_canary == failed

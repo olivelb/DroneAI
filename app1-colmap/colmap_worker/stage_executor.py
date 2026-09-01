@@ -481,6 +481,10 @@ def run_gaussian_training_stage(
             training_gaussian_count = (
                 phase.training_state.merged_model.num_gaussians
             )
+        quality_alerts = list(
+            getattr(phase.training_state, "quality_alerts", ())
+        )
+        quality_status = "warning" if quality_alerts else "passed"
         return StageExecutionResult(
             kind="gaussian_training_workspace",
             uri=published.uri,
@@ -505,9 +509,14 @@ def run_gaussian_training_stage(
                 ],
                 "gaussian_count": int(training_gaussian_count),
                 "gaussian_capacity": capacity_plan,
+                "quality_status": quality_status,
+                "quality_alert_count": len(quality_alerts),
             },
             quality_metrics={
                 "gaussian_count": int(training_gaussian_count),
+                "quality_status": quality_status,
+                "quality_alert_count": len(quality_alerts),
+                "quality_alerts": quality_alerts,
             },
             provenance={
                 "stage_adapter": "gaussian-training-v1",
