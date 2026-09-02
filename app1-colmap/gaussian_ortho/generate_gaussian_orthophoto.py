@@ -451,6 +451,9 @@ class GaussianSceneState:
     scene: SceneInfo | None
     cells: list[tuple[CellBounds | None, SceneInfo]]
     use_partition: bool
+    pca_rotation_geo: np.ndarray | None = None
+    pca_alignment_angle_deg: float | None = None
+    projected_geo_origin: np.ndarray | None = None
 
 
 def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
@@ -598,6 +601,29 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
         point_cloud,
         dense_path=config.dense_path,
     )
+    pca_rotation_geo = None
+    pca_alignment_angle_deg = None
+    projected_geo_origin = None
+    if config.render_mode == "map" and transform_data is None:
+        from .pca_alignment import compute_pca_rotation
+
+        pca_rotation_geo, pca_alignment_angle_deg = compute_pca_rotation(
+            registered_cameras,
+            point_cloud.points,
+        )
+        camera_positions = np.array(
+            [camera.T for camera in registered_cameras],
+            dtype=np.float64,
+        )
+        aligned_camera_positions = (pca_rotation_geo @ camera_positions.T).T
+        projected_geo_origin = compute_projected_geo_origin(
+            registered_cameras,
+            images_dir,
+            config.utm_crs,
+            aligned_camera_positions,
+            colmap_to_meters,
+            mean_exif_alt,
+        )
     return GaussianSceneState(
         train_cameras=train_cameras,
         test_cameras=test_cameras,
@@ -618,6 +644,9 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
         scene=scene,
         cells=[(None, scene)],
         use_partition=False,
+        pca_rotation_geo=pca_rotation_geo,
+        pca_alignment_angle_deg=pca_alignment_angle_deg,
+        projected_geo_origin=projected_geo_origin,
     )
 
 
@@ -1823,18 +1852,26 @@ def prepare_gaussian_render_state(
             "Computing PCA nadir direction…",
             config.report_fn,
         )
-        from .pca_alignment import compute_pca_rotation
-
-        if scene_state.point_cloud is None:
-            raise RuntimeError("Sparse point cloud is unavailable")
         camera_positions = np.array(
             [camera.T for camera in cameras],
             dtype=np.float64,
         )
-        rotation_align, angle_deg = compute_pca_rotation(
-            cameras,
-            scene_state.point_cloud.points,
-        )
+        portable_pca = scene_state.pca_rotation_geo is not None
+        if portable_pca:
+            rotation_align = np.asarray(
+                scene_state.pca_rotation_geo,
+                dtype=np.float64,
+            )
+            angle_deg = float(scene_state.pca_alignment_angle_deg or 0.0)
+        else:
+            from .pca_alignment import compute_pca_rotation
+
+            if scene_state.point_cloud is None:
+                raise RuntimeError("Sparse point cloud is unavailable")
+            rotation_align, angle_deg = compute_pca_rotation(
+                cameras,
+                scene_state.point_cloud.points,
+            )
         rotation_geo = rotation_align.astype(np.float32)
         _report(
             config.vol_id,
@@ -1844,13 +1881,17 @@ def prepare_gaussian_render_state(
             config.report_fn,
         )
         geo_camera_positions = (rotation_align @ camera_positions.T).T
-        projected_origin = compute_projected_geo_origin(
-            cameras,
-            scene_state.images_dir,
-            config.utm_crs,
-            geo_camera_positions,
-            scene_state.colmap_to_meters,
-            scene_state.mean_exif_alt,
+        projected_origin = (
+            scene_state.projected_geo_origin
+            if portable_pca
+            else compute_projected_geo_origin(
+                cameras,
+                scene_state.images_dir,
+                config.utm_crs,
+                geo_camera_positions,
+                scene_state.colmap_to_meters,
+                scene_state.mean_exif_alt,
+            )
         )
         if projected_origin is not None:
             geo_origin = projected_origin

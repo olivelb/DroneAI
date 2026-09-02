@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 
 from shared.json_io import atomic_write_json
+from shared.checksums import sha256_file
 
 from .capacity_planning import (
     GaussianCapacityPlan,
@@ -29,6 +30,8 @@ from .generate_gaussian_orthophoto import (
     GaussianTrainingPhaseState,
     GaussianTrainingState,
 )
+from .colmap_loader import CameraInfo, Sim3Transform
+from .facade_frame import FacadeFrame
 from .partition import CellBounds, cell_bounds_from_dict
 from .raster_product import GaussianSceneSummary
 from .render_geometry import GaussianRenderGeometry
@@ -39,7 +42,9 @@ if TYPE_CHECKING:
 
 TRAINING_ARTIFACT_PATH = Path(".droneai/gaussian-training-state.json")
 FILTERING_ARTIFACT_PATH = Path(".droneai/gaussian-filtering-state.json")
-ARTIFACT_SCHEMA_VERSION = 2
+FILTER_SCENE_ARTIFACT_PATH = Path(".droneai/gaussian-filter-scene.json")
+ARTIFACT_SCHEMA_VERSION = 3
+FILTER_SCENE_SCHEMA_VERSION = 1
 
 _RUNTIME_CONFIG_FIELDS = frozenset(
     {
@@ -73,6 +78,8 @@ class GaussianTrainingArtifact:
     trainer_binary_sha256: str
     gaussian_count: int
     facade_subset_result: dict[str, object] | None
+    filter_scene_path: Path
+    filter_scene_checksum_sha256: str
     capacity_plan: GaussianCapacityPlan | None = None
     partition_models: tuple[GaussianPartitionArtifact, ...] = ()
     quality_alerts: tuple[dict[str, object], ...] = ()
@@ -150,6 +157,68 @@ def _read_payload(path: Path, expected_kind: str) -> dict[str, Any]:
     return cast(dict[str, Any], payload)
 
 
+def _camera_payload(camera: CameraInfo) -> dict[str, object]:
+    return {
+        "uid": int(camera.uid),
+        "image_name": camera.image_name,
+        "width": int(camera.width),
+        "height": int(camera.height),
+        "fx": float(camera.fx),
+        "fy": float(camera.fy),
+        "cx": float(camera.cx),
+        "cy": float(camera.cy),
+        "R": cast(list[object], np.asarray(camera.R).tolist()),
+        "T": cast(list[object], np.asarray(camera.T).tolist()),
+        "sparse_observations": int(camera.sparse_observations),
+        "camera_model": camera.camera_model,
+    }
+
+
+def _sim3_payload(transform: Sim3Transform | None) -> dict[str, object] | None:
+    if transform is None:
+        return None
+    return {
+        "R": cast(list[object], np.asarray(transform["R"]).tolist()),
+        "scale": float(transform["scale"]),
+        "t": cast(list[object], np.asarray(transform["t"]).tolist()),
+    }
+
+
+def write_filter_scene_artifact(
+    workspace_dir: str | Path,
+    scene: GaussianSceneState,
+) -> Path:
+    """Persist only the immutable scene geometry needed after training."""
+
+    workspace = Path(workspace_dir).resolve(strict=True)
+    payload: dict[str, object] = {
+        "schema_version": FILTER_SCENE_SCHEMA_VERSION,
+        "kind": "gaussian-filter-scene",
+        "registered_cameras": [
+            _camera_payload(camera) for camera in scene.registered_cameras
+        ],
+        "transform": _sim3_payload(scene.transform_data),
+        "mean_exif_alt": scene.mean_exif_alt,
+        "colmap_to_meters": float(scene.colmap_to_meters),
+        "scale_source": scene.scale_source,
+        "facade_frame": (
+            scene.facade_frame.as_dict() if scene.facade_frame is not None else None
+        ),
+        "texture_camera_count": int(scene.texture_camera_count),
+        "texture_filter_applied": bool(scene.texture_filter_applied),
+        "minimum_sparse_observations": int(scene.minimum_sparse_observations),
+        "seed_max_error": float(scene.seed_max_error),
+        "seed_min_track": int(scene.seed_min_track),
+        "gaussian_seed_point_count": int(scene.gaussian_seed_point_count),
+        "pca_rotation_geo": _optional_array(scene.pca_rotation_geo),
+        "pca_alignment_angle_deg": scene.pca_alignment_angle_deg,
+        "projected_geo_origin": _optional_array(scene.projected_geo_origin),
+    }
+    path = workspace / FILTER_SCENE_ARTIFACT_PATH
+    atomic_write_json(path, payload)
+    return path
+
+
 def _required_int(payload: dict[str, Any], name: str) -> int:
     value = payload.get(name)
     if isinstance(value, bool) or not isinstance(value, int):
@@ -214,6 +283,7 @@ def write_training_artifact(
     phase: GaussianTrainingPhaseState,
     *,
     model_path: str | Path | None,
+    filter_scene_path: str | Path,
 ) -> Path:
     workspace = Path(workspace_dir).resolve(strict=True)
     identity = gaussian_config_identity(config)
@@ -255,6 +325,8 @@ def write_training_artifact(
         "quality_alerts": list(
             getattr(phase.training_state, "quality_alerts", ())
         ),
+        "filter_scene_file": _relative_file(workspace, filter_scene_path),
+        "filter_scene_sha256": str(sha256_file(filter_scene_path)),
         "capacity_plan": (
             capacity_plan.as_dict()
             if capacity_plan is not None
@@ -300,6 +372,15 @@ def read_training_artifact(
     )
     if (model_path is None) == (not partitions):
         raise ValueError("Gaussian training artifact model layout is ambiguous")
+    filter_scene_path = _workspace_file(
+        workspace,
+        payload.get("filter_scene_file"),
+    )
+    filter_scene_checksum = payload.get("filter_scene_sha256")
+    if not isinstance(filter_scene_checksum, str) or len(filter_scene_checksum) != 64:
+        raise ValueError("Gaussian training filter scene checksum is invalid")
+    if str(sha256_file(filter_scene_path)) != filter_scene_checksum:
+        raise ValueError("Gaussian training filter scene checksum does not match")
     artifact = GaussianTrainingArtifact(
         model_path=model_path,
         config_sha256=digest,
@@ -314,6 +395,8 @@ def read_training_artifact(
         ),
         partition_models=tuple(partitions),
         quality_alerts=_quality_alerts(payload),
+        filter_scene_path=filter_scene_path,
+        filter_scene_checksum_sha256=filter_scene_checksum,
     )
     if sum(part.core_gaussian_count for part in partitions) not in {
         0,
@@ -501,6 +584,173 @@ def _array(
     if not np.all(np.isfinite(value)):
         raise ValueError(f"Gaussian artifact array is not finite: {name}")
     return cast(np.ndarray, value)
+
+
+def _required_bool(payload: dict[str, Any], name: str) -> bool:
+    value = payload.get(name)
+    if not isinstance(value, bool):
+        raise ValueError(f"Gaussian artifact boolean is invalid: {name}")
+    return value
+
+
+def _optional_finite_float(payload: dict[str, Any], name: str) -> float | None:
+    raw = payload.get(name)
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (float, int)):
+        raise ValueError(f"Gaussian artifact number is invalid: {name}")
+    value = float(raw)
+    if not np.isfinite(value):
+        raise ValueError(f"Gaussian artifact number is not finite: {name}")
+    return value
+
+
+def _facade_frame_from_payload(raw: object) -> FacadeFrame | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("Gaussian filter scene facade frame is invalid")
+    payload = cast(dict[str, Any], raw)
+    origin = _array(payload, "origin_model_units", (3,))
+    rotation = _array(payload, "world_to_facade", (3, 3))
+    if origin is None or rotation is None:
+        raise ValueError("Gaussian filter scene facade frame is incomplete")
+    return FacadeFrame(
+        origin=origin,
+        world_to_facade=rotation,
+        inlier_ratio=_required_float(payload, "plane_inlier_ratio"),
+        plane_rmse=_required_float(payload, "plane_rmse_model_units"),
+        camera_side_ratio=_required_float(payload, "camera_side_ratio"),
+        median_view_incidence_deg=_required_float(
+            payload, "median_view_incidence_deg"
+        ),
+        p90_view_incidence_deg=_required_float(payload, "p90_view_incidence_deg"),
+        orientation_source=_required_str(payload, "orientation_source"),
+    )
+
+
+def _sim3_from_payload(raw: object) -> Sim3Transform | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("Gaussian filter scene transform is invalid")
+    payload = cast(dict[str, Any], raw)
+    rotation = _array(payload, "R", (3, 3))
+    translation = _array(payload, "t", (3,))
+    scale = _required_float(payload, "scale")
+    if rotation is None or translation is None or scale <= 0:
+        raise ValueError("Gaussian filter scene transform is incomplete")
+    return {
+        "R": rotation.tolist(),
+        "scale": scale,
+        "t": translation.tolist(),
+    }
+
+
+def read_filter_scene_artifact(
+    workspace_dir: str | Path,
+    raw_path: str | Path,
+    expected_checksum_sha256: str,
+    *,
+    render_mode: str,
+) -> GaussianSceneState:
+    """Hydrate a filter-only scene without COLMAP databases or images."""
+
+    workspace = Path(workspace_dir).resolve(strict=True)
+    path = Path(raw_path).resolve(strict=True)
+    try:
+        path.relative_to(workspace)
+    except ValueError as error:
+        raise ValueError("Gaussian filter scene escapes its workspace") from error
+    actual_checksum = str(sha256_file(path))
+    if actual_checksum != expected_checksum_sha256:
+        raise ValueError("Gaussian filter scene checksum does not match training state")
+    with path.open(encoding="utf-8") as handle:
+        raw_payload = json.load(handle)
+    if (
+        not isinstance(raw_payload, dict)
+        or raw_payload.get("schema_version") != FILTER_SCENE_SCHEMA_VERSION
+        or raw_payload.get("kind") != "gaussian-filter-scene"
+    ):
+        raise ValueError("Unsupported Gaussian filter scene schema")
+    payload = cast(dict[str, Any], raw_payload)
+    raw_cameras = payload.get("registered_cameras")
+    if not isinstance(raw_cameras, list) or not raw_cameras:
+        raise ValueError("Gaussian filter scene has no registered cameras")
+    cameras: list[CameraInfo] = []
+    for raw_camera in raw_cameras:
+        if not isinstance(raw_camera, dict):
+            raise ValueError("Gaussian filter scene camera is invalid")
+        camera = cast(dict[str, Any], raw_camera)
+        rotation = _array(camera, "R", (3, 3))
+        translation = _array(camera, "T", (3,))
+        if rotation is None or translation is None:
+            raise ValueError("Gaussian filter scene camera is incomplete")
+        width = _required_int(camera, "width")
+        height = _required_int(camera, "height")
+        if width <= 0 or height <= 0:
+            raise ValueError("Gaussian filter scene camera dimensions are invalid")
+        cameras.append(
+            CameraInfo(
+                uid=_required_int(camera, "uid"),
+                image_name=_required_str(camera, "image_name"),
+                width=width,
+                height=height,
+                fx=_required_float(camera, "fx"),
+                fy=_required_float(camera, "fy"),
+                cx=_required_float(camera, "cx"),
+                cy=_required_float(camera, "cy"),
+                R=rotation.astype(np.float32),
+                T=translation.astype(np.float32),
+                sparse_observations=_required_int(camera, "sparse_observations"),
+                camera_model=_required_str(camera, "camera_model"),
+            )
+        )
+    transform = _sim3_from_payload(payload.get("transform"))
+    facade_frame = _facade_frame_from_payload(payload.get("facade_frame"))
+    pca_rotation = _array(payload, "pca_rotation_geo", (3, 3), optional=True)
+    projected_origin = _array(
+        payload,
+        "projected_geo_origin",
+        (3,),
+        optional=True,
+    )
+    pca_angle = _optional_finite_float(payload, "pca_alignment_angle_deg")
+    if render_mode == "facade" and facade_frame is None:
+        raise ValueError("Portable facade filtering requires its fitted frame")
+    if render_mode == "map" and transform is None and pca_rotation is None:
+        raise ValueError("Portable map filtering requires cached PCA geometry")
+    colmap_to_meters = _required_float(payload, "colmap_to_meters")
+    if colmap_to_meters <= 0:
+        raise ValueError("Gaussian filter scene scale must be positive")
+    return GaussianSceneState(
+        train_cameras=[],
+        test_cameras=[],
+        registered_cameras=cameras,
+        point_cloud=None,
+        transform_data=transform,
+        mean_exif_alt=_optional_finite_float(payload, "mean_exif_alt"),
+        colmap_to_meters=colmap_to_meters,
+        scale_source=_required_str(payload, "scale_source"),
+        facade_frame=facade_frame,
+        texture_camera_count=_required_int(payload, "texture_camera_count"),
+        texture_filter_applied=_required_bool(payload, "texture_filter_applied"),
+        minimum_sparse_observations=_required_int(
+            payload, "minimum_sparse_observations"
+        ),
+        seed_max_error=_required_float(payload, "seed_max_error"),
+        seed_min_track=_required_int(payload, "seed_min_track"),
+        gaussian_seed_point_count=_required_int(
+            payload, "gaussian_seed_point_count"
+        ),
+        images_dir="",
+        scene=None,
+        cells=[],
+        use_partition=False,
+        pca_rotation_geo=pca_rotation,
+        pca_alignment_angle_deg=pca_angle,
+        projected_geo_origin=projected_origin,
+    )
 
 
 def _scene_summary_from_payload(raw: object) -> GaussianSceneSummary:

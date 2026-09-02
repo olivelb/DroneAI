@@ -220,9 +220,11 @@ overlays with exact parents and stage-specific roles; all readers require
 the durable mission organization and reject old formats. The detection-only
 selective-restore flag remains disabled by default. When enabled, it restores
 the declared orthomosaic while preserving every unmaterialized parent file in
-the output overlay. Other stages request full restores. Conditional multipart
-completion and provider qualification requirements are unchanged. Old runs
-must be drained before deploying matching API/control and executor images.
+the output overlay. Gaussian stages use mandatory role-based handoffs
+independently of that detection flag. Conditional multipart completion and
+provider qualification requirements are unchanged. Old Gaussian manifests
+are deliberately incompatible with the compact handoff and must not be
+replayed after deploying matching API/control and executor images.
 
 The first bundled adapter now executes `reconstruction` in the COLMAP image:
 it downloads the immutable dataset prefix, runs preparation, sparse mapping,
@@ -322,8 +324,8 @@ finalizer is reconstructed on CPU. `stageJobs.detectionFanout.enabled` remains
 `false` by default and the chart rejects it unless detection selective
 restore is already enabled.
 
-The corresponding handoffs use versioned JSON sidecars plus a PLY kept inside
-the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of
+The corresponding handoffs use versioned JSON sidecars plus PLY files kept
+inside the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of
 all deterministic product parameters while excluding Job-local paths and
 callbacks. A retry with a changed resolution, profile, Gaussian cap, filtering
 policy or qualification threshold is rejected instead of silently reusing an
@@ -333,33 +335,45 @@ summary; rasterization can therefore hydrate the filtered PLY without applying
 alignment or filtering a second time. Artifact paths must exist below the
 restored workspace and cannot escape it.
 
+Training also publishes a checksum-bound `gaussian-filter-scene` sidecar. It
+contains registered camera intrinsics/poses, Sim3 or facade-frame geometry,
+metric scale and precomputed PCA/projected-origin data. It contains no image,
+database or point-cloud payload. The reconstruction state stores the resolved
+`gs_data_factor`, so every later stage can recreate the immutable product
+recipe without inspecting `dense/images`.
+
 The COLMAP image now exposes bounded commands for `gaussian_training` and
 `gaussian_filtering`. Training restores exactly one reconstruction workspace,
-uses the shared recipe resolver and publishes the unfiltered PLY with backend,
-trainer-binary and profile provenance. Partition models already produced below
-the stage workspace are published from their trainer paths without a second
-local copy. A completed external checkpoint on the same volume is exposed by
-an atomic hard link; byte copying is only the cross-filesystem or unsupported
-filesystem fallback. Filtering restores exactly one training workspace, verifies that
-recipe before loading the PLY, reconstructs only the lightweight scene metadata
-needed for alignment, and writes the filtered model to a distinct path so its
-immutable parent is never overwritten. Partitioned filtering does not rewrite
-or rehash immutable training cells: it publishes a role-only child-manifest
-overlay that references the exact parent blobs. This zero-copy promotion is
-allowed only for paths explicitly declared unchanged by the filtering boundary.
+uses the shared recipe resolver and publishes a parentless compact handoff
+containing only reconstruction state, training state, filter-scene state and
+the unfiltered PLY files. Partition models already produced below the stage
+workspace are published directly from their trainer paths without a staging
+tree. A completed external checkpoint on the same volume is exposed by an
+atomic hard link; byte copying is only the cross-filesystem or unsupported
+filesystem fallback. Filtering selectively restores only those roles,
+verifies the recipe and scene checksums, and writes the filtered model to a
+distinct path so the immutable global parent is never overwritten.
+Partitioned outputs are hashed and published as actual filtered products;
+they are never promoted as unchanged merely because their byte size matches.
+The filtering handoff is likewise parentless and contains only reconstruction
+state, filtering state and filtered PLY files.
 Both Jobs reuse the common heartbeat/cancellation boundary, remove their
 workspace after success and retain it after failure for same-run recovery.
 Computation resumes only where the scientific stage exposes a durable
 checkpoint; workspace transfer itself resumes at file granularity.
 
-The `rasterization` command restores exactly one filtering workspace, hydrates
+The `rasterization` command selectively restores exactly one compact filtering
+handoff, hydrates
 the already aligned/filtered model and calls the same raster boundary as the
 legacy worker. A shared finalizer then applies the spatial-coverage gate,
 vertical/geographic reference, RGB and height GeoTIFF writes, and facade report.
-The resulting workspace publishes relative RGB, height and coverage paths plus
+The resulting parentless product manifest includes only relative RGB, height,
+coverage, seam and facade-report paths plus
 CRS/extent metadata; width, height, Gaussian count and the complete coverage
 report are retained as quality metrics. This avoids a second raster
 qualification implementation while keeping retries independent from training.
+The viewer uses the same compact filtering selection before publishing only
+its immutable GSTile bundle.
 
 The `detection` command restores exactly one raster workspace and streams its
 orthomosaic through bounded overlapping tiles without loading the complete

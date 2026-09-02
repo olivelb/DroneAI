@@ -387,18 +387,18 @@ sequenceDiagram
     R->>S3: publish verified workspace manifest
     R->>DB: artifact edge + succeeded, release training
     API->>K8S: create Gaussian training Job
-    GT->>S3: restore reconstruction, publish trained model
+    GT->>S3: restore reconstruction, publish compact training handoff
     GT->>DB: artifact edge + succeeded, release filtering
     API->>K8S: create Gaussian filtering Job
-    GF->>S3: restore training, publish filtered model
+    GF->>S3: restore model + filter scene, publish compact filtered handoff
     GF->>DB: artifact edge + succeeded, release rasterization and optional viewer
     opt Gaussian viewer selected
         API->>K8S: create Gaussian viewer Job
-        GV->>S3: restore filtering, publish viewer bundle
+        GV->>S3: restore filtered models only, publish viewer bundle
         GV->>DB: non-blocking artifact edge + terminal state
     end
     API->>K8S: create rasterization Job
-    RA->>S3: restore filtering, publish RGB/height workspace
+    RA->>S3: restore filtered models only, publish RGB/height products
     RA->>DB: artifact edge + succeeded
     alt Aerial map with detection selected
         RA->>DB: release detection
@@ -1312,9 +1312,11 @@ These are the assumptions that must remain true for the current implementation t
 5. The Sim3 path applies rotation and scale to Gaussian means/axes in float32
    while translation is kept as a float64 GeoTIFF origin. The PCA path keeps
    the model in COLMAP frame and passes `R_geo` to preserve SH consistency.
-6. Reruns require the sparse SfM model
-   (`sparse/{cameras,images,points3D}.bin`) and optionally the alignment
-   transform; PCA fallback is used only when that transform is absent.
+6. Reconstruction and Gaussian training require the sparse/dense COLMAP
+   workspace. Training resolves the image data factor and publishes the
+   immutable camera/alignment geometry needed by filtering; filtering,
+   rasterization and viewer runs must not materialize COLMAP images,
+   databases, sparse or dense directories.
 7. Inside worker containers, COLMAP GPU indices are relative to visible
    devices, so a single visible GPU always uses index `0`.
 8. Indexed detection completion requires the full persisted shard plan and one
