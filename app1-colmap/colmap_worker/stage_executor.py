@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import fcntl
-import os
 import json
+import logging
+import os
 import shutil
+import sys
+import tempfile
+from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -37,6 +41,9 @@ from .stage_state import STATE_RELATIVE_PATH, write_reconstruction_state
 from .stage_state import load_reconstruction_state
 
 
+logger = logging.getLogger(__name__)
+
+
 def _workspace_path(run_id: str) -> Path:
     root = Path(os.getenv("DRONEAI_STAGE_WORK_ROOT", "/work")).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -58,6 +65,11 @@ def _restore_input_workspace(
             f"{context.stage} requires exactly one {expected_kind} artifact"
         )
     source = context.inputs[0]
+    verification_cache_path = (
+        workspace.parent
+        / ".workspace-verification-cache"
+        / f"{workspace.name}.json"
+    )
     manifest_key = source.metadata.get("manifest_key")
     if not isinstance(manifest_key, str) or not manifest_key:
         raise ValueError("Upstream workspace artifact has no manifest key")
@@ -68,6 +80,7 @@ def _restore_input_workspace(
         cancellation_check=control.raise_if_cancelled,
         expected_organization_id=context.organization_id,
         exact_inventory=exact_inventory,
+        verification_cache_path=verification_cache_path,
     )
     return restored
 
@@ -79,6 +92,7 @@ def _publish_stage_workspace(
     *,
     stage: str,
     role_overrides: dict[str, str] | None = None,
+    unchanged_parent_paths: frozenset[str] = frozenset(),
 ) -> PublishedWorkspace:
     prefix = context.object_namespace.key(
         "stage-runs",
@@ -103,6 +117,7 @@ def _publish_stage_workspace(
         default_role=f"{stage}-workspace",
         role_overrides=role_overrides,
         parents=tuple(parents),
+        unchanged_parent_paths=unchanged_parent_paths,
         organization_id=context.organization_id,
         cancellation_check=control.raise_if_cancelled,
     )
@@ -135,21 +150,21 @@ def _publish_product_workspace(
     )
 
 
-def _prepare_stage_workspace(context: StageExecutionContext) -> Path:
+def _prepare_stage_workspace(context: StageExecutionContext) -> tuple[Path, int]:
     workspace = _workspace_path(context.run_id)
-    if workspace.exists():
-        shutil.rmtree(workspace)
-    workspace.mkdir(parents=True)
+    root = workspace.parent
+    lock_descriptor = _acquire_local_workspace_lock(root, context.run_id)
     try:
+        workspace.mkdir(parents=True, exist_ok=True)
         runtime.cancellation_state.start_mission(
             context.vol_id,
             context.mission_attempt,
             organization_id=context.organization_id,
         )
     except Exception:
-        shutil.rmtree(workspace, ignore_errors=True)
+        _release_local_workspace_lock(lock_descriptor)
         raise
-    return workspace
+    return workspace, lock_descriptor
 
 
 def _acquire_local_workspace_lock(root: Path, run_id: str) -> int:
@@ -164,7 +179,7 @@ def _acquire_local_workspace_lock(root: Path, run_id: str) -> int:
     except BlockingIOError as error:
         os.close(descriptor)
         raise RuntimeError(
-            f"Local Gaussian recovery workspace is already leased: {run_id}"
+            f"Local stage workspace is already leased: {run_id}"
         ) from error
     return descriptor
 
@@ -185,7 +200,8 @@ def _prepare_gaussian_training_workspace(
         LOCAL_WORKSPACE_REUSE_RUN_ID_PARAMETER
     )
     if raw_source_run_id is None:
-        return _prepare_stage_workspace(context), None, None
+        workspace, lock_descriptor = _prepare_stage_workspace(context)
+        return workspace, None, lock_descriptor
     if not isinstance(raw_source_run_id, str):
         raise ValueError("local_workspace_reuse_run_id must be a string")
     authorization = context.local_workspace_reuse_authorization
@@ -236,10 +252,98 @@ def _cleanup_stage_workspace(
         runtime.cancellation_state.clear()
     finally:
         try:
+            remove_cache = False
             if not preserve and workspace.exists():
-                shutil.rmtree(workspace)
+                try:
+                    shutil.rmtree(workspace)
+                    remove_cache = True
+                except OSError as error:
+                    logger.warning(
+                        "Preserving stage workspace after cleanup failure: %s: %s",
+                        workspace,
+                        error,
+                    )
+            elif not preserve:
+                remove_cache = True
+            if remove_cache:
+                cache_path = (
+                    workspace.parent
+                    / ".workspace-verification-cache"
+                    / f"{workspace.name}.json"
+                )
+                try:
+                    cache_path.unlink(missing_ok=True)
+                except OSError as error:
+                    logger.warning(
+                        "Could not remove stage verification cache %s: %s",
+                        cache_path,
+                        error,
+                    )
         finally:
             _release_local_workspace_lock(lock_descriptor)
+
+
+def _copy_file_contents_atomically(source: str | Path, target: str | Path) -> Path:
+    """Copy bytes portably and never expose an interrupted destination."""
+
+    source_path = Path(source)
+    target_path = Path(target)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=target_path.parent,
+            prefix=f".{target_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as descriptor:
+            temporary_path = Path(descriptor.name)
+        shutil.copyfile(source_path, temporary_path)
+        os.replace(temporary_path, target_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            with suppress(OSError):
+                temporary_path.unlink(missing_ok=True)
+    return target_path
+
+
+def _ensure_publishable_model_path(
+    source: str | Path,
+    workspace: Path,
+    fallback_target: Path,
+) -> Path:
+    """Reuse or hard-link a model; copy bytes only as a portable fallback."""
+
+    source_path = Path(source).resolve(strict=True)
+    workspace_root = workspace.resolve(strict=True)
+    try:
+        source_path.relative_to(workspace_root)
+    except ValueError:
+        fallback_target.parent.mkdir(parents=True, exist_ok=True)
+        temporary_link: Path | None = None
+        try:
+            if source_path.stat().st_dev == fallback_target.parent.stat().st_dev:
+                with tempfile.NamedTemporaryFile(
+                    dir=fallback_target.parent,
+                    prefix=f".{fallback_target.name}.",
+                    suffix=".link",
+                    delete=False,
+                ) as descriptor:
+                    temporary_link = Path(descriptor.name)
+                temporary_link.unlink()
+                os.link(source_path, temporary_link)
+                os.replace(temporary_link, fallback_target)
+                temporary_link = None
+                return fallback_target.resolve(strict=True)
+        except OSError:
+            pass
+        finally:
+            if temporary_link is not None:
+                with suppress(OSError):
+                    temporary_link.unlink(missing_ok=True)
+        return _copy_file_contents_atomically(source_path, fallback_target)
+    return source_path
 
 
 _GAUSSIAN_OPERATIONAL_OVERRIDE_KEYS = frozenset({"gs_host_image_cache_mib"})
@@ -272,7 +376,7 @@ def run_reconstruction_stage(
     input_dataset = validate_dataset_prefix(
         str(context.mission_parameters.get("input_dataset") or "")
     )
-    workspace = _prepare_stage_workspace(context)
+    workspace, lock_descriptor = _prepare_stage_workspace(context)
 
     def ensure_active() -> None:
         control.raise_if_cancelled()
@@ -357,7 +461,11 @@ def run_reconstruction_stage(
             },
         )
     finally:
-        _cleanup_stage_workspace(workspace)
+        _cleanup_stage_workspace(
+            workspace,
+            preserve=sys.exc_info()[0] is not None,
+            lock_descriptor=lock_descriptor,
+        )
 
 
 def run_gaussian_training_stage(
@@ -421,15 +529,18 @@ def run_gaussian_training_stage(
         if partition_models:
             copied_partitions: list[GaussianPartitionModel] = []
             for partition in partition_models:
-                target = (
+                fallback_target = (
                     model_root
                     / "partitions"
                     / f"cell-{partition.bounds.row}-{partition.bounds.col}.ply"
                 )
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(partition.model_path, target)
+                model_path_for_publication = _ensure_publishable_model_path(
+                    partition.model_path,
+                    workspace,
+                    fallback_target,
+                )
                 copied_partitions.append(
-                    replace(partition, model_path=str(target))
+                    replace(partition, model_path=str(model_path_for_publication))
                 )
             phase = replace(
                 phase,
@@ -442,7 +553,7 @@ def run_gaussian_training_stage(
             if phase.training_state.final_ply is None:
                 raise RuntimeError("Gaussian training produced no publishable model")
             model_path = model_root / "final.ply"
-            shutil.copy2(phase.training_state.final_ply, model_path)
+            _copy_file_contents_atomically(phase.training_state.final_ply, model_path)
         write_training_artifact(
             workspace,
             product.config,
@@ -552,7 +663,10 @@ def run_gaussian_training_stage(
     finally:
         _cleanup_stage_workspace(
             workspace,
-            preserve=reuse_authorization is not None,
+            preserve=(
+                reuse_authorization is not None
+                or sys.exc_info()[0] is not None
+            ),
             lock_descriptor=lock_descriptor,
         )
 
@@ -562,7 +676,7 @@ def run_gaussian_filtering_stage(
     control: StageExecutionControl,
 ) -> StageExecutionResult:
     """Filter a verified training model once and persist raster geometry."""
-    workspace = _prepare_stage_workspace(context)
+    workspace, lock_descriptor = _prepare_stage_workspace(context)
     try:
         restored = _restore_input_workspace(
             context,
@@ -602,22 +716,6 @@ def run_gaussian_filtering_stage(
         if getattr(artifact, "partition_models", ()):
             if artifact.capacity_plan is None:
                 raise RuntimeError("Resident Gaussian artifact has no capacity plan")
-            copied_artifact_partitions = []
-            for partition in artifact.partition_models:
-                target = (
-                    filtered_root
-                    / "partitions"
-                    / f"cell-{partition.bounds.row}-{partition.bounds.col}.ply"
-                )
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(partition.model_path, target)
-                copied_artifact_partitions.append(
-                    replace(partition, model_path=target)
-                )
-            artifact = replace(
-                artifact,
-                partition_models=tuple(copied_artifact_partitions),
-            )
             training_phase = hydrate_partitioned_training_phase(artifact, scene)
             filtering_phase = execute_partitioned_gaussian_filtering_phase(
                 product.config,
@@ -634,7 +732,7 @@ def run_gaussian_filtering_stage(
             )
             model.load_ply(str(artifact.model_path))
             filtered_model_path = filtered_root / "filtered.ply"
-            shutil.copy2(artifact.model_path, filtered_model_path)
+            _copy_file_contents_atomically(artifact.model_path, filtered_model_path)
             training_phase = hydrate_training_phase(
                 replace(artifact, model_path=filtered_model_path),
                 scene,
@@ -655,6 +753,7 @@ def run_gaussian_filtering_stage(
         role_overrides = {
             ".droneai/gaussian-filtering-state.json": "gaussian-filtering-state",
         }
+        unchanged_parent_paths: set[str] = set()
         if filtered_model_path is not None:
             role_overrides[
                 filtered_model_path.relative_to(workspace).as_posix()
@@ -663,12 +762,16 @@ def run_gaussian_filtering_stage(
             role_overrides[
                 Path(partition.model_path).relative_to(workspace).as_posix()
             ] = "filtered-gaussian-partition-model"
+            unchanged_parent_paths.add(
+                Path(partition.model_path).relative_to(workspace).as_posix()
+            )
         published = _publish_stage_workspace(
             context,
             control,
             workspace,
             stage="gaussian-filtering",
             role_overrides=role_overrides,
+            unchanged_parent_paths=frozenset(unchanged_parent_paths),
         )
         return StageExecutionResult(
             kind="gaussian_filtering_workspace",
@@ -713,7 +816,11 @@ def run_gaussian_filtering_stage(
             },
         )
     finally:
-        _cleanup_stage_workspace(workspace)
+        _cleanup_stage_workspace(
+            workspace,
+            preserve=sys.exc_info()[0] is not None,
+            lock_descriptor=lock_descriptor,
+        )
 
 
 def run_rasterization_stage(
@@ -721,7 +828,7 @@ def run_rasterization_stage(
     control: StageExecutionControl,
 ) -> StageExecutionResult:
     """Render and qualify GeoTIFF products from an already filtered model."""
-    workspace = _prepare_stage_workspace(context)
+    workspace, lock_descriptor = _prepare_stage_workspace(context)
     try:
         restored = _restore_input_workspace(
             context,
@@ -853,7 +960,11 @@ def run_rasterization_stage(
             },
         )
     finally:
-        _cleanup_stage_workspace(workspace)
+        _cleanup_stage_workspace(
+            workspace,
+            preserve=sys.exc_info()[0] is not None,
+            lock_descriptor=lock_descriptor,
+        )
 
 
 def run_gaussian_viewer_stage(
@@ -862,7 +973,7 @@ def run_gaussian_viewer_stage(
 ) -> StageExecutionResult:
     """Build an immutable CPU-only GSTile bundle from filtered Gaussians."""
 
-    workspace = _prepare_stage_workspace(context)
+    workspace, lock_descriptor = _prepare_stage_workspace(context)
     try:
         restored = _restore_input_workspace(
             context,
@@ -1022,4 +1133,8 @@ def run_gaussian_viewer_stage(
             },
         )
     finally:
-        _cleanup_stage_workspace(workspace)
+        _cleanup_stage_workspace(
+            workspace,
+            preserve=sys.exc_info()[0] is not None,
+            lock_descriptor=lock_descriptor,
+        )

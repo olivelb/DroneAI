@@ -183,7 +183,10 @@ Keep one dated Markdown report under `docs/benchmarks/` and record:
 - quality-gate reports, final RGB/height GeoTIFF checks and detection counts;
 - one new detection attempt against an existing raster and one cancelled or
   failed stage followed by a new immutable attempt;
-- confirmation that the disposable Job workspaces and pods were removed.
+- confirmation that successful Job workspaces and pods were removed; for a
+  failure/retry canary, record the bounded retained workspace, same-run lease
+  and verification-cache reuse, then confirm its removal after success or by
+  the reviewed orphan-workspace retention procedure.
 
 Never store credentials, signed URLs, bearer tokens, private datasets or raw
 Terraform state in the report.
