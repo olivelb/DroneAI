@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -172,6 +173,240 @@ def test_restore_reuses_verified_files_and_repairs_changed_files(tmp_path, fake_
     )
     assert (destination / "stable.bin").read_bytes() == b"stable"
     assert (destination / "changed.bin").read_bytes() == b"authoritative"
+
+
+def test_interrupted_restore_never_exposes_or_retains_a_partial_file(
+    tmp_path,
+    fake_s3,
+    monkeypatch,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "model.bin").write_bytes(b"authoritative-model")
+    published = stage_workspace.publish_workspace(
+        source,
+        "organizations/acme/missions/interrupted-restore",
+        organization_id="acme",
+        default_role="gaussian-model",
+    )
+    destination = tmp_path / "destination"
+    original_download = stage_workspace.storage.download_file
+
+    def interrupted_download(key, local_path):
+        if key == published.manifest_key:
+            return original_download(key, local_path)
+        Path(local_path).write_bytes(b"partial")
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(
+        stage_workspace.storage,
+        "download_file",
+        interrupted_download,
+    )
+    with pytest.raises(OSError, match="connection reset"):
+        stage_workspace.restore_workspace_measured(
+            published.manifest_key,
+            destination,
+            published.checksum_sha256,
+            expected_organization_id="acme",
+        )
+
+    assert not (destination / "model.bin").exists()
+    assert list(destination.rglob("*.tmp")) == []
+
+    monkeypatch.setattr(
+        stage_workspace.storage,
+        "download_file",
+        original_download,
+    )
+    restored = stage_workspace.restore_workspace_measured(
+        published.manifest_key,
+        destination,
+        published.checksum_sha256,
+        expected_organization_id="acme",
+    )
+    assert restored.downloaded_bytes == (
+        restored.manifest_size_bytes + len(b"authoritative-model")
+    )
+    assert (destination / "model.bin").read_bytes() == b"authoritative-model"
+
+
+def test_restore_verification_cache_avoids_rehashing_unchanged_files(
+    tmp_path,
+    fake_s3,
+    monkeypatch,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "model.bin").write_bytes(b"large-immutable-model")
+    published = stage_workspace.publish_workspace(
+        source,
+        "organizations/acme/missions/cached-restore",
+        organization_id="acme",
+        default_role="gaussian-model",
+    )
+    destination = tmp_path / "destination"
+    cache_path = tmp_path / "verification-cache" / "run.json"
+
+    first = stage_workspace.restore_workspace_measured(
+        published.manifest_key,
+        destination,
+        published.checksum_sha256,
+        expected_organization_id="acme",
+        verification_cache_path=cache_path,
+    )
+    assert first.downloaded_bytes == (
+        first.manifest_size_bytes + len(b"large-immutable-model")
+    )
+    assert cache_path.is_file()
+
+    original_sha256_file = stage_workspace.sha256_file
+    monkeypatch.setattr(
+        stage_workspace,
+        "sha256_file",
+        lambda _path: pytest.fail("unchanged verified files must not be re-read"),
+    )
+    second = stage_workspace.restore_workspace_measured(
+        published.manifest_key,
+        destination,
+        published.checksum_sha256,
+        expected_organization_id="acme",
+        verification_cache_path=cache_path,
+    )
+
+    assert second.reused_bytes == len(b"large-immutable-model")
+    assert second.downloaded_bytes == second.manifest_size_bytes
+
+    model_path = destination / "model.bin"
+    previous_mtime_ns = model_path.stat().st_mtime_ns
+    model_path.write_bytes(b"tampered-model-bytes!")
+    os.utime(
+        model_path,
+        ns=(model_path.stat().st_atime_ns, previous_mtime_ns + 1_000_000_000),
+    )
+    monkeypatch.setattr(stage_workspace, "sha256_file", original_sha256_file)
+    repaired = stage_workspace.restore_workspace_measured(
+        published.manifest_key,
+        destination,
+        published.checksum_sha256,
+        expected_organization_id="acme",
+        verification_cache_path=cache_path,
+    )
+
+    assert repaired.downloaded_bytes == (
+        repaired.manifest_size_bytes + len(b"large-immutable-model")
+    )
+    assert model_path.read_bytes() == b"large-immutable-model"
+
+
+def test_restore_batches_verification_cache_writes(
+    tmp_path,
+    fake_s3,
+    monkeypatch,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    for index in range(3):
+        (source / f"model-{index}.bin").write_bytes(f"model-{index}".encode())
+    published = stage_workspace.publish_workspace(
+        source,
+        "organizations/acme/missions/batched-cache",
+        organization_id="acme",
+        default_role="gaussian-model",
+    )
+    store_calls = 0
+    original_store = stage_workspace._store_verification_cache
+
+    def counted_store(path, files):
+        nonlocal store_calls
+        store_calls += 1
+        return original_store(path, files)
+
+    monkeypatch.setattr(stage_workspace, "_store_verification_cache", counted_store)
+    stage_workspace.restore_workspace_measured(
+        published.manifest_key,
+        tmp_path / "destination",
+        published.checksum_sha256,
+        expected_organization_id="acme",
+        verification_cache_path=tmp_path / "cache" / "run.json",
+    )
+
+    assert store_calls == 1
+
+
+def test_restore_does_not_depend_on_verification_cache_persistence(
+    tmp_path,
+    fake_s3,
+    monkeypatch,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "model.bin").write_bytes(b"verified-model")
+    published = stage_workspace.publish_workspace(
+        source,
+        "organizations/acme/missions/cache-write-failure",
+        organization_id="acme",
+        default_role="gaussian-model",
+    )
+    def fail_store(*_args, **_kwargs):
+        raise OSError("read-only cache")
+
+    monkeypatch.setattr(stage_workspace, "_store_verification_cache", fail_store)
+
+    restored = stage_workspace.restore_workspace_measured(
+        published.manifest_key,
+        tmp_path / "destination",
+        published.checksum_sha256,
+        expected_organization_id="acme",
+        verification_cache_path=tmp_path / "cache" / "run.json",
+    )
+
+    assert restored.file_count == 1
+    assert (tmp_path / "destination" / "model.bin").read_bytes() == b"verified-model"
+
+
+def test_role_only_parent_override_reuses_blob_without_reading_file(
+    tmp_path,
+    fake_s3,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    model = workspace / "model.ply"
+    model.write_bytes(b"immutable-gaussians")
+    parent = stage_workspace.publish_workspace(
+        workspace,
+        "organizations/acme/missions/role-parent",
+        organization_id="acme",
+        default_role="gaussian-partition-model",
+    )
+
+    monkeypatch.setattr(
+        stage_workspace,
+        "sha256_file",
+        lambda _path: pytest.fail("role-only reuse must not re-read the blob"),
+    )
+    child = stage_workspace.publish_workspace(
+        workspace,
+        "organizations/acme/missions/role-child",
+        organization_id="acme",
+        default_role="gaussian-filtering-workspace",
+        role_overrides={"model.ply": "filtered-gaussian-partition-model"},
+        parents=(
+            ManifestParent(
+                "parent",
+                parent.manifest_key,
+                parent.checksum_sha256,
+            ),
+        ),
+        unchanged_parent_paths=frozenset({"model.ply"}),
+    )
+
+    manifest = json.loads((fake_s3 / child.manifest_key).read_bytes())
+    assert manifest["files"][0]["path"] == "model.ply"
+    assert manifest["files"][0]["role"] == "filtered-gaussian-partition-model"
+    assert child.uploaded_bytes == child.manifest_size_bytes
+    assert child.reused_bytes == len(b"immutable-gaussians")
 
 
 def test_exact_restore_prunes_unmanaged_files_and_symlinks(tmp_path, fake_s3):

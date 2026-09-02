@@ -195,11 +195,24 @@ required workspace through S3 as a canonical manifest plus individually
 verified files. Publication rejects symbolic links, records relative path,
 size and SHA-256 for every file, and uses the manifest SHA-256 as the stage
 artifact checksum. Restoration rejects absolute/traversal/duplicate paths and
-removes any file whose downloaded size or digest differs. Both directions call
-the cooperative cancellation hook between files. Every bounded adapter records
-a versioned `workspace_transfer` provenance block for publication and, when
+never exposes a partial download: each blob is downloaded and verified at a
+sibling temporary path before atomic replacement. Both directions call the
+cooperative cancellation hook between files. Every bounded adapter records a
+versioned `workspace_transfer` provenance block for publication and, when
 applicable, restoration: logical bytes, file count, transferred bytes, reused
 bytes, manifest bytes and elapsed time.
+
+A stage workspace is keyed by the durable run ID and held under an exclusive
+local lease. Successful runs remove it. Failed or cancelled executions retain
+it and its verification cache for a retry of that same run. The cache is stored
+outside the published tree and binds the manifest blob digest and size to the
+local device, inode, size, mtime and ctime observed after full SHA-256
+verification. Matching identities can be reused without another content read;
+any mismatch forces SHA-256 verification and CAS repair. Cache updates are
+atomic and batched after at most 64 files or 64 MiB to bound both metadata
+writes and possible revalidation after a crash. This optimization assumes the
+same-run workspace lease is the local trust boundary. It does not make
+`emptyDir` durable: cross-pod or cross-node recovery requires a bound PVC.
 
 The only supported workspace contract is
 [Artifact Manifest v3](artifact-manifest-v3.md). All writers use tenant CAS
@@ -216,8 +229,9 @@ it downloads the immutable dataset prefix, runs preparation, sparse mapping,
 optional RTK refinement, undistortion/alignment, writes a versioned portable
 COLMAP state file, and publishes the complete verified workspace. Absolute
 local paths are rebased on restore, and paths outside the workspace are
-rejected. Its Job always removes the local workspace in `finally`; no GPU or
-CUDA implementation/version changes are part of this adapter.
+rejected. Its Job removes the local workspace after success and retains it after
+failure for same-run recovery; no GPU or CUDA implementation/version changes
+are part of this adapter.
 
 The Gaussian workflow exposes `execute_gaussian_training_phase` as its first
 explicit GPU boundary. It returns the prepared scene, merged unfiltered PLY
@@ -322,12 +336,21 @@ restored workspace and cannot escape it.
 The COLMAP image now exposes bounded commands for `gaussian_training` and
 `gaussian_filtering`. Training restores exactly one reconstruction workspace,
 uses the shared recipe resolver and publishes the unfiltered PLY with backend,
-trainer-binary and profile provenance. Filtering restores exactly one training
-workspace, verifies that recipe before loading the PLY, reconstructs only the
-lightweight scene metadata needed for alignment, and writes the filtered model
-to a distinct path so its immutable parent is never overwritten. Both Jobs
-reuse the common heartbeat/cancellation boundary and remove their disposable
-workspace in `finally` on success or failure.
+trainer-binary and profile provenance. Partition models already produced below
+the stage workspace are published from their trainer paths without a second
+local copy. A completed external checkpoint on the same volume is exposed by
+an atomic hard link; byte copying is only the cross-filesystem or unsupported
+filesystem fallback. Filtering restores exactly one training workspace, verifies that
+recipe before loading the PLY, reconstructs only the lightweight scene metadata
+needed for alignment, and writes the filtered model to a distinct path so its
+immutable parent is never overwritten. Partitioned filtering does not rewrite
+or rehash immutable training cells: it publishes a role-only child-manifest
+overlay that references the exact parent blobs. This zero-copy promotion is
+allowed only for paths explicitly declared unchanged by the filtering boundary.
+Both Jobs reuse the common heartbeat/cancellation boundary, remove their
+workspace after success and retain it after failure for same-run recovery.
+Computation resumes only where the scientific stage exposes a durable
+checkpoint; workspace transfer itself resumes at file granularity.
 
 The `rasterization` command restores exactly one filtering workspace, hydrates
 the already aligned/filtered model and calls the same raster boundary as the

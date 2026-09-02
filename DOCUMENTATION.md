@@ -479,10 +479,28 @@ and `PipelineCancelledError`. There is no Kafka control thread in the executor.
 ### Workspace cleanup
 
 All COLMAP stage adapters call their workspace cleanup in a `finally` block.
-Cleanup clears process-local cancellation state and removes stage scratch
-data. Immutable published inputs and outputs are not deleted by this cleanup.
-Mission retention separately waits for compute to stop; its safety checks are
-unchanged by the worker retirement.
+Cleanup clears process-local cancellation state. A successful stage removes
+its scratch workspace and its local verification cache; an exception preserves
+both below the bounded stage work root so a retry of the same run can continue.
+Each workspace is protected by a non-blocking exclusive lease. Cleanup errors
+are logged and preserve the workspace instead of masking the stage result.
+
+Input restoration reconciles the upstream manifest into that existing
+workspace. Downloads and local promotion copies use a sibling temporary file,
+verify it, then expose it with an atomic rename. A small verification cache is
+kept outside the published workspace and checkpointed after at most 64 files or
+64 MiB. On retry, an unchanged file identity (blob digest and size plus local
+device, inode, size, mtime and ctime) avoids rereading its contents; any
+fingerprint mismatch falls back to SHA-256 verification and repairs a corrupt
+file from CAS. This cache is a same-run optimization under the exclusive lease,
+not a replacement for the immutable manifest.
+
+Transfer recovery is file-granular. Scientific computation resumes at its last
+durable stage-specific checkpoint (for example, completed Gaussian cells);
+code without such a checkpoint may recompute its local operation while still
+avoiding a complete workspace download or revalidation. The work root must use
+a persistent volume to survive pod or node replacement. Mission retention and
+orphan-workspace collection remain separate operational concerns.
 
 ### Pipeline profiles
 

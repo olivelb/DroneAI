@@ -180,7 +180,7 @@ def test_reconstruction_adapter_runs_aligned_pipeline_and_publishes_workspace(
     assert not (tmp_path / "work" / ("a" * 32)).exists()
 
 
-def test_reconstruction_adapter_cleans_workspace_after_failure(tmp_path, monkeypatch):
+def test_reconstruction_adapter_preserves_workspace_after_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("DRONEAI_STAGE_WORK_ROOT", str(tmp_path / "work"))
     cancellation = FakeCancellationState()
     monkeypatch.setattr(stage_executor.runtime, "cancellation_state", cancellation)
@@ -196,7 +196,9 @@ def test_reconstruction_adapter_cleans_workspace_after_failure(tmp_path, monkeyp
         stage_executor.run_reconstruction_stage(_context(), FakeControl())
 
     assert cancellation.cleared == 1
-    assert not (tmp_path / "work" / ("a" * 32)).exists()
+    assert (
+        tmp_path / "work" / ("a" * 32) / "partial.bin"
+    ).read_bytes() == b"partial"
 
 
 def test_gaussian_retry_preserves_bounded_local_recovery_workspace(
@@ -358,12 +360,18 @@ def _mock_workspace_transfer(monkeypatch, calls):
         cancellation_check,
         expected_organization_id,
         exact_inventory=False,
+        verification_cache_path=None,
     ):
         calls.append("restore")
         assert manifest_key == "upstream/manifest.json"
         assert checksum == "b" * 64
         assert expected_organization_id == "acme-survey"
         assert exact_inventory is False
+        assert verification_cache_path == (
+            Path(destination).parent
+            / ".workspace-verification-cache"
+            / f"{Path(destination).name}.json"
+        )
         cancellation_check()
         Path(destination, ".droneai").mkdir(parents=True, exist_ok=True)
         return RestoredWorkspace(
@@ -501,6 +509,85 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
     assert cancellation.cleared == 1
 
 
+def test_publishable_model_path_reuses_in_workspace_cell_without_copy(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    source = workspace / "trainer" / "cell-0-0.ply"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"completed-cell")
+    fallback = workspace / ".droneai" / "training" / "cell-0-0.ply"
+    monkeypatch.setattr(
+        stage_executor,
+        "_copy_file_contents_atomically",
+        lambda *_args, **_kwargs: pytest.fail("in-workspace cell must not be copied"),
+    )
+
+    selected = stage_executor._ensure_publishable_model_path(
+        source,
+        workspace,
+        fallback,
+    )
+
+    assert selected == source.resolve()
+    assert selected.read_bytes() == b"completed-cell"
+    assert not fallback.exists()
+
+
+def test_publishable_model_path_hard_links_external_cell_without_data_copy(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "checkpoint" / "cell-0-0.ply"
+    source.parent.mkdir()
+    source.write_bytes(b"completed-cell")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fallback = workspace / ".droneai" / "training" / "cell-0-0.ply"
+    monkeypatch.setattr(
+        stage_executor,
+        "_copy_file_contents_atomically",
+        lambda *_args, **_kwargs: pytest.fail("same-volume cell must be hard-linked"),
+    )
+
+    selected = stage_executor._ensure_publishable_model_path(
+        source,
+        workspace,
+        fallback,
+    )
+
+    assert selected == fallback.resolve()
+    assert selected.read_bytes() == b"completed-cell"
+    assert selected.stat().st_ino == source.stat().st_ino
+
+
+def test_publishable_model_path_copies_when_hard_links_are_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "checkpoint" / "cell-0-0.ply"
+    source.parent.mkdir()
+    source.write_bytes(b"completed-cell")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fallback = workspace / ".droneai" / "training" / "cell-0-0.ply"
+    def fail_link(*_args, **_kwargs):
+        raise OSError("unsupported")
+
+    monkeypatch.setattr(stage_executor.os, "link", fail_link)
+
+    selected = stage_executor._ensure_publishable_model_path(
+        source,
+        workspace,
+        fallback,
+    )
+
+    assert selected == fallback
+    assert selected.read_bytes() == b"completed-cell"
+    assert selected.stat().st_ino != source.stat().st_ino
+
+
 def test_gaussian_filtering_adapter_never_overwrites_training_model(
     tmp_path,
     monkeypatch,
@@ -596,6 +683,113 @@ def test_gaussian_filtering_adapter_never_overwrites_training_model(
     assert result.kind == "gaussian_filtering_workspace"
     assert result.quality_metrics["retained_ratio"] == 0.8
     assert result.provenance["workspace_transfer"]["publish"]["logical_bytes"] == 456
+    assert cancellation.cleared == 1
+
+
+def test_partitioned_filtering_reuses_training_models_without_copying(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DRONEAI_STAGE_WORK_ROOT", str(tmp_path / "work"))
+    cancellation = FakeCancellationState()
+    monkeypatch.setattr(stage_executor.runtime, "cancellation_state", cancellation)
+    calls = []
+    _mock_workspace_transfer(monkeypatch, calls)
+    state = (SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+    monkeypatch.setattr(stage_executor, "load_reconstruction_state", lambda _path: state)
+    config = SimpleNamespace(dronegs_profile_id="max-quality-v1")
+    monkeypatch.setattr(
+        gaussian_stage,
+        "prepare_gaussian_product_run",
+        lambda *_args, **_kwargs: SimpleNamespace(config=config),
+    )
+
+    workspace = tmp_path / "work" / ("a" * 32)
+    training_path = (
+        workspace
+        / ".droneai"
+        / "gaussian"
+        / "training"
+        / "partitions"
+        / "cell-0-0.ply"
+    )
+    partition = SimpleNamespace(
+        bounds=SimpleNamespace(row=0, col=0),
+        model_path=training_path,
+    )
+    capacity_plan = SimpleNamespace()
+    artifact = SimpleNamespace(
+        partition_models=(partition,),
+        capacity_plan=capacity_plan,
+    )
+
+    def read_artifact(_workspace, _config):
+        calls.append("read")
+        training_path.parent.mkdir(parents=True, exist_ok=True)
+        training_path.write_bytes(b"verified-partition")
+        return artifact
+
+    monkeypatch.setattr(phase_artifacts, "read_training_artifact", read_artifact)
+    fake_model_module = ModuleType("gaussian_ortho.gaussian_model")
+    fake_model_module.GaussianModel = object
+    monkeypatch.setitem(sys.modules, "gaussian_ortho.gaussian_model", fake_model_module)
+    scene = SimpleNamespace()
+    monkeypatch.setattr(gaussian_workflow, "prepare_gaussian_scene", lambda _config: scene)
+    training_phase = SimpleNamespace(
+        training_state=SimpleNamespace(partition_models=(partition,))
+    )
+    monkeypatch.setattr(
+        phase_artifacts,
+        "hydrate_partitioned_training_phase",
+        lambda hydrated_artifact, hydrated_scene: (
+            calls.append("hydrate") or training_phase
+        ),
+    )
+    filtering_phase = SimpleNamespace(
+        partition_models=(partition,),
+        input_gaussians=100,
+        output_gaussians=100,
+    )
+    monkeypatch.setattr(
+        gaussian_workflow,
+        "execute_partitioned_gaussian_filtering_phase",
+        lambda *_args, **_kwargs: calls.append("filter") or filtering_phase,
+    )
+    monkeypatch.setattr(
+        phase_artifacts,
+        "write_filtering_artifact",
+        lambda *_args, **_kwargs: calls.append("write"),
+    )
+    monkeypatch.setattr(
+        stage_executor,
+        "_copy_file_contents_atomically",
+        lambda *_args, **_kwargs: pytest.fail("partition models must not be copied"),
+    )
+    captured = {}
+    mocked_publish = stage_executor.publish_workspace
+
+    def capture_publish(*args, **kwargs):
+        captured.update(kwargs)
+        return mocked_publish(*args, **kwargs)
+
+    monkeypatch.setattr(stage_executor, "publish_workspace", capture_publish)
+
+    result = stage_executor.run_gaussian_filtering_stage(
+        _context(
+            "gaussian_filtering",
+            input_kind="gaussian_training_workspace",
+        ),
+        FakeControl(),
+    )
+
+    relative_model = training_path.relative_to(workspace).as_posix()
+    assert calls == ["restore", "read", "hydrate", "filter", "write", "publish"]
+    assert captured["unchanged_parent_paths"] == frozenset({relative_model})
+    assert captured["role_overrides"][relative_model] == (
+        "filtered-gaussian-partition-model"
+    )
+    assert result.metadata["model_files"] == [relative_model]
+    assert result.quality_metrics["retained_ratio"] == 1.0
     assert cancellation.cleared == 1
 
 
