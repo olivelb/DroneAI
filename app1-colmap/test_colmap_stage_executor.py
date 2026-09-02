@@ -352,7 +352,7 @@ def test_v3_workspace_publication_preserves_exact_parent_and_roles(
     assert captured["organization_id"] == "acme-survey"
 
 
-def _mock_workspace_transfer(monkeypatch, calls):
+def _mock_workspace_transfer(monkeypatch, calls, capture=None):
     def restore(
         manifest_key,
         destination,
@@ -361,6 +361,7 @@ def _mock_workspace_transfer(monkeypatch, calls):
         expected_organization_id,
         exact_inventory=False,
         verification_cache_path=None,
+        selection=None,
     ):
         calls.append("restore")
         assert manifest_key == "upstream/manifest.json"
@@ -372,6 +373,10 @@ def _mock_workspace_transfer(monkeypatch, calls):
             / ".workspace-verification-cache"
             / f"{Path(destination).name}.json"
         )
+        if selection is not None:
+            assert "reconstruction-state" in selection.roles
+        if capture is not None:
+            capture.setdefault("selections", []).append(selection)
         cancellation_check()
         Path(destination, ".droneai").mkdir(parents=True, exist_ok=True)
         return RestoredWorkspace(
@@ -385,6 +390,8 @@ def _mock_workspace_transfer(monkeypatch, calls):
 
     def publish(workspace, prefix, cancellation_check, **kwargs):
         calls.append("publish")
+        if capture is not None:
+            capture["publish"] = kwargs
         cancellation_check()
         return PublishedWorkspace(
             manifest_key=f"{prefix}/manifest.json",
@@ -420,6 +427,7 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
     checkpoint.write_bytes(b"unfiltered")
     config = SimpleNamespace(dronegs_profile_id="normal-v3")
     config.dronegs_host_image_cache_mib = 32_768
+    config.data_factor = 1
 
     def prepare(preparation, *_args, **_kwargs):
         calls.append("prepare")
@@ -436,10 +444,12 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
         assert preparation.params == {
             "gs_host_image_cache_mib": "32768",
             "gs_iterations": "30000",
+            "gs_data_factor": "1",
         }
 
     monkeypatch.setattr(stage_executor, "write_reconstruction_state", write_state)
     phase = SimpleNamespace(
+        scene_state=SimpleNamespace(),
         backend_name="dronegs",
         trainer_binary_sha256="d" * 64,
         capacity_plan=None,
@@ -462,14 +472,28 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
     )
     written = {}
 
-    def write_artifact(workspace, artifact_config, artifact_phase, *, model_path):
+    def write_scene(workspace, scene_state):
+        calls.append("scene")
+        assert scene_state is phase.scene_state
+        return Path(workspace, ".droneai", "gaussian-filter-scene.json")
+
+    def write_artifact(
+        workspace,
+        artifact_config,
+        artifact_phase,
+        *,
+        model_path,
+        filter_scene_path,
+    ):
         calls.append("write")
         assert artifact_config is config
         assert artifact_phase is phase
         assert Path(model_path).read_bytes() == b"unfiltered"
+        assert filter_scene_path.name == "gaussian-filter-scene.json"
         written["model"] = Path(model_path)
         return Path(workspace, ".droneai", "gaussian-training-state.json")
 
+    monkeypatch.setattr(phase_artifacts, "write_filter_scene_artifact", write_scene)
     monkeypatch.setattr(phase_artifacts, "write_training_artifact", write_artifact)
 
     result = stage_executor.run_gaussian_training_stage(
@@ -486,7 +510,14 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
         FakeControl(),
     )
 
-    assert calls == ["restore", "prepare", "state", "write", "publish"]
+    assert calls == [
+        "restore",
+        "prepare",
+        "state",
+        "scene",
+        "write",
+        "publish",
+    ]
     assert result.kind == "gaussian_training_workspace"
     assert result.metadata["gaussian_count"] == 1_500_000
     assert result.metadata["quality_status"] == "warning"
@@ -596,8 +627,13 @@ def test_gaussian_filtering_adapter_never_overwrites_training_model(
     cancellation = FakeCancellationState()
     monkeypatch.setattr(stage_executor.runtime, "cancellation_state", cancellation)
     calls = []
-    _mock_workspace_transfer(monkeypatch, calls)
-    state = (SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+    transfer = {}
+    _mock_workspace_transfer(monkeypatch, calls, transfer)
+    state = (
+        SimpleNamespace(params={"gs_data_factor": "1"}, facade_mode=False),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
     monkeypatch.setattr(stage_executor, "load_reconstruction_state", lambda _path: state)
     config = SimpleNamespace(
         sh_degree=3,
@@ -618,6 +654,8 @@ def test_gaussian_filtering_adapter_never_overwrites_training_model(
         trainer_binary_sha256="d" * 64,
         gaussian_count=1_500_000,
         facade_subset_result=None,
+        filter_scene_path=training_path.parent / "gaussian-filter-scene.json",
+        filter_scene_checksum_sha256="f" * 64,
     )
 
     def read_artifact(workspace, artifact_config):
@@ -638,7 +676,16 @@ def test_gaussian_filtering_adapter_never_overwrites_training_model(
     fake_model_module.GaussianModel = FakeModel
     monkeypatch.setitem(sys.modules, "gaussian_ortho.gaussian_model", fake_model_module)
     scene = SimpleNamespace()
-    monkeypatch.setattr(gaussian_workflow, "prepare_gaussian_scene", lambda _config: scene)
+    monkeypatch.setattr(
+        gaussian_workflow,
+        "prepare_gaussian_scene",
+        lambda _config: pytest.fail("portable filtering must not reload COLMAP"),
+    )
+    monkeypatch.setattr(
+        phase_artifacts,
+        "read_filter_scene_artifact",
+        lambda *_args, **_kwargs: calls.append("scene") or scene,
+    )
 
     def hydrate(hydrated_artifact, hydrated_scene, model):
         calls.append("hydrate")
@@ -679,10 +726,24 @@ def test_gaussian_filtering_adapter_never_overwrites_training_model(
         FakeControl(),
     )
 
-    assert calls == ["restore", "read", "hydrate", "write", "publish"]
+    assert calls == [
+        "restore",
+        "read",
+        "scene",
+        "hydrate",
+        "write",
+        "publish",
+    ]
     assert result.kind == "gaussian_filtering_workspace"
     assert result.quality_metrics["retained_ratio"] == 0.8
     assert result.provenance["workspace_transfer"]["publish"]["logical_bytes"] == 456
+    selection = transfer["selections"][0]
+    assert selection.roles == stage_executor._GAUSSIAN_TRAINING_HANDOFF.roles
+    assert all(
+        role not in selection.roles
+        for role in {"reconstruction-workspace", "clean-images", "dense-model"}
+    )
+    assert transfer["publish"]["parents"] == ()
     assert cancellation.cleared == 1
 
 
@@ -695,7 +756,11 @@ def test_partitioned_filtering_reuses_training_models_without_copying(
     monkeypatch.setattr(stage_executor.runtime, "cancellation_state", cancellation)
     calls = []
     _mock_workspace_transfer(monkeypatch, calls)
-    state = (SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+    state = (
+        SimpleNamespace(params={"gs_data_factor": "1"}, facade_mode=False),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
     monkeypatch.setattr(stage_executor, "load_reconstruction_state", lambda _path: state)
     config = SimpleNamespace(dronegs_profile_id="max-quality-v1")
     monkeypatch.setattr(
@@ -721,6 +786,8 @@ def test_partitioned_filtering_reuses_training_models_without_copying(
     artifact = SimpleNamespace(
         partition_models=(partition,),
         capacity_plan=capacity_plan,
+        filter_scene_path=workspace / ".droneai" / "gaussian-filter-scene.json",
+        filter_scene_checksum_sha256="f" * 64,
     )
 
     def read_artifact(_workspace, _config):
@@ -734,7 +801,16 @@ def test_partitioned_filtering_reuses_training_models_without_copying(
     fake_model_module.GaussianModel = object
     monkeypatch.setitem(sys.modules, "gaussian_ortho.gaussian_model", fake_model_module)
     scene = SimpleNamespace()
-    monkeypatch.setattr(gaussian_workflow, "prepare_gaussian_scene", lambda _config: scene)
+    monkeypatch.setattr(
+        gaussian_workflow,
+        "prepare_gaussian_scene",
+        lambda _config: pytest.fail("portable filtering must not reload COLMAP"),
+    )
+    monkeypatch.setattr(
+        phase_artifacts,
+        "read_filter_scene_artifact",
+        lambda *_args, **_kwargs: calls.append("scene") or scene,
+    )
     training_phase = SimpleNamespace(
         training_state=SimpleNamespace(partition_models=(partition,))
     )
@@ -758,7 +834,10 @@ def test_partitioned_filtering_reuses_training_models_without_copying(
     monkeypatch.setattr(
         phase_artifacts,
         "write_filtering_artifact",
-        lambda *_args, **_kwargs: calls.append("write"),
+        lambda workspace, *_args, **_kwargs: (
+            calls.append("write")
+            or Path(workspace, ".droneai", "gaussian-filtering-state.json")
+        ),
     )
     monkeypatch.setattr(
         stage_executor,
@@ -783,8 +862,18 @@ def test_partitioned_filtering_reuses_training_models_without_copying(
     )
 
     relative_model = training_path.relative_to(workspace).as_posix()
-    assert calls == ["restore", "read", "hydrate", "filter", "write", "publish"]
-    assert captured["unchanged_parent_paths"] == frozenset({relative_model})
+    assert calls == [
+        "restore",
+        "read",
+        "scene",
+        "hydrate",
+        "filter",
+        "write",
+        "publish",
+    ]
+    assert "unchanged_parent_paths" not in captured
+    assert captured["parents"] == ()
+    assert relative_model in captured["included_paths"]
     assert captured["role_overrides"][relative_model] == (
         "filtered-gaussian-partition-model"
     )
@@ -801,8 +890,13 @@ def test_rasterization_adapter_qualifies_filtered_model_without_refiltering(
     cancellation = FakeCancellationState()
     monkeypatch.setattr(stage_executor.runtime, "cancellation_state", cancellation)
     calls = []
-    _mock_workspace_transfer(monkeypatch, calls)
-    state = (SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+    transfer = {}
+    _mock_workspace_transfer(monkeypatch, calls, transfer)
+    state = (
+        SimpleNamespace(params={"gs_data_factor": "1"}, facade_mode=False),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
     monkeypatch.setattr(stage_executor, "load_reconstruction_state", lambda _path: state)
     config = SimpleNamespace(
         sh_degree=3,
@@ -914,6 +1008,10 @@ def test_rasterization_adapter_qualifies_filtered_model_without_refiltering(
     assert result.quality_metrics["gaussian_count"] == 1_200_000
     assert result.provenance["renderer_contract"] == "cupy-ortho-v3-surface-color"
     assert result.provenance["workspace_transfer"]["restore"]["file_count"] == 2
+    assert transfer["selections"] == [
+        stage_executor._GAUSSIAN_FILTERING_HANDOFF
+    ]
+    assert transfer["publish"]["parents"] == ()
     assert cancellation.cleared == 1
 
 
@@ -937,8 +1035,13 @@ def test_gaussian_viewer_adapter_builds_product_only_from_filtered_model(
     cancellation = FakeCancellationState()
     monkeypatch.setattr(stage_executor.runtime, "cancellation_state", cancellation)
     calls = []
-    _mock_workspace_transfer(monkeypatch, calls)
-    state = (SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+    transfer = {}
+    _mock_workspace_transfer(monkeypatch, calls, transfer)
+    state = (
+        SimpleNamespace(params={"gs_data_factor": "1"}, facade_mode=False),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
     monkeypatch.setattr(stage_executor, "load_reconstruction_state", lambda _path: state)
     config = SimpleNamespace(dronegs_profile_id="normal-v3")
     monkeypatch.setattr(
@@ -1038,4 +1141,7 @@ def test_gaussian_viewer_adapter_builds_product_only_from_filtered_model(
     assert result.provenance["source_merge"]["algorithm"] == (
         "resident-filtered-model-v1"
     )
+    assert transfer["selections"] == [
+        stage_executor._GAUSSIAN_FILTERING_HANDOFF
+    ]
     assert cancellation.cleared == 1

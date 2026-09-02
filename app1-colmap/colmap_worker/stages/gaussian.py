@@ -165,6 +165,7 @@ def prepare_gaussian_product_run(
     vol_id: str,
     *,
     prepare_checkpoints: bool = True,
+    require_source_workspace: bool = True,
 ) -> GaussianProductRun:
     """Resolve one immutable Gaussian recipe from portable COLMAP state."""
     params = preparation.params
@@ -178,10 +179,20 @@ def prepare_gaussian_product_run(
     workspace_transform = os.path.join(workspace_dir, "alignment_transform.json")
     if not facade_mode and os.path.exists(workspace_transform):
         align_tf = workspace_transform
-    if not dense_sparse_model_ready(dense_path):
-        raise RuntimeError("Gaussian Splatting requires dense/sparse model (cameras.bin, images.bin, points3D.bin).")
-
-    data_factor = _resolve_data_factor(params, dense_path, vol_id)
+    if require_source_workspace:
+        if not dense_sparse_model_ready(dense_path):
+            raise RuntimeError(
+                "Gaussian Splatting requires dense/sparse model "
+                "(cameras.bin, images.bin, points3D.bin)."
+            )
+        data_factor = _resolve_data_factor(params, dense_path, vol_id)
+    else:
+        raw_data_factor = str(params.get("gs_data_factor", "auto"))
+        if raw_data_factor == "auto":
+            raise ValueError(
+                "Portable Gaussian handoff requires resolved gs_data_factor"
+            )
+        data_factor = int(raw_data_factor)
     resolved, warnings = resolve_dronegs_config(
         params,
         facade_mode=facade_mode,

@@ -108,6 +108,53 @@ def test_workspace_round_trip_is_manifested_and_checksum_verified(tmp_path, fake
     assert (destination / "sparse" / "0" / "cameras.bin").read_bytes() == b"cameras"
 
 
+def test_product_publication_selects_paths_without_staging_copy(tmp_path, fake_s3):
+    source = tmp_path / "source"
+    (source / ".droneai").mkdir(parents=True)
+    (source / "clean_images").mkdir()
+    (source / ".droneai" / "state.json").write_bytes(b"state")
+    (source / ".droneai" / "model.ply").write_bytes(b"model")
+    (source / "clean_images" / "obsolete.jpg").write_bytes(b"obsolete")
+
+    published = stage_workspace.publish_workspace(
+        source,
+        "organizations/acme/missions/example/stages/product/run-1",
+        organization_id="acme",
+        default_role="gaussian-product",
+        role_overrides={".droneai/model.ply": "gaussian-model"},
+        included_paths=frozenset(
+            {".droneai/state.json", ".droneai/model.ply"}
+        ),
+    )
+    destination = tmp_path / "restored"
+    restored = stage_workspace.restore_workspace_measured(
+        published.manifest_key,
+        destination,
+        published.checksum_sha256,
+        expected_organization_id="acme",
+    )
+
+    assert published.file_count == 2
+    assert restored.file_count == 2
+    assert (destination / ".droneai" / "state.json").read_bytes() == b"state"
+    assert (destination / ".droneai" / "model.ply").read_bytes() == b"model"
+    assert not (destination / "clean_images").exists()
+
+
+def test_product_publication_rejects_missing_selected_path(tmp_path, fake_s3):
+    source = tmp_path / "source"
+    source.mkdir()
+
+    with pytest.raises(ValueError, match="publication paths are missing"):
+        stage_workspace.publish_workspace(
+            source,
+            "organizations/acme/missions/example/stages/product/run-1",
+            organization_id="acme",
+            default_role="gaussian-product",
+            included_paths=frozenset({"missing.bin"}),
+        )
+
+
 def test_selective_restore_switch_is_strict_and_disabled_by_default(monkeypatch):
     monkeypatch.delenv(stage_workspace.ARTIFACT_SELECTIVE_RESTORE_ENV, raising=False)
     assert stage_workspace.artifact_selective_restore_enabled() is False

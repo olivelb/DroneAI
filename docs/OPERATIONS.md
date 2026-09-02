@@ -154,6 +154,14 @@ ephemeral-storage eviction threshold. The HQ raster class is
 `gpu-high-memory` (24 GiB request, 64 GiB limit); normal rasterization remains
 `gpu-standard` while its Gaussian cap is at most 3M.
 
+Gaussian training is the last stage allowed to materialize the reconstruction
+workspace. Its output manifest must contain only the reconstruction/training
+state, the checksum-bound filter-scene sidecar and the trained PLY files.
+Filtering, rasterization and viewer Jobs restore role-selected handoffs and
+must not contain `clean_images`, `database.db`, `sparse` or `dense`. Treat any
+such path in a post-training workspace as a deployment-contract regression;
+do not work around it by increasing the PVC or ephemeral-storage limit.
+
 Executor-specific `node_selector` entries may further restrict a pool or GPU
 architecture, but cannot contradict the resource-class selectors. Executor
 `tolerations` accept only explicit non-empty taint keys and validated Kubernetes

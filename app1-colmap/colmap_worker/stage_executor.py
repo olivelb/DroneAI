@@ -26,6 +26,7 @@ from shared.stage_execution import (
 from shared.stage_workspace import (
     PublishedWorkspace,
     RestoredWorkspace,
+    WorkspaceSelection,
     publish_workspace,
     restore_workspace_measured,
     workspace_transfer_provenance,
@@ -43,6 +44,28 @@ from .stage_state import load_reconstruction_state
 
 logger = logging.getLogger(__name__)
 
+_GAUSSIAN_TRAINING_HANDOFF = WorkspaceSelection(
+    roles=frozenset(
+        {
+            "reconstruction-state",
+            "gaussian-training-state",
+            "gaussian-filter-scene",
+            "gaussian-model",
+            "gaussian-partition-model",
+        }
+    )
+)
+_GAUSSIAN_FILTERING_HANDOFF = WorkspaceSelection(
+    roles=frozenset(
+        {
+            "reconstruction-state",
+            "gaussian-filtering-state",
+            "filtered-gaussian-model",
+            "filtered-gaussian-partition-model",
+        }
+    )
+)
+
 
 def _workspace_path(run_id: str) -> Path:
     root = Path(os.getenv("DRONEAI_STAGE_WORK_ROOT", "/work")).resolve()
@@ -59,6 +82,7 @@ def _restore_input_workspace(
     *,
     expected_kind: str,
     exact_inventory: bool = False,
+    selection: WorkspaceSelection | None = None,
 ) -> RestoredWorkspace:
     if len(context.inputs) != 1 or context.inputs[0].kind != expected_kind:
         raise ValueError(
@@ -81,6 +105,7 @@ def _restore_input_workspace(
         expected_organization_id=context.organization_id,
         exact_inventory=exact_inventory,
         verification_cache_path=verification_cache_path,
+        selection=selection,
     )
     return restored
 
@@ -131,6 +156,7 @@ def _publish_product_workspace(
     stage: str,
     default_role: str,
     role_overrides: dict[str, str] | None = None,
+    included_paths: frozenset[str] | None = None,
 ) -> PublishedWorkspace:
     """Publish only a derived product while lineage remains in artifact edges."""
 
@@ -144,6 +170,7 @@ def _publish_product_workspace(
         prefix,
         default_role=default_role,
         role_overrides=role_overrides,
+        included_paths=included_paths,
         parents=(),
         organization_id=context.organization_id,
         cancellation_check=control.raise_if_cancelled,
@@ -495,7 +522,10 @@ def run_gaussian_training_stage(
             GaussianPartitionModel,
             execute_gaussian_training_phase,
         )
-        from gaussian_ortho.phase_artifacts import write_training_artifact
+        from gaussian_ortho.phase_artifacts import (
+            write_filter_scene_artifact,
+            write_training_artifact,
+        )
 
         from .stages.gaussian import prepare_gaussian_product_run
 
@@ -507,10 +537,16 @@ def run_gaussian_training_stage(
             context.vol_id,
         )
         resolved_cache_mib = str(product.config.dronegs_host_image_cache_mib)
-        if preparation.params.get("gs_host_image_cache_mib") != resolved_cache_mib:
+        resolved_data_factor = str(product.config.data_factor)
+        resolved_parameters = {
+            **preparation.params,
+            "gs_host_image_cache_mib": resolved_cache_mib,
+            "gs_data_factor": resolved_data_factor,
+        }
+        if resolved_parameters != preparation.params:
             preparation = replace(
                 preparation,
-                params={**preparation.params, "gs_host_image_cache_mib": resolved_cache_mib},
+                params=resolved_parameters,
             )
         write_reconstruction_state(
             workspace, preparation, reconstruction, alignment
@@ -554,14 +590,25 @@ def run_gaussian_training_stage(
                 raise RuntimeError("Gaussian training produced no publishable model")
             model_path = model_root / "final.ply"
             _copy_file_contents_atomically(phase.training_state.final_ply, model_path)
-        write_training_artifact(
+        filter_scene_path = write_filter_scene_artifact(
+            workspace,
+            phase.scene_state,
+        )
+        training_artifact_path = write_training_artifact(
             workspace,
             product.config,
             phase,
             model_path=model_path,
+            filter_scene_path=filter_scene_path,
         )
         role_overrides = {
-            ".droneai/gaussian-training-state.json": "gaussian-training-state",
+            STATE_RELATIVE_PATH.as_posix(): "reconstruction-state",
+            training_artifact_path.relative_to(workspace).as_posix(): (
+                "gaussian-training-state"
+            ),
+            filter_scene_path.relative_to(workspace).as_posix(): (
+                "gaussian-filter-scene"
+            ),
         }
         if model_path is not None:
             role_overrides[model_path.relative_to(workspace).as_posix()] = (
@@ -571,12 +618,15 @@ def run_gaussian_training_stage(
             role_overrides[
                 Path(partition.model_path).relative_to(workspace).as_posix()
             ] = "gaussian-partition-model"
-        published = _publish_stage_workspace(
+        included_paths = frozenset(role_overrides)
+        published = _publish_product_workspace(
             context,
             control,
             workspace,
             stage="gaussian-training",
+            default_role="gaussian-training-product",
             role_overrides=role_overrides,
+            included_paths=included_paths,
         )
         capacity_plan = (
             phase.capacity_plan.as_dict()
@@ -683,17 +733,18 @@ def run_gaussian_filtering_stage(
             control,
             workspace,
             expected_kind="gaussian_training_workspace",
+            selection=_GAUSSIAN_TRAINING_HANDOFF,
         )
         preparation, reconstruction, alignment = load_reconstruction_state(workspace)
         from gaussian_ortho.generate_gaussian_orthophoto import (
             execute_gaussian_filtering_phase,
             execute_partitioned_gaussian_filtering_phase,
-            prepare_gaussian_scene,
         )
         from gaussian_ortho.gaussian_model import GaussianModel
         from gaussian_ortho.phase_artifacts import (
             hydrate_training_phase,
             hydrate_partitioned_training_phase,
+            read_filter_scene_artifact,
             read_training_artifact,
             write_filtering_artifact,
         )
@@ -707,9 +758,15 @@ def run_gaussian_filtering_stage(
             str(workspace),
             context.vol_id,
             prepare_checkpoints=False,
+            require_source_workspace=False,
         )
         artifact = read_training_artifact(workspace, product.config)
-        scene = prepare_gaussian_scene(product.config)
+        scene = read_filter_scene_artifact(
+            workspace,
+            artifact.filter_scene_path,
+            artifact.filter_scene_checksum_sha256,
+            render_mode="facade" if preparation.facade_mode else "map",
+        )
         filtered_root = workspace / ".droneai" / "gaussian" / "filtering"
         filtered_root.mkdir(parents=True, exist_ok=True)
         filtered_model_path: Path | None = None
@@ -743,7 +800,7 @@ def run_gaussian_filtering_stage(
                 training_phase,
             )
         control.raise_if_cancelled()
-        write_filtering_artifact(
+        filtering_artifact_path = write_filtering_artifact(
             workspace,
             product.config,
             training_phase,
@@ -751,9 +808,11 @@ def run_gaussian_filtering_stage(
             model_path=filtered_model_path,
         )
         role_overrides = {
-            ".droneai/gaussian-filtering-state.json": "gaussian-filtering-state",
+            STATE_RELATIVE_PATH.as_posix(): "reconstruction-state",
+            filtering_artifact_path.relative_to(workspace).as_posix(): (
+                "gaussian-filtering-state"
+            ),
         }
-        unchanged_parent_paths: set[str] = set()
         if filtered_model_path is not None:
             role_overrides[
                 filtered_model_path.relative_to(workspace).as_posix()
@@ -762,16 +821,14 @@ def run_gaussian_filtering_stage(
             role_overrides[
                 Path(partition.model_path).relative_to(workspace).as_posix()
             ] = "filtered-gaussian-partition-model"
-            unchanged_parent_paths.add(
-                Path(partition.model_path).relative_to(workspace).as_posix()
-            )
-        published = _publish_stage_workspace(
+        published = _publish_product_workspace(
             context,
             control,
             workspace,
             stage="gaussian-filtering",
+            default_role="gaussian-filtering-product",
             role_overrides=role_overrides,
-            unchanged_parent_paths=frozenset(unchanged_parent_paths),
+            included_paths=frozenset(role_overrides),
         )
         return StageExecutionResult(
             kind="gaussian_filtering_workspace",
@@ -835,6 +892,7 @@ def run_rasterization_stage(
             control,
             workspace,
             expected_kind="gaussian_filtering_workspace",
+            selection=_GAUSSIAN_FILTERING_HANDOFF,
         )
         preparation, reconstruction, alignment = load_reconstruction_state(workspace)
         from gaussian_ortho.generate_gaussian_orthophoto import (
@@ -857,6 +915,7 @@ def run_rasterization_stage(
             str(workspace),
             context.vol_id,
             prepare_checkpoints=False,
+            require_source_workspace=False,
         )
         artifact = read_filtering_artifact(workspace, product.config)
         if getattr(artifact, "partition_models", ()):
@@ -905,6 +964,13 @@ def run_rasterization_stage(
             if result.get("gaussian_seam_report")
             else None
         )
+        facade_frame_relative = (
+            Path(result["facade_frame_report"])
+            .relative_to(workspace)
+            .as_posix()
+            if result.get("facade_frame_report")
+            else None
+        )
         raster_roles = {
             ortho_relative: "raster-orthomosaic",
             height_relative: "raster-height",
@@ -913,12 +979,16 @@ def run_rasterization_stage(
             raster_roles[coverage_relative] = "raster-coverage-report"
         if seam_relative is not None:
             raster_roles[seam_relative] = "raster-seam-report"
-        published = _publish_stage_workspace(
+        if facade_frame_relative is not None:
+            raster_roles[facade_frame_relative] = "raster-facade-frame-report"
+        published = _publish_product_workspace(
             context,
             control,
             workspace,
             stage="rasterization",
+            default_role="raster-product",
             role_overrides=raster_roles,
+            included_paths=frozenset(raster_roles),
         )
         coverage = cast(dict[str, Any] | None, result.get("gaussian_coverage"))
         quality_metrics: dict[str, Any] = {
@@ -944,6 +1014,7 @@ def run_rasterization_stage(
                 "height_file": height_relative,
                 "coverage_report": coverage_relative,
                 "seam_report": seam_relative,
+                "facade_frame_report": facade_frame_relative,
                 "crs": result["coordinate_system"],
                 "raster_extent": result["raster_extent"],
             },
@@ -980,6 +1051,7 @@ def run_gaussian_viewer_stage(
             control,
             workspace,
             expected_kind="gaussian_filtering_workspace",
+            selection=_GAUSSIAN_FILTERING_HANDOFF,
         )
         preparation, reconstruction, alignment = load_reconstruction_state(workspace)
         from gaussian_ortho.phase_artifacts import read_filtering_artifact
@@ -999,6 +1071,7 @@ def run_gaussian_viewer_stage(
             str(workspace),
             context.vol_id,
             prepare_checkpoints=False,
+            require_source_workspace=False,
         )
         artifact = read_filtering_artifact(workspace, product.config)
         source_merge: dict[str, Any]

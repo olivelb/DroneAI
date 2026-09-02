@@ -218,6 +218,68 @@ def _validate_publish_roles(
     return overrides
 
 
+def _validated_publication_selection(
+    included_paths: frozenset[str] | None,
+    overrides: dict[str, str],
+    parents: tuple[ManifestParent, ...],
+    unchanged_parent_paths: frozenset[str],
+) -> set[str] | None:
+    if included_paths is None:
+        return None
+    requested_paths = {
+        _safe_relative_path(path).as_posix() for path in included_paths
+    }
+    if not requested_paths:
+        raise ValueError("Workspace publication path selection cannot be empty")
+    if parents:
+        raise ValueError(
+            "Selected product publication cannot inherit parent manifests"
+        )
+    if unchanged_parent_paths:
+        raise ValueError(
+            "Selected product publication cannot declare unchanged parent paths"
+        )
+    unselected_overrides = set(overrides) - requested_paths
+    if unselected_overrides:
+        raise ValueError(
+            "Workspace role overrides are outside the publication selection: "
+            f"{sorted(unselected_overrides)}"
+        )
+    return requested_paths
+
+
+def _publication_candidates(
+    root: Path,
+    requested_paths: set[str] | None,
+) -> list[Path]:
+    if requested_paths is None:
+        return sorted(root.rglob("*"))
+    candidates: list[Path] = []
+    for requested_path in sorted(requested_paths):
+        candidate = root / _safe_relative_path(requested_path)
+        resolved = candidate.resolve()
+        if root not in resolved.parents:
+            raise ValueError(
+                f"Selected workspace path escapes its root: {requested_path!r}"
+            )
+        candidates.append(candidate)
+    return candidates
+
+
+def _validate_requested_paths(
+    requested_paths: set[str] | None,
+    local_paths: set[str],
+) -> None:
+    if requested_paths is None:
+        return
+    missing_requested = requested_paths - local_paths
+    if missing_requested:
+        raise ValueError(
+            "Selected workspace publication paths are missing: "
+            f"{sorted(missing_requested)}"
+        )
+
+
 def publish_workspace(
     workspace: str | Path,
     s3_prefix: str,
@@ -227,6 +289,7 @@ def publish_workspace(
     parents: tuple[ManifestParent, ...] = (),
     allow_partial_workspace: bool = False,
     unchanged_parent_paths: frozenset[str] = frozenset(),
+    included_paths: frozenset[str] | None = None,
     organization_id: str,
     cancellation_check: Callable[[], None] | None = None,
 ) -> PublishedWorkspace:
@@ -234,6 +297,11 @@ def publish_workspace(
 
     Unchanged parent files remain inherited. Deletion is deliberately
     unsupported until the manifest contract gains explicit tombstones.
+
+    ``included_paths`` publishes an explicit product boundary directly from a
+    larger workspace without copying the selected files into a staging tree.
+    It is intended for parentless derived-product manifests whose lineage is
+    already represented by stage artifact edges.
     """
 
     started_at = time.monotonic()
@@ -247,6 +315,12 @@ def publish_workspace(
     overrides = _validate_publish_roles(
         default_role,
         role_overrides,
+        unchanged_parent_paths,
+    )
+    requested_paths = _validated_publication_selection(
+        included_paths,
+        overrides,
+        parents,
         unchanged_parent_paths,
     )
 
@@ -268,14 +342,14 @@ def publish_workspace(
     local_paths: set[str] = set()
     transferred_bytes = 0
     cas_reused_bytes = 0
-    for file_path in sorted(root.rglob("*")):
+    for file_path in _publication_candidates(root, requested_paths):
         if cancellation_check is not None:
             cancellation_check()
+        relative = file_path.relative_to(root).as_posix()
         if file_path.is_symlink():
             raise ValueError(f"Workspace cannot publish symbolic link: {file_path}")
         if not file_path.is_file():
             continue
-        relative = file_path.relative_to(root).as_posix()
         local_paths.add(relative)
         size = file_path.stat().st_size
         parent_entry = inherited.get(relative)
@@ -322,6 +396,7 @@ def publish_workspace(
         raise ValueError(
             f"Declared unchanged workspace paths are missing: {sorted(missing_unchanged)}"
         )
+    _validate_requested_paths(requested_paths, local_paths)
     missing_inherited = set(inherited) - local_paths
     if missing_inherited and not allow_partial_workspace:
         raise ValueError(
