@@ -165,6 +165,20 @@ guides for implementation and operational details:
 
 ## Showcase
 
+### HD facade — Saint-Étienne Cathedral, Cahors
+
+![Complete facade orthophoto of Saint-Étienne Cathedral in Cahors](docs/showcase_cahors_saint_etienne_facade_075mm.png)
+
+*Complete facade orthophoto rendered at a nominal resolution of 0.75 mm/pixel.*
+
+![Portal detail from the facade orthophoto of Saint-Étienne Cathedral in Cahors](docs/showcase_cahors_saint_etienne_portal_detail_075mm.png)
+
+*Portal detail showing the sculpted tympanum and masonry at the same nominal
+0.75 mm/pixel resolution. These images illustrate the facade workflow and are
+not an independent survey-accuracy validation.*
+
+### Aerial vehicle detection
+
 ![Vehicle detection on orthomosaic](docs/showcase_vehicle_detection.png)
 
 The image shows vehicle detections reprojected onto an ALBAGNAC Mavic 3E RTK
