@@ -14,11 +14,11 @@ COPY app4-dashboard/frontend/scripts/patch-playcanvas-container-intervals.mjs \
     ./scripts/patch-playcanvas-container-intervals.mjs
 COPY app4-dashboard/frontend/scripts/patch-playcanvas-workbuffer-view-direction.mjs \
     ./scripts/patch-playcanvas-workbuffer-view-direction.mjs
-RUN npm ci
+# Resolve with the packageManager version used by CI and local development.
+RUN corepack npm ci
 
 COPY app4-dashboard/frontend/ ./
-RUN npm run build
-RUN npm prune --omit=dev && npm cache clean --force
+RUN corepack npm run build
 
 # Stage 2: Run
 FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS runner
