@@ -316,6 +316,10 @@ export const gstilePrefetchProjection = (
   };
 };
 
+/** Prefetch the base stream identity and bytes, never virtual Q96 storage. */
+export const gsTilePrefetchContent = (pack: GsTilePack) =>
+  pack.streams?.base ?? pack;
+
 export type GsTilePrefetchPack = {
   nodeId: string;
   pack: GsTilePack;
@@ -354,10 +358,11 @@ export const planGsTilePrefetchPacks = (
     }
     if (locallyAvailablePacks.has(pack.id)) continue;
     if (scheduledPacks.has(pack.id)) continue;
-    if (plannedBytes + pack.byteLength > maximumBytes) continue;
+    const bytes = gsTilePrefetchContent(pack).byteLength;
+    if (plannedBytes + bytes > maximumBytes) continue;
     scheduledPacks.add(pack.id);
     planned.push({ nodeId, pack });
-    plannedBytes += pack.byteLength;
+    plannedBytes += bytes;
   }
   return planned;
 };

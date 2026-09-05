@@ -56,7 +56,12 @@ export type GsTileNode = {
   };
 };
 
+export type GsTileAttributeStream = { path: string; byteLength: number; sha256: string };
+export type GsTileAttributeStreams = { version: 1; base: GsTileAttributeStream; sh: GsTileAttributeStream };
 export type GsTilePack = {
+  storage?: "streams";
+  q96Header?: string;
+  streams?: GsTileAttributeStreams;
   id: string;
   path: string;
   byteLength: number;
@@ -183,6 +188,13 @@ const packValidator = objectWith(
     byteOffset: integerValue,
   },
   {
+    storage: oneOf("streams"),
+    q96Header: nonEmptyString,
+    streams: objectWith({
+      version: oneOf(1),
+      base: objectWith({ path: nonEmptyString, byteLength: integerValue, sha256: nonEmptyString }),
+      sh: objectWith({ path: nonEmptyString, byteLength: integerValue, sha256: nonEmptyString }),
+    }),
     encodings: objectWith({
       zstd: objectWith({
         path: nonEmptyString,
@@ -268,6 +280,26 @@ export const decodeGsTileManifest = (value: unknown): GsTileManifest => {
   const packsById = new Map<string, GsTilePack>();
   manifest.packs.forEach((pack) => {
     safeRelativePath(pack.path);
+    if (pack.storage === "streams") {
+      if (!pack.streams || pack.encodings || !pack.q96Header || !/^[0-9a-f]{64}$/.test(pack.q96Header))
+        throw new Error("Invalid GSTile stream-only storage");
+      const header = Uint8Array.from(pack.q96Header.match(/../g)!, x => parseInt(x, 16));
+      const view = new DataView(header.buffer);
+      if (String.fromCharCode(...header.subarray(0, 8)) !== "GSTILE1\0" ||
+          view.getUint16(8, true) !== 1 || view.getUint16(10, true) !== 32 ||
+          view.getUint16(12, true) !== 96 || view.getUint16(14, true) !== 0 ||
+          view.getUint32(16, true) !== pack.recordCount)
+        throw new Error("Invalid virtual Q96 header");
+    }
+    if (pack.streams) {
+      for (const [kind, stride] of [["base", 36], ["sh", 60]] as const) {
+        const stream = pack.streams[kind];
+        safeRelativePath(stream.path);
+        if (stream.byteLength !== 32 + pack.recordCount * stride || !/^[0-9a-f]{64}$/i.test(stream.sha256))
+          throw new Error("Invalid GSTile attribute stream identity");
+      }
+      if (pack.streams.base.path === pack.streams.sh.path) throw new Error("Duplicate GSTile stream path");
+    }
     const zstd = pack.encodings?.zstd;
     if (zstd) safeRelativePath(zstd.path);
     if (

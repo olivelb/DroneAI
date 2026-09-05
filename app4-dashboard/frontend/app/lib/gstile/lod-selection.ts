@@ -11,6 +11,7 @@ export type GsTileLodSelectionOptions = {
   maximumProjectedErrorPixels: number;
   includeSiblingLeaves?: boolean;
   retainOffscreenCoverage?: boolean;
+  previousNodeIds?: readonly string[];
 };
 
 export type GsTileLodSelection = {
@@ -135,18 +136,27 @@ const projectNode = (node: GsTileNode, context: ProjectionContext) => {
     center[2] - context.cameraPosition[2],
   ];
   const depth = dot(relative, context.forward);
-  const horizontal = Math.abs(dot(relative, context.right));
-  const vertical = Math.abs(dot(relative, context.up));
-  const visible =
-    depth + radius > 1e-6 &&
-    depth * context.tangentX -
-      horizontal +
-      radius * Math.hypot(1, context.tangentX) >=
-      0 &&
-    depth * context.tangentY -
-      vertical +
-      radius * Math.hypot(1, context.tangentY) >=
-      0;
+  // Preserve anisotropic Gaussian support without the false positives of a
+  // circumscribed sphere (especially long tiles just outside a close-up).
+  const planes: Vec3[] = [context.forward];
+  for (const [axis, tangent] of [
+    [context.right, context.tangentX],
+    [context.up, context.tangentY],
+  ] as const) {
+    for (const sign of [-1, 1]) {
+      planes.push([
+        context.forward[0] * tangent + axis[0] * sign,
+        context.forward[1] * tangent + axis[1] * sign,
+        context.forward[2] * tangent + axis[2] * sign,
+      ]);
+    }
+  }
+  const visible = planes.every((plane) =>
+    dot(relative, plane) +
+      halfExtent[0] * Math.abs(plane[0]) +
+      halfExtent[1] * Math.abs(plane[1]) +
+      halfExtent[2] * Math.abs(plane[2]) >= 0,
+  );
   const screenRadiusPixels = visible
     ? (radius * context.focalPixels) / Math.max(depth - radius, 1e-6)
     : 0;
@@ -215,11 +225,17 @@ export const selectGsTileLod = (
   if (!root || representationCount(root) < 1) {
     throw new Error("GSTile LOD root has no renderable representation");
   }
+  const parents = new Map<string, string>();
+  for (const n of manifest.nodes) for (const c of n.children ?? []) parents.set(c, n.id);
+  const refined = new Set<string>();
+  for (const id of options.previousNodeIds ?? [])
+    for (let p = parents.get(id); p !== undefined; p = parents.get(p)) refined.add(p);
   const projections = new Map<string, ReturnType<typeof projectNode>>();
   const projection = (node: GsTileNode) => {
     const cached = projections.get(node.id);
     if (cached) return cached;
     const projected = projectNode(node, context);
+    if (refined.has(node.id)) projected.errorPixels /= 0.8;
     projections.set(node.id, projected);
     return projected;
   };
@@ -320,9 +336,11 @@ export const selectGsTileLod = (
     };
   };
 
+  const finestCut = buildCut(0);
+  const finestFits = finestCut.residentGaussians <= options.maximumResidentGaussians;
   const requestedCut = buildCut(options.maximumProjectedErrorPixels);
   const budgetLimited =
-    requestedCut.residentGaussians > options.maximumResidentGaussians;
+    !finestFits && requestedCut.residentGaussians > options.maximumResidentGaussians;
 
   // Use the strictest *global* SSE that fits the resident budget. Cesium's
   // memory-adjusted SSE raises the threshold when the requested cut is too
@@ -340,9 +358,11 @@ export const selectGsTileLod = (
       .filter((error) => Number.isFinite(error) && error > 0),
   ])].sort((left, right) => left - right);
   let lower = 0;
-  let upper = candidateErrors.length - 1;
-  let selectedCut: LodCut | null = null;
-  let effectiveMaximumErrorPixels = candidateErrors.at(-1) ?? 0;
+  // Offscreen leaves can make full detail cheaper than intermediate proxies.
+  // Check it before the threshold search, whose cost need not be monotone.
+  let upper = finestFits ? -1 : candidateErrors.length - 1;
+  let selectedCut: LodCut | null = finestFits ? finestCut : null;
+  let effectiveMaximumErrorPixels = finestFits ? 0 : candidateErrors.at(-1) ?? 0;
   while (lower <= upper) {
     const middle = Math.floor((lower + upper) / 2);
     const candidateError = candidateErrors[middle];

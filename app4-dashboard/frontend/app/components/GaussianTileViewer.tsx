@@ -103,6 +103,15 @@ export default function GaussianTileViewer({
   const memoryCacheBytes = DEFAULT_GSTILE_MEMORY_CACHE_BYTES;
   const viewerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const backendRef = useRef<GaussianRenderBackend | null>(null);
+  const [homeNotice, setHomeNotice] = useState("");
+  const [edgeOpacity, setEdgeOpacity] = useState(1);
+  const edgeOpacityRef = useRef(1);
+  const updateEdgeOpacity = (value: number) => {
+    edgeOpacityRef.current = value;
+    setEdgeOpacity(value);
+    backendRef.current?.setEdgeOpacity?.(value);
+  };
   const [status, setStatus] = useState("Initialisation…");
   const [error, setError] = useState<string | null>(null);
   const [fullscreenError, setFullscreenError] = useState<string | null>(null);
@@ -153,6 +162,7 @@ export default function GaussianTileViewer({
       createGsTilePersistentCache(),
     );
     const backend = createBackend();
+    backendRef.current = backend;
     setStatistics(emptyStatistics);
     let animation = 0;
     let lastDiagnostics = 0;
@@ -197,6 +207,7 @@ export default function GaussianTileViewer({
         const manifest = descriptor?.manifest ?? decodeGsTileManifest(payload);
         setStatus("Initialisation du moteur…");
         await backend.initialize(canvas);
+        backend.setEdgeOpacity?.(edgeOpacityRef.current);
         resize();
         setStatus("Chargement progressif…");
         await backend.loadBundle(
@@ -229,6 +240,7 @@ export default function GaussianTileViewer({
       controller.abort(new DOMException("Viewer disposed", "AbortError"));
       cancelAnimationFrame(animation);
       observer.disconnect();
+      backendRef.current = null;
       backend.dispose();
     };
   }, [backendQueryKey, createBackend, descriptorUrl, manifestUrl, memoryCacheBytes]);
@@ -287,6 +299,29 @@ export default function GaussianTileViewer({
       data-lod-reused-gaussians={statistics.lodReusedGaussians}
     >
       <canvas ref={canvasRef} className="block h-full min-h-80 w-full" />
+      <div className="absolute left-3 top-3 z-10 flex gap-2 text-xs text-white">
+        <button type="button" className="rounded bg-black/60 px-3 py-2" onClick={() => {
+          try { backendRef.current?.saveHomeView?.(); setHomeNotice("Vue d’accueil enregistrée sur ce navigateur"); }
+          catch { setHomeNotice("Impossible d’enregistrer la vue sur ce navigateur"); }
+        }}>Enregistrer cette vue</button>
+        <button type="button" className="rounded bg-black/60 px-3 py-2" onClick={() => {
+          try { backendRef.current?.restoreHomeView?.(); } catch { setHomeNotice("Vue enregistrée invalide"); }
+        }}>Vue d’accueil</button>
+        <span role="status" className="rounded bg-black/60 px-2 py-2">{homeNotice}</span>
+      </div>
+      <div className="absolute left-3 top-16 z-10 flex items-center gap-2 rounded bg-black/70 px-3 py-2 text-xs text-white">
+        <label className="flex items-center gap-2">
+          Opacité des bords
+          <input type="range" min="25" max="200" step="5"
+            value={Math.round(edgeOpacity * 100)}
+            aria-valuetext={`${Math.round(edgeOpacity * 100)} %`}
+            title="100 % : rendu d’origine. Plus bas : bords plus transparents. Plus haut : bords plus opaques. Le centre reste inchangé."
+            onChange={(event) => updateEdgeOpacity(Number(event.target.value) / 100)}
+            className="w-24 accent-white" />
+        </label>
+        <output className="w-10 tabular-nums">{Math.round(edgeOpacity * 100)} %</output>
+        <button type="button" onClick={() => updateEdgeOpacity(1)} aria-label="Réinitialiser l’opacité des bords à 100 %">↺</button>
+      </div>
       <button
         type="button"
         onClick={() => void toggleFullscreen()}

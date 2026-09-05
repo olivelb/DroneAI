@@ -127,7 +127,6 @@ export const decodeGsTileViewerDescriptor = (
   payload.packs.forEach((rawPack, index) => {
     const pack = objectValue(rawPack, `$.packs[${index}]`);
     const id = stringValue(pack.id, `$.packs[${index}].id`);
-    const url = stringValue(pack.url, `$.packs[${index}].url`);
     const expected = manifestPacks.get(id);
     if (
       !expected ||
@@ -141,24 +140,18 @@ export const decodeGsTileViewerDescriptor = (
         "unique manifest-matching pack",
       );
     }
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new ResponseContractError(
-        "Gaussian viewer descriptor",
-        `$.packs[${index}].url`,
-        "absolute URL",
-      );
+    const urls: GsTilePackTransportUrls = {};
+    if (expected.storage !== "streams") {
+      const url = stringValue(pack.url, "$.packs.url");
+      let parsed: URL;
+      try { parsed = new URL(url); }
+      catch { throw new ResponseContractError("Gaussian viewer descriptor", "$.packs.url", "absolute URL"); }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+        throw new ResponseContractError("Gaussian viewer descriptor", "$.packs.url", "HTTP(S) URL");
+      urls.identity = parsed.toString();
+    } else if (pack.url !== undefined || pack.streams === undefined) {
+      throw new Error("Stream-only descriptor requires streams and no canonical URL");
     }
-    if (!(["http:", "https:"] as string[]).includes(parsed.protocol)) {
-      throw new ResponseContractError(
-        "Gaussian viewer descriptor",
-        `$.packs[${index}].url`,
-        "HTTP(S) URL",
-      );
-    }
-    const urls: GsTilePackTransportUrls = { identity: parsed.toString() };
     const expectedZstd = expected.encodings?.zstd;
     if (pack.encodings !== undefined) {
       const encodings = objectValue(
@@ -202,6 +195,21 @@ export const decodeGsTileViewerDescriptor = (
         );
       }
       urls.zstd = parsedZstd.toString();
+    }
+    if (pack.streams !== undefined) {
+      const streams = objectValue(pack.streams, "pack.streams");
+      if (streams.version !== 1 || !expected.streams) throw new Error("Unexpected GSTile streams");
+      const signed = { base: "", sh: "" };
+      for (const kind of ["base", "sh"] as const) {
+        const stream = objectValue(streams[kind], "pack.streams." + kind);
+        const entry = expected.streams[kind];
+        if (stream.byteLength !== entry.byteLength || stream.sha256 !== entry.sha256)
+          throw new Error("GSTile stream identity differs from manifest");
+        const url = new URL(stringValue(stream.url, "pack.streams." + kind + ".url"));
+        if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Invalid GSTile stream URL");
+        signed[kind] = url.toString();
+      }
+      urls.streams = signed;
     }
     packUrls.set(id, urls);
   });

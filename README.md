@@ -199,3 +199,7 @@ are GPL-3.0-or-later. External source trees, container images, model code and
 model weights retain their own licenses; review
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and the
 [`DroneGS GPL register`](docs/dronegs/GPL_COMPONENTS.md) before redistribution.
+
+### Viewer GSTile natif Windows
+
+Le [viewer portable C++ / Direct3D](native-viewer/README.md) ouvre les bundles GSTile V4 directement depuis un dossier local ou reseau. Les [mesures Windows](native-viewer/QUALIFICATION.md) documentent la comparaison avec WebGPU.

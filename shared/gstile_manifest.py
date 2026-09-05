@@ -110,6 +110,11 @@ def _validate_packs(
                 or not re.fullmatch(r"[0-9a-f]{64}", compressed_digest)
             ):
                 raise ValueError("GSTile zstd encoding identity is invalid")
+        if "streams" in pack:
+            from shared.gstile_streams import validate_stream_metadata
+            validate_stream_metadata(pack["streams"], record_count)
+        from shared.gstile_streams import validate_pack_storage
+        validate_pack_storage(pack)
         pack_counts[pack_id] = record_count
         pack_lengths[pack_id] = byte_length
         pack_hashes[pack_id] = digest

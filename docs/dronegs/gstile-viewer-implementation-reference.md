@@ -598,3 +598,90 @@ scientific approximation needs a named profile, metrics and its own review.
 These upstream formats and APIs inform the implementation; GSTile remains a
 DroneAI-owned contract so the directional-opacity representation cannot be
 lost during dependency upgrades.
+
+## Progressive attribute streaming and local LOD transitions — 2026-09-05
+
+The WebGPU backend now throttles camera updates without repeatedly aborting
+the active bounded transition. It reselects from the latest camera after each
+commit. nextLodCut coarsens first, then replaces local parent/child groups
+atomically, retaining complete coverage for the current selection. A 20%
+coarsening hysteresis reduces threshold oscillations. Offscreen branches may
+be pruned; a final target that cannot fit its intermediate proxies can be
+reached directly. The target added population is 65,536, except for the first
+indivisible group. This is not a hard per-frame upload byte bound in WebGPU.
+
+The existing persistent merged texture arena retains unchanged tile slots.
+Only added or SH-upgraded tiles are decoded and copied. The derived PlayCanvas
+unified manager/work buffer/sorter is still rebuilt at each commit to reconcile
+active intervals reliably. Eliminating that derived rebuild needs separate
+engine qualification. Native Direct3D uses a persistent fragmented arena,
+decoded-page LRU, stable manifest quantization indices, and 4 MiB raw-upload
+slices. It swaps active indices only after a complete local group arrives;
+the active-index list itself is rebuilt/uploaded at commit.
+
+When pack.streams is negotiated, geometry + DC/base opacity arrives first.
+After geometry converges and the camera is idle for 200 ms, SH upgrades proceed
+in bounded batches. Full-quality pages retain their coefficients across
+transitions. The native viewer skips those upgrades if both directional SH
+controls are disabled. Both decoders accept old canonical-only bundles.
+
+Home views can be explicitly saved/restored per bundle. Web settings use
+browser localStorage; native settings use LocalAppData. These preferences
+are local to each viewer and are not uploaded or shared between viewers.
+
+See docs/benchmarks/gstile-progressive-streaming-qualification.md for measured
+coverage and limitations; docs/contracts/gstile-v1.md for stream layout and
+existing-bundle conversion.
+
+### Stream-only storage
+
+New producer/converter outputs set pack.storage to "streams"; only the base
+and SH files are published. The API does not resolve or sign a canonical blob.
+The retained Q96 path/offset/hash describe a virtual layout, with q96Header
+enabling exact reconstruction for full-validation and the native fixed-cut
+benchmark. Progressive rendering reads the independent streams directly.
+Legacy canonical bundles remain readable; new outputs require updated clients.
+
+### Stable targets during convergence
+
+Both viewers cache the selected target until the next camera/viewport or budget
+change. Hysteresis uses the active cut when that target is chosen, but intermediate
+commits do not repeatedly alter it: otherwise budget competition can produce
+oscillating target cuts and starve deferred SH. The native loader remains busy
+until queued results are consumed; its streaming benchmark requires SH
+completion and includes a final drain. The web benchmark now checks exact
+target-cut agreement and SH completion rather than stopping at a fixed frame.
+
+The native final cut now follows the web selector's global budget-adjusted
+screen-error threshold, including bounded error inside support volumes.
+Both viewers use anisotropic support-box/frustum tests rather than circumscribed
+spheres. This preserves offscreen-center splats whose support is visible.
+See the balanced close-up qualification for real-data results, remaining
+2M-budget proxies, and the cost of a 4M cut.
+
+## Halo cache and raster opacity parity — 2026-09-05
+
+Native streaming now reserves inactive GPU tile pages with LRU eviction and
+prefetches a bounded enlarged frustum after foreground geometry/SH completion.
+Prefetch uploads never publish a render cut and partial pages are invalidated
+on cancellation. Fully cached targets bypass intermediate LOD transitions.
+The RAM LRU is independent of active-page ownership. The --cache-cycle
+qualification records foreground file reads/uploads with prefetch on and off.
+
+Web prefetch budgets and local-availability queries now use physical base-stream
+identities and lengths, retaining canonical fallback for older signed descriptors.
+This is a RAM/transport cache improvement, not a WebGPU inactive-resource arena.
+
+The GSTile WebGPU device overrides only its raster alpha chunks to use the native
+unnormalized Gaussian and 3-sigma fragment/quad support. PlayCanvas' default
+tail-subtracted normExp changed reconstruction opacity. Existing SH logits,
+premultiplied OVER blending, depth sorting and anti-alias settings are unchanged.
+Pinned-engine shader anchors are validated at initialization and in tests.
+Remaining projector, half-precision and sort differences prevent pixel identity.
+
+native-viewer/benchmarks/prepare-transparency.mjs generates an isolated harness
+from production code. With serve-streaming.mjs, it loads a native report's exact
+cut and camera, waits for all SH, and records a canvas PNG in its JSON report.
+See the halo/opacity qualification for the full dataset, measured pixel errors
+and cache limitations. These frontend changes still require deployment to alter
+a hosted dashboard.

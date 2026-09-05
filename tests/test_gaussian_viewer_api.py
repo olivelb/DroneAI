@@ -273,3 +273,36 @@ def test_descriptor_rejects_unsafe_manifest_paths(monkeypatch):
 
     assert error.value.status_code == 502
     assert "escapes" in error.value.detail
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+@pytest.mark.parametrize("stream_only", [False, True])
+def test_descriptor_signs_separate_streams_and_rejects_mismatched_blob(monkeypatch, corrupt, stream_only):
+    payload = _manifest()
+    streams = {"version": 1}
+    files = _files()
+    for kind, stride in (("base", 36), ("sh", 60)):
+        path = "packs/pack-0.gstp." + kind
+        digest = "1" * 64 if kind == "base" else "2" * 64
+        streams[kind] = {"path": path, "byteLength": 32 + stride, "sha256": digest}
+        files[path] = ManifestFile(path=path, role="viewer-pack", blob=ManifestBlob(
+            key="organizations/org-a/blobs/" + kind, size_bytes=32 + stride,
+            checksum_sha256=("3" * 64 if corrupt and kind == "sh" else digest)))
+    payload["packs"][0]["streams"] = streams
+    if stream_only:
+        import struct
+        payload["packs"][0].update(storage="streams",
+            q96Header=struct.pack("<8sHHHHIQI", b"GSTILE1\0", 1, 32, 96, 0, 1, 0, 0).hex())
+        files.pop("packs/pack-0.gstp")
+    monkeypatch.setattr(viewer, "_latest_viewer_artifact", lambda *_args: _artifact())
+    monkeypatch.setattr(viewer, "resolve_workspace_files", lambda *_args, **_kwargs: files)
+    monkeypatch.setattr(viewer.storage, "get_object_bytes", lambda *_args, **_kwargs: json.dumps(payload).encode())
+    monkeypatch.setattr(viewer.storage, "get_presigned_url", lambda key, **_kwargs: "https://objects.example/" + key)
+    if corrupt:
+        with pytest.raises(HTTPException):
+            viewer.gaussian_viewer_descriptor(SimpleNamespace(), SimpleNamespace(id=7, organization_id="org-a"))
+    else:
+        result = viewer.gaussian_viewer_descriptor(SimpleNamespace(), SimpleNamespace(id=7, organization_id="org-a"))
+        assert ("url" in result["packs"][0]) is (not stream_only)
+        assert result["packs"][0]["streams"]["base"]["url"].endswith("/base")
+        assert result["packs"][0]["streams"]["sh"]["byteLength"] == 92

@@ -38,8 +38,8 @@ benchmark goal, not part of the v1 baseline contract.
 bundle/
   manifest.json
   packs/
-    <node-id>.gst
-    <node-id>.gst.zst
+    <pack-id>.gst.base
+    <pack-id>.gst.sh
 ```
 
 All paths in the manifest are relative, use `/`, and must not contain `..`.
@@ -96,14 +96,11 @@ Aggregating writers report `statistics.packCount`,
 `statistics.packGrouping` so request reduction and overfetch experiments remain
 reproducible from the manifest.
 
-Old bundles are not migrated or replayed. The historical repacker has been
-removed. New V4 builds include conservative `renderBounds` and non-negative
-`geometricError` on every node, plus `lodTile` on every internal node.
-Parent render bounds contain every child's support. Statistics declare
-`deterministic-adaptive-cost-moment-opacity-refit-v4` and matching
-`proxyCount`/`proxyRecords`.
+Retired profiles are not migrated or replayed. Supported Q96/V4 bundles can
+be converted losslessly to stream-only storage by tools/split_gstile_attributes.py;
+this does not rerun training, quantization or LOD generation.
 
-A pack may expose an additive `encodings.zstd` object containing `path`,
+A historical pack may expose an additive `encodings.zstd` object containing `path`,
 `byteLength` and `sha256`. It is a lossless transport representation of the
 complete canonical `.gst` object, uses a zstd frame with content size and
 checksum, and is emitted only when smaller than the canonical object. Readers
@@ -196,3 +193,95 @@ leave the last complete representation visible.
 
 Hierarchical adaptive replacement LOD is required. Other representation
 profiles need a separate contract and qualification; readers do not infer them.
+
+## Independently authenticated attributes (streams v1)
+
+New bundles use storage: "streams": only .gst.base and .gst.sh exist on disk.
+The pack path, byteLength, sha256, byteOffset and tile offsets describe the
+**virtual Q96 layout**, not a physical .gst file. q96Header stores its 32-byte
+header as 64 lowercase hexadecimal characters. Together with both streams it
+reconstructs byte-exact Q96 for validation and full decoding. The geometric
+profile, tile order, quantization and LOD tree do not change.
+
+A stream-only pack must declare streams and q96Header, and must not declare
+encodings. Descriptors for it contain only the signed base/SH URLs; no canonical
+URL is signed or fetched. Missing/corrupt streams are errors. Updated viewers
+are required for these outputs. The current viewers still accept historical
+canonical-only or canonical-plus-stream bundles; absence of storage denotes
+that historical physical-file contract.
+
+
+The stream metadata (also supported additively on historical bundles) is:
+
+~~~json
+"streams": {
+  "version": 1,
+  "base": {"path": "packs/example.gst.base", "byteLength": 68, "sha256": "<64 lowercase hex>"},
+  "sh": {"path": "packs/example.gst.sh", "byteLength": 92, "sha256": "<64 lowercase hex>"}
+}
+~~~
+
+The example lengths describe one record. Both files contain all records of the
+canonical pack in exactly the same order. A tile starting at canonical byte
+offset O uses records starting at (O - 32) / 96 in either stream; tile
+quantization and source degrees are unchanged.
+
+Each file has a 32-byte little-endian header:
+
+| Offset | Type | Value |
+|---|---|---|
+| 0 | 8 bytes | ASCII GSATTR1 followed by NUL |
+| 8 | uint16 | version 1 |
+| 10 | uint16 | header size 32 |
+| 12 | uint16 | stride 36 (base) or 60 (SH) |
+| 14 | uint16 | kind 1 (base) or 2 (SH) |
+| 16 | uint32 | canonical pack record count |
+| 20 | uint64 | reserved, zero |
+| 28 | uint32 | CRC32 of payload |
+
+Base record bytes 0..27 copy Q96 bytes 0..27; bytes 28..35 copy Q96
+bytes 88..95. This retains position, scale, rotation, opacity logit, colour DC
+and uint64 source identifier. SH record bytes 0..59 copy Q96 bytes 28..87:
+45 colour coefficients followed by 15 directional-opacity coefficients.
+Concatenating the corresponding fields reconstructs the canonical payload
+byte-for-byte, without requantization.
+
+A progressive viewer may render base with **zero SH residuals temporarily**.
+DC and base opacity are always preserved. The full-quality result must restore
+all advertised coefficients. This temporary approximation is distinct from
+dropping opacity SH in a full-quality decoder.
+
+SHA256 authenticates each complete stream independently; CRC, kind, count,
+stride, reserved bytes and exact length must also validate before use.
+Malformed advertised streams are errors. Relative paths use the same containment
+rules as canonical packs and base/SH paths must differ. API descriptors bind
+both signed URLs to manifest sizes/hashes after tenant-scoped workspace lookup.
+A historical bundle can fall back to its canonical pack when stream URLs
+were not negotiated. A stream-only bundle cannot fall back and rejects a
+descriptor that omits its signed streams. A stream-aware client must not silently accept a
+corrupt stream by falling back to other bytes.
+
+The bundler writes only the two raw attribute streams. It neither writes nor
+compresses discarded historical packs. Base transfers 36/96 of the Q96 record
+bytes (62.5% less, excluding headers); full base+SH still uses 96 bytes per
+record, plus two 32-byte headers per aggregate. stats fields
+attributeStreamBytes and storedPackBytes measure actual stream bytes;
+packBytes retains its virtual Q96 accounting meaning for existing consumers.
+There is no canonical compatibility copy. These streams are not compressed;
+no bandwidth advantage over a complete historical Zstd file is asserted.
+
+For an existing immutable bundle:
+
+~~~bash
+python3 tools/split_gstile_attributes.py /path/to/gstile /path/to/gstile-streams
+~~~
+
+The converter verifies all source packs, writes only the two streams, assigns
+a new bundle ID and publishes its manifest after all files are complete.
+It preserves canonical **payload bytes**, not historical files. Sources may
+themselves use canonical or stream-only storage. Output streams are flushed
+and read back to verify SHA256. The destination must be new and outside the
+source, which is never edited. An interrupted .partial directory remains.
+Use --resume to reverify completed files and repair incomplete writes; unknown
+files prevent publication. --workers controls parallel I/O (1..16, default 4).
+The pipeline publishes the whole new output workspace.

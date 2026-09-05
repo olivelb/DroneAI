@@ -10,7 +10,8 @@ export type GaussianViewFrame = {
 };
 
 export type GsTilePackTransportUrls = {
-  identity: string;
+  streams?: { base: string; sh: string };
+  identity?: string;
   zstd?: string;
 };
 
@@ -74,9 +75,12 @@ export interface GaussianRenderBackend {
     packUrls?: ReadonlyMap<string, GsTilePackTransportUrls>,
     recommendedView?: GaussianViewFrame | null,
   ): Promise<void>;
+  setEdgeOpacity?(multiplier: number): void;
   setCamera(camera: GaussianCameraState): void;
   render(timestampMs: number): GaussianRenderStatistics;
   resize(width: number, height: number, devicePixelRatio: number): void;
+  saveHomeView?(): void;
+  restoreHomeView?(): void;
   dispose(): void;
 }
 
