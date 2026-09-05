@@ -139,7 +139,7 @@ variable "gpu_architecture" {
   type        = string
   default     = ""
   validation {
-    condition = !var.enable_gpu_pool || contains(["turing", "ampere", "ada", "hopper", "blackwell"], var.gpu_architecture)
+    condition     = !var.enable_gpu_pool || contains(["turing", "ampere", "ada", "hopper", "blackwell"], var.gpu_architecture)
     error_message = "Set gpu_architecture to the hardware architecture of the selected GPU flavor."
   }
 }

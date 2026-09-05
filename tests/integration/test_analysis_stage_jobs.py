@@ -222,20 +222,19 @@ def test_publication_and_cancel_serialize_without_foreign_key_deadlock(analysis_
     with scope() as session:
         analysis = session.get(AIAnalysisRun, analysis_id)
     context = stage_execution.load_stage_execution_context(run_id, "detection")
-    stage_locked, mission_locked = Event(), Event()
+    stage_locked, contender_started = Event(), Event()
     original_reserve = stage_execution.reserve_stage_output_storage
     original_mission = support.get_mission
 
     def reserve_after_cancel_lock(*args, **kwargs):
         stage_locked.set()
-        assert mission_locked.wait(10)
+        assert contender_started.wait(10)
         return original_reserve(*args, **kwargs)
 
     def mission_for_cancel(*args, **kwargs):
-        mission = original_mission(*args, **kwargs)
         if kwargs.get("for_update"):
-            mission_locked.set()
-        return mission
+            contender_started.set()
+        return original_mission(*args, **kwargs)
 
     monkeypatch.setattr(stage_execution, "reserve_stage_output_storage", reserve_after_cancel_lock)
     monkeypatch.setattr(support, "get_mission", mission_for_cancel)
@@ -266,22 +265,22 @@ def test_publication_and_mission_deletion_do_not_deadlock(analysis_postgis, monk
     with scope() as session:
         analysis = session.get(AIAnalysisRun, analysis_id)
     context = stage_execution.load_stage_execution_context(run_id, "detection")
-    stage_locked, mission_locked = Event(), Event()
+    stage_locked, contender_started = Event(), Event()
     original_reserve = stage_execution.reserve_stage_output_storage
-    original_cancel = missions.mark_cancellation_requested
+    original_find = missions._find_mission
 
     def reserve_after_mission_lock(*args, **kwargs):
         stage_locked.set()
-        assert mission_locked.wait(10)
+        assert contender_started.wait(10)
         return original_reserve(*args, **kwargs)
 
-    def cancel_before_stage_lock(*args, **kwargs):
-        result = original_cancel(*args, **kwargs)
-        mission_locked.set()
-        return result
+    def find_before_mission_lock(*args, **kwargs):
+        if kwargs.get("for_update"):
+            contender_started.set()
+        return original_find(*args, **kwargs)
 
     monkeypatch.setattr(stage_execution, "reserve_stage_output_storage", reserve_after_mission_lock)
-    monkeypatch.setattr(missions, "mark_cancellation_requested", cancel_before_stage_lock)
+    monkeypatch.setattr(missions, "_find_mission", find_before_mission_lock)
     with ThreadPoolExecutor(max_workers=2) as pool:
         publication = pool.submit(stage_execution._publish_result, context, _result(tenant, analysis))
         assert stage_locked.wait(10)
@@ -313,32 +312,37 @@ def test_publication_and_retention_drain_do_not_deadlock(analysis_postgis, monke
     with scope() as session:
         analysis = session.get(AIAnalysisRun, analysis_id)
         analysis.mission.updated_at = now - timedelta(days=2)
+        session.get(MissionStageRun, _stage_id).job_name = "analysis-retention-" + uuid4().hex[:12]
         set_policy(session, organization_id=tenant, values=PolicyValues(retention_days=1), actor_subject="test")
-    stage_locked, mission_locked = Event(), Event()
+    stage_locked, drain_finished = Event(), Event()
     original_reserve = stage_execution.reserve_stage_output_storage
-    original_cancel = retention.request_mission_analysis_cancellations
 
     def reserve_after_mission_lock(*args, **kwargs):
         stage_locked.set()
-        assert mission_locked.wait(10)
+        assert drain_finished.wait(10)
         return original_reserve(*args, **kwargs)
 
-    def cancel_after_mission_lock(*args, **kwargs):
-        mission_locked.set()
-        return original_cancel(*args, **kwargs)
-
     def drain():
-        with scope() as session:
-            return retention.claim_retention_candidates(session, now=now, retry_seconds=3600)
+        try:
+            with scope() as session:
+                return retention.claim_retention_candidates(session, now=now, retry_seconds=3600)
+        finally:
+            drain_finished.set()
 
     monkeypatch.setattr(stage_execution, "reserve_stage_output_storage", reserve_after_mission_lock)
-    monkeypatch.setattr(retention, "request_mission_analysis_cancellations", cancel_after_mission_lock)
     with ThreadPoolExecutor(max_workers=2) as pool:
         publication = pool.submit(stage_execution._publish_result, context, _result(tenant, analysis))
         assert stage_locked.wait(10)
         draining = pool.submit(drain)
         assert publication.result(timeout=15)
-        assert draining.result(timeout=15) == []
+        assert all(item.mission_id != analysis.mission_id for item in draining.result(timeout=15))
+    # The first scan must skip the publisher's locked mission, then a later
+    # scan can begin drainage once the result has committed.
     with scope() as session:
         assert session.get(AIAnalysisRun, analysis_id).status == "completed"
+        mission = session.get(Mission, analysis.mission_id)
+        assert mission.current_step != "RETENTION_DRAINING"
+        mission.updated_at = now - timedelta(days=2)
+    assert all(item.mission_id != analysis.mission_id for item in drain())
+    with scope() as session:
         assert session.get(Mission, analysis.mission_id).current_step == "RETENTION_DRAINING"

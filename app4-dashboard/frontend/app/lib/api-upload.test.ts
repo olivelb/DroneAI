@@ -109,7 +109,7 @@ it("waits for aborted slow parts before deleting the session and never finalizes
       method: "PUT", url: `https://objects.example/${url.at(-1)}`, expires_in: 60,
       part_number: Number(url.at(-1)), expected_size: 1,
     });
-    if (url.startsWith("https://objects.example")) {
+    if (new URL(url).origin === "https://objects.example") {
       if (url.endsWith("1")) return new Response(null, { status: 400 });
       active++;
       return new Promise<Response>((_resolve, reject) => {
