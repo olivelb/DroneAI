@@ -158,7 +158,7 @@ def vram_gaussian_cap(
     """Convert device memory to a conservative native-trainer capacity."""
 
     if total_vram_bytes <= VRAM_FIXED_RESERVE_BYTES:
-        return CAPACITY_QUANTUM
+        raise ValueError("Insufficient VRAM budget for the fixed training reserve")
     usable_from_total = total_vram_bytes * VRAM_USABLE_FRACTION - VRAM_FIXED_RESERVE_BYTES
     usable = usable_from_total
     if free_vram_bytes is not None:
@@ -166,6 +166,8 @@ def vram_gaussian_cap(
             usable,
             free_vram_bytes - VRAM_FIXED_RESERVE_BYTES,
         )
+    if usable < CAPACITY_QUANTUM * GAUSSIAN_CAPACITY_BYTES:
+        raise ValueError("Insufficient VRAM budget for the minimum Gaussian capacity")
     return _round_down(usable / GAUSSIAN_CAPACITY_BYTES)
 
 

@@ -30,6 +30,14 @@ networkPolicy:
   monitoringNamespace: monitoring
   externalHttpsCidrs:
     - REPLACE_EXTERNAL_HTTPS_CIDR
+  databasePeers:
+    - ipBlock: {cidr: REPLACE_DATABASE_CIDR}
+  s3Peers:
+    - ipBlock: {cidr: REPLACE_S3_CIDR}
+  kafkaPeers:
+    - ipBlock: {cidr: REPLACE_KAFKA_CIDR}
+  kubernetesApiPeers:
+    - ipBlock: {cidr: REPLACE_KUBERNETES_API_CIDR}
   databasePort: 5432
   s3Port: 443
 

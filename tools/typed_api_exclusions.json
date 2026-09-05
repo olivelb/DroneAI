@@ -1,0 +1,7 @@
+[
+  "app4-dashboard/api/gaussian_viewer.py",
+  "app4-dashboard/api/main.py",
+  "app4-dashboard/api/routers/__init__.py",
+  "app4-dashboard/api/routers/mission_gaussians.py",
+  "app4-dashboard/api/stage_projection.py"
+]

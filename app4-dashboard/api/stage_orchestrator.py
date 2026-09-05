@@ -7,8 +7,11 @@ import logging
 import os
 import re
 import threading
+import uuid
+
+from shared.control_metrics import observe_lifecycle_backlog
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from sqlalchemy import or_, text
@@ -76,7 +79,8 @@ DETECTION_FINALIZER_PHASE = "finalizer"
 DETECTION_REQUESTED_PARALLELISM_KEY = "requested_shard_parallelism"
 DETECTION_EFFECTIVE_PARALLELISM_KEY = "effective_shard_parallelism"
 DETECTION_INFERENCE_RESOURCE_CLASS_KEY = "detection_inference_resource_class"
-CANCELLATION_JOB_CLEANUP_AT_KEY = "cancellation_job_cleanup_at"
+JOB_CLEANUP_CONFIRMED_AT_KEY = "cleanup_confirmed_at"
+RECONCILIATION_LEASE_SECONDS = 300
 GPU_ARCHITECTURE_LABEL = "droneai.io/gpu-architecture"
 SCHEDULER_CANDIDATE_PAGE_SIZE = 500
 
@@ -852,6 +856,7 @@ def reserve_ready_jobs(
             ),
         )
         .order_by(
+            MissionStageRun.provenance["scheduler_checked_at"].as_string().asc().nullsfirst(),
             MissionStageRun.created_at,
             MissionStageRun.run_id,
         )
@@ -871,6 +876,7 @@ def reserve_ready_jobs(
         offset += len(page)
     prepared_candidate_rows = []
     for run, mission in candidate_rows:
+        run.provenance = {**(run.provenance or {}), "scheduler_checked_at": now.isoformat()}
         _repair_underprovisioned_resource_class(run)
         try:
             _prepare_detection_fanout(session, run, settings)
@@ -934,6 +940,7 @@ def reserve_ready_jobs(
     }
     reserved: list[ReservedStageJob] = []
     for run, mission in candidate_rows:
+        run.provenance = {**(run.provenance or {}), "scheduler_checked_at": now.isoformat()}
         allocation = selected.get(cast(str, run.run_id))
         if allocation is None:
             continue
@@ -1064,130 +1071,211 @@ def _job_failure_message(status: dict[str, Any]) -> str:
     return prefix
 
 
+def _job_has_condition(status: dict[str, Any], kind: str) -> bool:
+    return any(
+        isinstance(condition, dict)
+        and condition.get("type") == kind
+        and str(condition.get("status")).lower() == "true"
+        for condition in status.get("conditions", []) or []
+    )
+
+
+def _apply_job_status(session: Any, run: MissionStageRun, job: dict[str, Any], now: datetime) -> None:
+    status = cast(dict[str, Any], job.get("status") or {})
+    run.heartbeat_at = now
+    if _job_has_condition(status, "Failed"):
+        run.status = "failed"
+        run.error_message = _job_failure_message(status)
+        run.completed_at = now
+    elif _job_has_condition(status, "Complete"):
+        if (
+            run.stage == "detection"
+            and _detection_phase(run) == DETECTION_SHARDS_PHASE
+        ):
+            provenance = cast(dict[str, Any], run.provenance or {})
+            try:
+                plan = parse_detection_shard_plan_descriptor(
+                    provenance.get("detection_shard_plan")
+                )
+                complete_detection_shard_receipts(
+                    session,
+                    run_id=cast(str, run.run_id),
+                    plan=plan,
+                )
+            except ValueError as error:
+                run.status = "failed"
+                run.error_message = f"Detection shards exited without a complete durable receipt set: {error}"
+                run.completed_at = now
+                return
+            shard_job_name = cast(str, run.job_name)
+            shard_dispatch_attempts = cast(int, run.dispatch_attempts)
+            inference_resource_class = cast(str, run.resource_class)
+            run.provenance = {
+                **provenance,
+                DETECTION_PHASE_KEY: DETECTION_FINALIZER_PHASE,
+                "detection_shard_job_name": shard_job_name,
+                "detection_shard_dispatch_attempts": shard_dispatch_attempts,
+                DETECTION_INFERENCE_RESOURCE_CLASS_KEY: (
+                    inference_resource_class
+                ),
+            }
+            run.resource_class = "cpu-standard"
+            run.executor = None
+            run.job_name = None
+            run.scheduled_at = None
+            run.dispatch_attempts = 0
+            run.dispatch_error = None
+            run.status = "queued"
+            run.current_step = "DETECTION_FINALIZING"
+            return
+        run.status = "failed"
+        run.error_message = (
+            "Stage Job exited without publishing its immutable artifact"
+        )
+        run.completed_at = now
+
+    elif int(status.get("active") or 0) > 0:
+        run.status = "running"
+        run.started_at = run.started_at or now
+
+def _cleanup_job_names(run: MissionStageRun) -> list[str]:
+    provenance = cast(dict[str, Any], run.provenance or {})
+    return sorted({str(name) for name in (
+        run.job_name, provenance.get("detection_shard_job_name"),
+    ) if name})
+
+
+def _observe_cleanup(client: KubernetesJobClient, names: list[str]) -> bool:
+    """A DELETE acknowledgement is never evidence that writers have stopped."""
+    confirmed = True
+    for name in names:
+        try:
+            job = client.get(name)
+        except KubernetesApiError as error:
+            if error.status_code != 404:
+                raise
+            # Also covers TTL removal and Pods left by an older background DELETE.
+            if client.pods_for_job(name):
+                confirmed = False
+            continue
+        uid = (job.get("metadata") or {}).get("uid")
+        if not uid:
+            raise ValueError("Kubernetes Job observation has no UID")
+        try:
+            client.delete(name, uid=str(uid))
+        except KubernetesApiError as error:
+            if error.status_code != 404:
+                raise
+        confirmed = False  # confirmation requires a later independent observation
+    return confirmed
+
+
 def reconcile_stage_jobs(
     client: KubernetesJobClient,
     settings: StageOrchestratorSettings,
 ) -> None:
+    # Reserve in a short transaction. Leases survive process death, while the
+    # token and state comparison fence observations from an obsolete controller.
+    now = datetime.now(UTC)
+    token = uuid.uuid4().hex
     with get_session() as session:
         rows = (
             session.query(MissionStageRun, Mission)
-            .join(
-                Mission,
-                Mission.id == MissionStageRun.mission_id,
-            )
+            .join(Mission, Mission.id == MissionStageRun.mission_id)
             .filter(
                 MissionStageRun.executor == EXECUTOR_NAME,
-                MissionStageRun.status.in_((*ACTIVE_STATUSES, "cancelled")),
+                MissionStageRun.job_name.isnot(None),
+                MissionStageRun.provenance[JOB_CLEANUP_CONFIRMED_AT_KEY].as_string().is_(None),
+                or_(
+                    MissionStageRun.provenance["reconcile_lease_until"].as_string().is_(None),
+                    MissionStageRun.provenance["reconcile_lease_until"].as_string() < now.isoformat(),
+                ),
             )
-            .with_for_update(skip_locked=True)
+            .order_by(MissionStageRun.heartbeat_at.asc().nullsfirst(), MissionStageRun.run_id)
+            .with_for_update(of=MissionStageRun, skip_locked=True)
+            .limit(20)
             .all()
         )
-        now = datetime.now(UTC)
+        snapshots = []
         for run, mission in rows:
-            name = cast(str, run.job_name)
-            if mission.status == "cancelled" or run.status == "cancelled":
-                provenance = cast(dict[str, Any], run.provenance or {})
-                if CANCELLATION_JOB_CLEANUP_AT_KEY not in provenance:
-                    try:
-                        client.delete(name)
-                    except KubernetesApiError as error:
-                        if error.status_code != 404:
-                            raise
-                    run.provenance = {
-                        **provenance,
-                        CANCELLATION_JOB_CLEANUP_AT_KEY: now.isoformat(),
-                    }
-                run.status = "cancelled"
-                run.completed_at = run.completed_at or now
-                run.heartbeat_at = run.heartbeat_at or now
+            cleanup = run.status not in ACTIVE_STATUSES or mission.status in {"cancelled", "deleting", "deletion_failed"}
+            provenance = dict(run.provenance or {})
+            provenance.update({
+                "reconcile_token": token,
+                "reconcile_lease_until": (now + timedelta(seconds=RECONCILIATION_LEASE_SECONDS)).isoformat(),
+            })
+            if cleanup:
+                provenance.setdefault("cleanup_requested_at", now.isoformat())
+            run.provenance = provenance
+            reserved = None
+            if not cleanup:
+                _repair_underprovisioned_resource_class(run)
+                reserved = _reserved_job(run, mission, settings)
+            snapshots.append((str(run.run_id), str(run.status), str(mission.status), str(run.job_name), int(run.dispatch_attempts), cleanup, _cleanup_job_names(run), reserved))
+
+    for run_id, run_status, mission_status, name, attempts, cleanup, names, reserved in snapshots:
+        job = None
+        missing = False
+        confirmed = False
+        observation_error = None
+        try:
+            if cleanup:
+                confirmed = _observe_cleanup(client, names)
+            else:
+                try:
+                    job = client.get(name)
+                except KubernetesApiError as error:
+                    if error.status_code != 404:
+                        raise
+                    missing = True
+                    if client.pods_for_job(name):
+                        raise RuntimeError("Missing Job still has Pods; recreation deferred") from error
+                    if attempts >= settings.maximum_dispatch_attempts:
+                        raise ValueError("Stage Job disappeared after bounded retries") from error
+                    if reserved is not None:
+                        _create_job(client, reserved)
+        except Exception as error:
+            observation_error = str(error)[:4000]
+            logger.warning("Stage Job reconciliation deferred for %s: %s", run_id, observation_error)
+
+        with get_session() as session:
+            row = (
+                session.query(MissionStageRun, Mission)
+                .join(Mission, Mission.id == MissionStageRun.mission_id)
+                .filter(MissionStageRun.run_id == run_id)
+                .with_for_update(of=MissionStageRun)
+                .one_or_none()
+            )
+            if row is None:
                 continue
-            try:
-                job = client.get(name)
-            except KubernetesApiError as error:
-                if error.status_code != 404:
-                    raise
-                run.dispatch_attempts = cast(int, run.dispatch_attempts) + 1
-                if (
-                    cast(int, run.dispatch_attempts)
-                    > settings.maximum_dispatch_attempts
-                ):
+            run, mission = row
+            provenance = dict(run.provenance or {})
+            if provenance.get("reconcile_token") != token:
+                continue
+            provenance.pop("reconcile_token", None)
+            provenance.pop("reconcile_lease_until", None)
+            run.provenance = provenance
+            if (run.status, mission.status, run.job_name) != (run_status, mission_status, name):
+                continue
+            observed_at = datetime.now(UTC)
+            run.heartbeat_at = observed_at
+            if missing:
+                run.dispatch_attempts = int(run.dispatch_attempts) + 1
+                run.dispatch_error = observation_error
+                if run.dispatch_attempts > settings.maximum_dispatch_attempts or (observation_error and run.dispatch_attempts >= settings.maximum_dispatch_attempts):
                     run.status = "failed"
                     run.error_message = "Stage Job disappeared after bounded retries"
-                    run.completed_at = now
-                    continue
-                try:
-                    _repair_underprovisioned_resource_class(run)
-                    _create_job(client, _reserved_job(run, mission, settings))
-                    run.dispatch_error = None
-                except Exception as create_error:
-                    run.dispatch_error = str(create_error)[:4000]
-                    if (
-                        cast(int, run.dispatch_attempts)
-                        >= settings.maximum_dispatch_attempts
-                    ):
-                        run.status = "failed"
-                        run.error_message = (
-                            "Stage Job recreation failed after bounded retries"
-                        )
-                        run.completed_at = now
-                continue
-            status = cast(dict[str, Any], job.get("status") or {})
-            run.heartbeat_at = now
-            if int(status.get("active") or 0) > 0:
-                run.status = "running"
-                run.started_at = run.started_at or now
-            elif int(status.get("failed") or 0) > 0:
-                run.status = "failed"
-                run.error_message = _job_failure_message(status)
-                run.completed_at = now
-            elif int(status.get("succeeded") or 0) > 0:
-                if (
-                    run.stage == "detection"
-                    and _detection_phase(run) == DETECTION_SHARDS_PHASE
-                ):
-                    provenance = cast(dict[str, Any], run.provenance or {})
-                    try:
-                        plan = parse_detection_shard_plan_descriptor(
-                            provenance.get("detection_shard_plan")
-                        )
-                        complete_detection_shard_receipts(
-                            session,
-                            run_id=cast(str, run.run_id),
-                            plan=plan,
-                        )
-                    except ValueError as error:
-                        run.status = "failed"
-                        run.error_message = f"Detection shards exited without a complete durable receipt set: {error}"
-                        run.completed_at = now
-                        continue
-                    shard_job_name = cast(str, run.job_name)
-                    shard_dispatch_attempts = cast(int, run.dispatch_attempts)
-                    inference_resource_class = cast(str, run.resource_class)
-                    run.provenance = {
-                        **provenance,
-                        DETECTION_PHASE_KEY: DETECTION_FINALIZER_PHASE,
-                        "detection_shard_job_name": shard_job_name,
-                        "detection_shard_dispatch_attempts": shard_dispatch_attempts,
-                        DETECTION_INFERENCE_RESOURCE_CLASS_KEY: (
-                            inference_resource_class
-                        ),
-                    }
-                    run.resource_class = "cpu-standard"
-                    run.executor = None
-                    run.job_name = None
-                    run.scheduled_at = None
-                    run.dispatch_attempts = 0
-                    run.dispatch_error = None
-                    run.status = "queued"
-                    run.current_step = "DETECTION_FINALIZING"
-                    continue
-                run.status = "failed"
-                run.error_message = (
-                    "Stage Job exited without publishing its immutable artifact"
-                )
-                run.completed_at = now
-
-        for run, _mission in rows:
+                    run.completed_at = observed_at
+            elif observation_error is not None:
+                run.dispatch_error = observation_error
+            elif cleanup:
+                if confirmed:
+                    run.provenance = {**provenance, JOB_CLEANUP_CONFIRMED_AT_KEY: observed_at.isoformat()}
+                if run.status in ACTIVE_STATUSES or mission.status == "cancelled":
+                    run.status = "cancelled"
+                    run.completed_at = run.completed_at or observed_at
+            elif job is not None:
+                _apply_job_status(session, run, job, observed_at)
             sync_analysis_stage(session, run)
 
 
@@ -1197,6 +1285,7 @@ def orchestrator_tick(
 ) -> None:
     reconcile_stage_jobs(client, settings)
     with get_session() as session:
+        observe_lifecycle_backlog(session)
         reserved = reserve_ready_jobs(session, settings, datetime.now(UTC))
         active_runs = (
             session.query(MissionStageRun)

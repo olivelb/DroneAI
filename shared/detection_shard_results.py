@@ -89,7 +89,12 @@ def _normalize_detection(
                 _finite_number(raw_point[1], "segment coordinate"),
             ]
         )
+    from shared.detection_masks import normalize_polygons
     return {
+        **({
+            "mask_polygons": normalize_polygons(detection["mask_polygons"]),
+            "geometry_fallback": bool(detection.get("geometry_fallback", False)),
+        } if "mask_polygons" in detection else {}),
         "global_pixel_x": _finite_number(
             detection.get("global_pixel_x"),
             "global_pixel_x",

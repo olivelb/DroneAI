@@ -74,13 +74,13 @@ export const deleteSession = () =>
 
 export const fetchSummary = () =>
   api("/status/summary", parseMissionSummaryResponse);
-export const fetchMissionCatalog = (limit = 25, offset = 0) =>
+export const fetchMissionCatalog = (limit = 25, offset = 0, signal?: AbortSignal) =>
   api(`/missions?${new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
-  }).toString()}`, parseMissionCatalog);
-export const fetchMissionDetail = (volId: string) =>
-  api(`/missions/${encodeURIComponent(volId)}`, parseMissionDetail);
+  }).toString()}`, parseMissionCatalog, { signal });
+export const fetchMissionDetail = (volId: string, signal?: AbortSignal) =>
+  api(`/missions/${encodeURIComponent(volId)}`, parseMissionDetail, { signal });
 export const getGaussianViewerDescriptorUrl = (volId: string) =>
   `${getApiBaseUrl()}/missions/${encodeURIComponent(volId)}/gaussians/viewer`;
 export const fetchParameters = () =>

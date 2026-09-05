@@ -91,3 +91,42 @@ describe("uploadDataset", () => {
     expect(progress.at(-1)).toEqual({ total: 1, completed: 1, failed: 0 });
   });
 });
+
+
+it("waits for aborted slow parts before deleting the session and never finalizes late", async () => {
+  let active = 0;
+  const calls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.endsWith("/datasets/upload-sessions")) return jsonResponse({
+      session_id: "race", dataset: "quarry", status: "uploading", total: 1, total_bytes: 3,
+      part_size: 1, expires_at: "2030-01-01T00:00:00Z", files: [{
+        file_id: "file", name: "image.jpg", size: 3, s3_key: "test/image.jpg", total_parts: 3, status: "uploading",
+      }],
+    });
+    if (url.includes("/parts/")) return jsonResponse({
+      method: "PUT", url: `https://objects.example/${url.at(-1)}`, expires_in: 60,
+      part_number: Number(url.at(-1)), expected_size: 1,
+    });
+    if (new URL(url).origin === "https://objects.example") {
+      if (url.endsWith("1")) return new Response(null, { status: 400 });
+      active++;
+      return new Promise<Response>((_resolve, reject) => {
+        const abort = () => { active--; reject(init?.signal?.reason); };
+        if (init?.signal?.aborted) abort();
+        else init?.signal?.addEventListener("abort", abort, { once: true });
+      });
+    }
+    if (init?.method === "DELETE") {
+      expect(active).toBe(0);
+      return jsonResponse({ session_id: "race", status: "aborted" });
+    }
+    throw new Error(`Unexpected request ${url}`);
+  }));
+  const result = await uploadDataset("quarry", fileList("image.jpg", "abc"));
+  expect(result.failed).toBe(1);
+  expect(active).toBe(0);
+  expect(calls.some((url) => url.endsWith("/complete"))).toBe(false);
+  vi.restoreAllMocks();
+});

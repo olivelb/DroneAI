@@ -3,7 +3,7 @@ import type { Decoder } from "./contract-decoder";
 export class ApiError extends Error {
   status: number;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, public retryAfterMs = 0) {
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -24,12 +24,24 @@ export const apiCredentials = (): RequestCredentials =>
   configuredApiBaseUrl() ? "include" : "same-origin";
 
 export const getApiBaseUrl = () => {
-  if (typeof window === "undefined") return "http://localhost:30080";
-  return configuredApiBaseUrl() || `http://${window.location.hostname}:30080`;
+  const configured = configuredApiBaseUrl();
+  if (configured) {
+    const parsed = new URL(configured);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+      throw new Error("Invalid DroneAI API URL configuration");
+    }
+    if (typeof window !== "undefined" && window.location.protocol === "https:" && parsed.protocol !== "https:") {
+      throw new Error("DroneAI requires an HTTPS API URL on this page");
+    }
+    return configured;
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("DroneAI API URL is missing; configure DRONEAI_PUBLIC_API_URL");
+  }
+  return `http://${typeof window === "undefined" ? "localhost" : window.location.hostname}:30080`;
 };
 
 export const getWsBaseUrl = () => {
-  if (typeof window === "undefined") return "ws://localhost:30080";
   return getApiBaseUrl()
     .replace(/^http:/, "ws:")
     .replace(/^https:/, "wss:");
@@ -53,7 +65,11 @@ export const api = async <T>(
     if (response.status === 401 && typeof window !== "undefined") {
       window.dispatchEvent(new Event("droneai:unauthorized"));
     }
-    throw new ApiError(response.status, detail);
+    const retryAfter = response.headers.get("Retry-After");
+    const retryAfterMs = retryAfter
+      ? (/^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Math.max(0, Date.parse(retryAfter) - Date.now()))
+      : 0;
+    throw new ApiError(response.status, detail, retryAfterMs);
   }
   return decode(payload);
 };

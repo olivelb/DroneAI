@@ -54,7 +54,9 @@ export default function PhaseSetup() {
       // Always refresh the dataset listing after upload
       await browse("datasets/");
       // Auto-select the newly created dataset
-      setSelectedPath(`datasets/${uploadDatasetName.trim().replace(/[^a-zA-Z0-9_\-]/g, "_")}`);
+      if (result.completed === result.total && result.failed === 0) {
+        setSelectedPath(`datasets/${uploadDatasetName.trim().replace(/[^a-zA-Z0-9_\-]/g, "_")}`);
+      }
     } catch {
       setUploadProgress((prev) => prev ? { ...prev, status: "error" } : null);
     } finally {

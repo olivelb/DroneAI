@@ -52,6 +52,14 @@ class RetentionCandidate:
     reason: str
 
 
+def _has_external_artifact_dependants(session: Session, mission_id: int) -> bool:
+    artifacts = select(MissionArtifact.id).where(MissionArtifact.mission_id == mission_id)
+    return session.query(MissionArtifactParent).filter(
+        MissionArtifactParent.parent_artifact_id.in_(artifacts),
+        MissionArtifactParent.artifact_id.notin_(artifacts),
+    ).first() is not None
+
+
 def _compute_is_quiescent(session: Session, mission_id: int) -> bool:
     """Require durable Kubernetes cleanup evidence before object deletion."""
 
@@ -68,7 +76,7 @@ def _compute_is_quiescent(session: Session, mission_id: int) -> bool:
         if run.executor != "kubernetes-job" or not run.job_name:
             continue
         provenance = cast(dict[str, object], run.provenance or {})
-        if not provenance.get("cancellation_job_cleanup_at"):
+        if not provenance.get("cleanup_confirmed_at"):
             return False
     analysis_runs = session.query(AIAnalysisRun).filter(AIAnalysisRun.mission_id == mission_id).all()
     for run in analysis_runs:
@@ -140,8 +148,7 @@ def claim_retention_candidates(
             skip_locked=True,
             key_share=True,  # NO KEY UPDATE: state changes must not block publisher FKs.
         )
-        .limit(limit * 5)
-        .all()
+        .yield_per(limit * 5)
     )
     candidates: list[RetentionCandidate] = []
     for mission, policy in rows:
@@ -164,6 +171,9 @@ def claim_retention_candidates(
                 days=cast(int, policy.retention_days),
             )
         if not eligible:
+            continue
+        if _has_external_artifact_dependants(session, int(mission.id)):
+            mission.error_message = "Deletion deferred: another mission references an artifact"
             continue
         if not _compute_is_quiescent(session, cast(int, mission.id)):
             if not manual_deletion:

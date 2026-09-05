@@ -15,6 +15,7 @@ from affine import Affine
 from pyproj import Transformer
 from rasterio.windows import Window
 
+from shared.detection_masks import geographic_mask_geometry, normalize_polygons
 from shared.detection_geometry import (
     build_tile_starts,
     dedupe_mission_detections as dedupe_mission_detections,
@@ -185,14 +186,15 @@ def detections_to_geojson(
             geographic_polygon.append([float(longitude), float(latitude)])
         geographic_polygon.append(geographic_polygon[0])
 
-        properties = {key: value for key, value in detection.items() if key not in {"segment", "polygon"}}
+        properties = {key: value for key, value in detection.items() if key not in {"segment", "polygon", "mask_polygons"}}
         properties["detection_id"] = index
         features.append(
             {
                 "type": "Feature",
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [geographic_polygon],
+                "geometry": geographic_mask_geometry(
+                    normalize_polygons(detection["mask_polygons"]), transform, transformer,
+                ) if detection.get("mask_polygons") else {
+                    "type": "Polygon", "coordinates": [geographic_polygon],
                 },
                 "properties": properties,
             }

@@ -818,3 +818,17 @@ def test_legacy_proxied_upload_is_disabled(
         datasets_router.upload_dataset_batch()
 
     assert error.value.status_code == 404
+
+
+def test_resume_parts_are_visible_only_to_the_upload_owner(upload_session, fake_storage, monkeypatch):
+    monkeypatch.setattr(uploads.storage, "list_multipart_parts", lambda key, upload_id: [])
+    principal = security.Principal("operator-1", "operator", organization_id="tenant-a")
+    response = uploads.create_upload_session(upload_session, uploads.UploadSessionRequest(
+        dataset_name="resume", files=[{"name": "image.jpg", "size": 3}],
+    ), principal)
+    session_id, file_id = response["session_id"], response["files"][0]["file_id"]
+    assert uploads.uploaded_parts(upload_session, session_id, file_id, principal) == []
+    for foreign in (security.Principal("other", "operator", organization_id="tenant-a"), security.Principal("operator-1", "operator", organization_id="tenant-b")):
+        with pytest.raises(HTTPException) as error:
+            uploads.uploaded_parts(upload_session, session_id, file_id, foreign)
+        assert error.value.status_code == 404

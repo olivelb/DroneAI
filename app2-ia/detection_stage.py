@@ -19,6 +19,7 @@ from sam3_backend import Sam3Backend
 from shared.artifact_manifest import ManifestParent, content_addressed_blob_key
 from shared.checksums import sha256_file
 from shared.detection_geometry import dedupe_mission_detections
+from shared.detection_masks import normalize_polygons
 from shared.detection_shard_results import DetectionAggregate
 from shared.detection_sharding import DetectionShardPlan, build_detection_shard_plan
 from shared.geospatial_assets import detections_feature_collection
@@ -186,6 +187,10 @@ class DetectionStageRunner:
                 [float(point[0]) + offset_x, float(point[1]) + offset_y]
                 for point in segment
             ],
+            **({
+                "mask_polygons": normalize_polygons(detection["mask_polygons"], offset_x=offset_x, offset_y=offset_y),
+                "geometry_fallback": bool(detection.get("geometry_fallback", False)),
+            } if "mask_polygons" in detection else {}),
             "tile_index": tile_index,
         }
 

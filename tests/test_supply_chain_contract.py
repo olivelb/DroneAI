@@ -14,7 +14,7 @@ PINNED_PYTHON_BASE = re.compile(
     r"^FROM python:3\.12-slim@sha256:[0-9a-f]{64}$",
 )
 PINNED_NODE_BASE = re.compile(
-    r"^FROM node:20-alpine@sha256:[0-9a-f]{64} AS (builder|runner)$",
+    r"^FROM node:24-alpine@sha256:[0-9a-f]{64} AS (builder|runner)$",
 )
 PINNED_ACTION_REF = re.compile(r"[0-9a-f]{40}")
 PINNED_CONTAINER_REF = re.compile(r".+@sha256:[0-9a-f]{64}")
@@ -156,7 +156,7 @@ def test_frontend_runtime_has_immutable_supply_chain_evidence() -> None:
     assert len(from_lines) == 2
     assert all(PINNED_NODE_BASE.match(line) for line in from_lines)
     assert "rm -rf /usr/local/lib/node_modules/npm" in dockerfile
-    assert 'CMD ["node", "node_modules/next/dist/bin/next", "start"]' in dockerfile
+    assert 'CMD ["node", "server.js"]' in dockerfile
 
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "frontend_container: ${{ steps.scopes.outputs.frontend_container }}" in workflow

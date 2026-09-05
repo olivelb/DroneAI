@@ -802,7 +802,8 @@ test("dashboard serves browser security headers", async ({ request }) => {
     expect(headers["content-security-policy"]).toContain("script-src 'self' 'nonce-");
     expect(headers["content-security-policy"]).toContain("worker-src 'self' blob:");
     expect(headers["content-security-policy"]).toContain("report-uri /api/csp-report");
-    expect(headers["content-security-policy-report-only"]).toBeUndefined();
+    expect(headers["content-security-policy-report-only"]).toContain("report-uri /api/csp-report");
+    expect(headers["content-security-policy-report-only"]).not.toContain("connect-src 'self' https: wss:");
     expect(headers["report-to"]).toContain("/api/csp-report");
     expect(headers["x-content-type-options"]).toBe("nosniff");
     expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
@@ -810,4 +811,25 @@ test("dashboard serves browser security headers", async ({ request }) => {
     expect(headers["strict-transport-security"]).toBe("max-age=31536000");
     expect(headers["x-powered-by"]).toBeUndefined();
   }
+});
+
+
+test("the workspace runtime loads missions beyond the first hundred", async ({ page }) => {
+  await mockApi(page);
+  const offsets: number[] = [];
+  await page.route("http://127.0.0.1:30080/missions?**", async (route) => {
+    const offset = Number(new URL(route.request().url()).searchParams.get("offset"));
+    offsets.push(offset);
+    const item = (vol_id: string) => ({ vol_id, owner_subject: "e2e-operator", status: "success",
+      current_step: "DONE", progress: 100, pipeline: "modern", quality_profile: "normal-v3",
+      attempt_count: 1, updated_at: "2026-08-09T12:00:00Z", overall_status: "success", is_stale: false });
+    await route.fulfill(json({
+      items: offset === 0 ? [item("mission-existing"), ...Array.from({ length: 99 }, (_, index) => item(`mission-page-one-${index}`))] : [item("mission-page-two")],
+      total: 101, offset, limit: 100,
+    }));
+  });
+  await page.goto("/");
+  await page.locator("summary").filter({ hasText: "Previous missions" }).click();
+  await expect(page.getByText("mission-page-two", { exact: true })).toBeVisible();
+  expect(offsets).toEqual([0, 100]);
 });

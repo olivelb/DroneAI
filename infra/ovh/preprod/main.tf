@@ -99,8 +99,9 @@ resource "ovh_cloud_project_kube_nodepool" "gpu" {
       annotations = {}
       finalizers  = []
       labels = {
-        "droneai.io/gpu"  = "nvidia"
-        "droneai.io/pool" = "gpu"
+        "droneai.io/gpu"              = "nvidia"
+        "droneai.io/pool"             = "gpu"
+        "droneai.io/gpu-architecture" = var.gpu_architecture
       }
     }
     spec {

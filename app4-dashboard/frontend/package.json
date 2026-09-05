@@ -6,8 +6,8 @@
   "scripts": {
     "postinstall": "node scripts/patch-playcanvas-fastgs.mjs && node scripts/patch-playcanvas-full-transform.mjs && node scripts/patch-playcanvas-incremental-world.mjs && node scripts/patch-playcanvas-container-intervals.mjs && node scripts/patch-playcanvas-workbuffer-view-direction.mjs",
     "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "build": "node scripts/playcanvas-provenance.mjs && next build",
+    "start": "node scripts/start-standalone.mjs",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -28,7 +28,7 @@
   "devDependencies": {
     "@playwright/test": "1.62.1",
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^24",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

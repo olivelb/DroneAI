@@ -147,6 +147,7 @@ scripts-check:
 	shellcheck $(SHELL_SCRIPTS)
 
 docs-check:
+	$(PYTHON) tools/check_typed_api_scope.py
 	$(PYTHON) tools/check_markdown_links.py
 	$(PYTHON) tools/check_documentation_contracts.py
 	$(PYTHON) tools/production_qualification.py check-tree docs/benchmarks

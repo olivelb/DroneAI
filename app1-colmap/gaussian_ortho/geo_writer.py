@@ -28,7 +28,7 @@ def write_geotiff(
     x_min: float,
     y_max: float,
     gsd: float,
-    crs: str | None = "EPSG:32631",
+    crs: str | None,
     height_map: NDArray[np.floating[Any]] | None = None,
     height_output_path: str | None = None,
 ) -> None:
@@ -47,7 +47,7 @@ def write_geotiff(
         Northern bound in CRS units.
     gsd : float
         Ground sample distance (pixel size in CRS units).
-    crs : str, optional
+    crs : str or None, required
         Coordinate Reference System (e.g. 'EPSG:32631'), or ``None`` for a
         deliberately local raster such as a facade elevation.
     height_map : np.ndarray, optional
@@ -58,6 +58,18 @@ def write_geotiff(
     import rasterio
     from rasterio.transform import from_origin
 
+    if rgb.ndim != 3 or rgb.shape[2] != 3 or rgb.dtype != np.uint8 or min(rgb.shape[:2]) < 1:
+        raise ValueError("RGB must be a nonempty H x W x 3 uint8 raster")
+    if not np.isfinite([x_min, y_max, gsd]).all() or gsd <= 0:
+        raise ValueError("Raster origin must be finite and GSD positive and finite")
+    if crs is not None:
+        rasterio.crs.CRS.from_user_input(crs)
+    if height_map is not None and height_map.shape != rgb.shape[:2]:
+        raise ValueError("Height and RGB raster dimensions must match")
+    if height_map is not None and np.isinf(height_map).any():
+        raise ValueError("Height raster may use NaN nodata but must not contain infinity")
+    if (height_map is None) != (height_output_path is None):
+        raise ValueError("Height raster data and output path must be supplied together")
     H, W = rgb.shape[:2]
     geo_transform = from_origin(x_min, y_max, gsd, gsd)
 

@@ -46,12 +46,16 @@ postgres:
     s3Bucket: droneai-preprod-backups-fe7dc125
     s3Region: GRA
 
-  externalHttpsCidrs:
-    - REPLACE_EXTERNAL_HTTPS_CIDR
-  databasePort: 5432
-  s3Port: 443
 networkPolicy:
   enabled: true
+  externalHttpsCidrs:
+    - REPLACE_EXTERNAL_HTTPS_CIDR
+  s3Peers:
+    - ipBlock: {cidr: REPLACE_S3_CIDR}
+  kubernetesApiPeers:
+    - ipBlock: {cidr: REPLACE_KUBERNETES_API_CIDR}
+  databasePort: 5432
+  s3Port: 443
   ingressNamespace: traefik
   monitoringNamespace: monitoring
 

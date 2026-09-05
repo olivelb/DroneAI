@@ -4,11 +4,13 @@ import importlib
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from shared.database import (
     AIAnalysisRun,
+    Dataset,
+    DatasetUploadSession,
     AIAnalysisTile,
     Mission,
     MissionArtifact,
@@ -27,8 +29,13 @@ retention = importlib.import_module("app4-dashboard.api.retention")
 
 def _retention_scope(monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
+    @event.listens_for(engine, "connect")
+    def foreign_keys(connection, _record):
+        connection.execute("PRAGMA foreign_keys=ON")
     for table in (
         Organization.__table__,
+        DatasetUploadSession.__table__,
+        Dataset.__table__,
         OrganizationSaasPolicy.__table__,
         OrganizationUsageEvent.__table__,
         Mission.__table__,
@@ -159,9 +166,10 @@ def test_retention_cancels_and_drains_active_analyses_before_object_deletion(
     # Cancellation alone cannot authorize deletion until Kubernetes cleanup is acknowledged.
     assert retention.retention_cleanup_once(now=now, delete_prefix=delete) == 0
     assert deleted_prefixes == []
-    with scope() as session:
-        stage = session.query(MissionStageRun).one()
-        stage.provenance = {"cancellation_job_cleanup_at": now.isoformat()}
+    orchestrator = importlib.import_module("app4-dashboard.api.stage_orchestrator")
+    from test_stage_orchestrator import FakeJobClient, _settings
+    monkeypatch.setattr(orchestrator, "get_session", scope)
+    orchestrator.reconcile_stage_jobs(FakeJobClient(), _settings())
     assert retention.retention_cleanup_once(now=now, delete_prefix=delete) == 1
     assert deleted_prefixes == ["organizations/tenant-a/missions/analysis-drain/"]
 
@@ -259,7 +267,11 @@ def test_manual_deletion_waits_for_job_cleanup_and_releases_usage(monkeypatch):
 
     with scope() as session:
         run = session.query(MissionStageRun).one()
-        run.provenance = {"cancellation_job_cleanup_at": now.isoformat()}
+        assert run.job_name
+    orchestrator = importlib.import_module("app4-dashboard.api.stage_orchestrator")
+    from test_stage_orchestrator import FakeJobClient, _settings
+    monkeypatch.setattr(orchestrator, "get_session", scope)
+    orchestrator.reconcile_stage_jobs(FakeJobClient(), _settings())
 
     assert (
         retention.retention_cleanup_once(

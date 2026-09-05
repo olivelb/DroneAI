@@ -935,3 +935,8 @@ def test_stage_retry_rejects_cancelled_or_deleting_missions(
     with dag_sessions() as session:
         assert session.query(MissionStageRun).count() == 0
         assert session.query(Mission).one().status == mission_status
+
+
+def test_stage_idempotency_is_scoped_to_organization():
+    from shared.phase_dag import stage_idempotency_key
+    assert stage_idempotency_key("same", "reconstruction", 0, {}, [], organization_id="tenant-a") != stage_idempotency_key("same", "reconstruction", 0, {}, [], organization_id="tenant-b")

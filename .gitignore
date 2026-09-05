@@ -29,6 +29,8 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+.venv-audit/
+audit-evidence/
 
 # Terraform/OpenTofu working data and local credentials. Only reviewed example
 # variable files belong in Git.
@@ -64,6 +66,7 @@ node_modules/
 .yarn/*
 *.tsbuildinfo
 next-env.d.ts
+app4-dashboard/frontend/public/playcanvas-provenance.json
 
 # === Build artifacts & logs ===
 *.log

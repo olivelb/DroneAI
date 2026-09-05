@@ -601,7 +601,7 @@ class TestGeoWriter:
         rgb = np.random.randint(0, 255, (100, 200, 3), dtype=np.uint8)
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "test.tif")
-            write_geotiff(path, rgb, x_min=0.0, y_max=100.0, gsd=1.0)
+            write_geotiff(path, rgb, x_min=0.0, y_max=100.0, gsd=1.0, crs="EPSG:32631")
             assert os.path.exists(path)
             assert os.path.getsize(path) > 0
 
@@ -614,7 +614,7 @@ class TestGeoWriter:
         with tempfile.TemporaryDirectory() as tmpdir:
             rgb_path = os.path.join(tmpdir, "test.tif")
             h_path = os.path.join(tmpdir, "test.height.tif")
-            write_geotiff(rgb_path, rgb, 0.0, 50.0, 1.0,
+            write_geotiff(rgb_path, rgb, 0.0, 50.0, 1.0, crs="EPSG:32631",
                           height_map=height, height_output_path=h_path)
             assert os.path.exists(rgb_path)
             assert os.path.exists(h_path)
