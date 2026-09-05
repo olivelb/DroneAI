@@ -28,6 +28,11 @@ const server=http.createServer(async(req,res)=>{
       res.writeHead(206,{'Content-Range':`bytes ${start}-${end}/${size}`,'Content-Length':end-start+1,'Accept-Ranges':'bytes'});
       createReadStream(file,{start,end}).pipe(res);
     }else{res.setHeader('Content-Length',size);createReadStream(file).pipe(res);}
-  }catch(error){res.writeHead(500);res.end(String(error));}
+  } catch (error) {
+    console.error('[GSTile benchmark] Request failed:', error);
+    if (res.headersSent) { res.destroy(); return; }
+    res.writeHead(500, {'Content-Type': 'text/plain; charset=utf-8'});
+    res.end('Internal server error');
+  }
 });
 server.listen(8768,'127.0.0.1',()=>console.log('GSTile comparison: http://127.0.0.1:8768/?dev=1'));
