@@ -284,7 +284,7 @@ def load_stage_execution_context(
             raise ValueError("Stage run is not reserved for the Kubernetes Job executor")
         if run.status not in {"queued", "running"}:
             raise ValueError(f"Stage run is not executable from status {run.status}")
-        if mission.status == "cancelled":
+        if mission.status in {"cancelled", "deleting", "deletion_failed"}:
             raise StageExecutionCancelled(f"Mission {mission.vol_id} is cancelled")
         analysis = linked_analysis(session, run)
         if analysis is not None and (
@@ -386,7 +386,7 @@ class StageExecutionControl:
                 MissionStageRun.run_id == self.run_id
             ).with_for_update().one()
             mission = session.query(Mission).filter(Mission.id == run.mission_id).one()
-            if mission.status == "cancelled" or run.status == "cancelled":
+            if mission.status in {"cancelled", "deleting", "deletion_failed"} or run.status == "cancelled":
                 self._cancelled.set()
                 record = cast(Any, run)
                 record.status = "cancelled"
@@ -468,11 +468,13 @@ def _publish_result(
         )
     artifact_id = _artifact_id(context, result)
     with get_session(organization_id=context.organization_id) as session:
+        # Same lock order as retention: mission first, then its stage run.
+        mission = session.query(Mission).filter(Mission.id == context.mission_id).with_for_update().one()
         run = session.query(MissionStageRun).filter(
-            MissionStageRun.run_id == context.run_id
+            MissionStageRun.run_id == context.run_id,
+            MissionStageRun.mission_id == mission.id,
         ).with_for_update().one()
-        mission = session.query(Mission).filter(Mission.id == run.mission_id).one()
-        if mission.status == "cancelled" or run.status == "cancelled":
+        if mission.status in {"cancelled", "deleting", "deletion_failed"} or run.status == "cancelled":
             raise StageExecutionCancelled(f"Mission {context.vol_id} was cancelled")
         if run.status != "running":
             raise ValueError(f"Stage result cannot publish from status {run.status}")
@@ -561,7 +563,7 @@ def _mark_terminal(
         effective_status = (
             "cancelled"
             if status == "failed"
-            and (mission.status == "cancelled" or run.status == "cancelled")
+            and (mission.status in {"cancelled", "deleting", "deletion_failed"} or run.status == "cancelled")
             else status
         )
         record = cast(Any, run)

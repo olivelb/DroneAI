@@ -297,7 +297,7 @@ def convert_to_cog(
             COMPRESS="DEFLATE",
             BIGTIFF="IF_SAFER",
             OVERVIEW_RESAMPLING="AVERAGE",
-            NUM_THREADS="ALL_CPUS",
+            NUM_THREADS="1",
         )
         with rasterio.open(temporary) as dataset:
             metadata = raster_metadata(dataset)

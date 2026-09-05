@@ -10,7 +10,7 @@ Kubernetes, or a CUDA GPU.
 
 - Python 3.12
 - GNU Make
-- Node.js 20
+- Node.js 24 LTS
 - npm with the committed `package-lock.json`
 
 ## Python environment
@@ -463,3 +463,12 @@ boundary. This is a documented residual boundary.
 Qualify the policies with the target CNI, DNS, external S3/model endpoints,
 metrics scraper, ingress, Stage Jobs and Job creation before rollout. A CNI
 with audited FQDN rules can narrow HTTPS later.
+
+## September 2026 audit follow-up
+
+See [the audit ledger and rollout notes](docs/audit-2026-09-05.md) for all 43
+findings, local evidence and remaining target-environment qualification.
+Frontend production startup requires `DRONEAI_PUBLIC_API_URL`; `npm run build`
+generates standalone output and the PlayCanvas file-hash manifest. `npm start`
+copies the static/public assets into that output and starts its Node server.
+The API typing-scope guard in `make docs-check` rejects newly omitted modules.

@@ -37,6 +37,25 @@ networkPolicy:
   # Protected environments must declare the stable CIDRs of their external
   # HTTPS egress proxy/gateway; DNS names are not selectable by NetworkPolicy.
   externalHttpsCidrs: []
+  # Every service rule binds destination AND port. Empty peers deny access.
+  dnsPeers:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+  databasePeers:
+    - podSelector:
+        matchLabels: {app: postgres}
+  s3Peers:
+    - podSelector:
+        matchLabels: {app: minio}
+  kafkaPeers:
+    - podSelector:
+        matchLabels: {app: kafka}
+  kubernetesApiPeers: []
+  kubernetesApiPort: 443
   databasePort: 5432
   s3Port: 9000
 

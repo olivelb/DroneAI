@@ -53,7 +53,7 @@ def _public_credential_identity(token: str | None) -> str | None:
         public_id = parser(token)
         if public_id is not None:
             return f"{realm}:{public_id}"
-    return None
+    return security._session_public_credential_identity(token)
 
 
 def consume_identity_rate_limit(
@@ -170,9 +170,9 @@ class RasterTileRateLimitMiddleware(BaseHTTPMiddleware):  # type: ignore[misc]
         if not is_tile_request:
             return await call_next(request)
 
+        identity = await run_in_threadpool(rate_limit_identity, request)
         retry_after = await run_in_threadpool(
-            security.tile_rate_limiter.consume,
-            rate_limit_identity(request),
+            security.tile_rate_limiter.consume, identity,
         )
         if retry_after is not None:
             return JSONResponse(
@@ -204,7 +204,7 @@ class OrganizationRequestQuotaMiddleware(BaseHTTPMiddleware):  # type: ignore[mi
             "/ready",
         }:
             return await call_next(request)
-        principal = security.authenticate_request(request)
+        principal = await run_in_threadpool(security.authenticate_request, request)
         if principal is None or principal.realm != "tenant":
             return await call_next(request)
         try:

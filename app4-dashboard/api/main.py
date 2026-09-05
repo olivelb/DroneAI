@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from . import security
 from .control_runtime import embedded_control_loops_enabled, start_control_loops
 from .health import database_is_ready, readiness_payload
-from .http_middleware import configure_http_middleware
+from .http_middleware import DashboardApplication, configure_http_middleware
 from .realtime import consume_status_events, serve_status_connection, status_hub
 from .routers.datasets import router as datasets_router
 from .routers.identity import router as identity_router
@@ -53,7 +53,7 @@ async def lifespan(application: FastAPI):
 
 def create_app() -> FastAPI:
     security.validate_production_configuration()
-    application = FastAPI(lifespan=lifespan)
+    application = DashboardApplication(lifespan=lifespan)
     configure_http_middleware(application)
 
     application.include_router(identity_router)

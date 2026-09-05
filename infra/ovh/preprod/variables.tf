@@ -132,3 +132,14 @@ variable "terraform_state_bucket" {
     error_message = "Use a 3-63 character, lower-case S3-compatible bucket name."
   }
 }
+
+
+variable "gpu_architecture" {
+  description = "Architecture verified for gpu_flavor; copied onto every autoscaled GPU node."
+  type        = string
+  default     = ""
+  validation {
+    condition = !var.enable_gpu_pool || contains(["turing", "ampere", "ada", "hopper", "blackwell"], var.gpu_architecture)
+    error_message = "Set gpu_architecture to the hardware architecture of the selected GPU flavor."
+  }
+}

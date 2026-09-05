@@ -10,6 +10,20 @@ spec:
   groups:
   - name: drone-ai-operational-slos
     rules:
+    - alert: DroneAIStageCleanupStalled
+      expr: droneai_stage_cleanup_oldest_pending_age_seconds > 900
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Stage cleanup has no confirmed stop after fifteen minutes
+    - alert: DroneAIRetentionDrainStalled
+      expr: droneai_retention_oldest_draining_age_seconds > 3600
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Mission retention has waited for compute drainage for over an hour
     - alert: DroneAIHttpErrorBudgetBurn
       expr: |
         sum(rate(droneai_http_requests_total{status_code=~"5.."}[5m]))

@@ -112,3 +112,8 @@ export const parseUploadAbort = decoder<{
     status: nonEmptyString,
   }),
 );
+
+
+export const parseUploadedParts = decoder<Array<{ part_number: number; etag: string; size: number }>>(
+  "uploaded parts", arrayOf(objectWith({ part_number: integerValue, etag: nonEmptyString, size: integerValue })),
+);

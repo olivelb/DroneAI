@@ -559,9 +559,14 @@ class FakeJobClient:
     def get(self, name):
         if name not in self.jobs:
             raise orchestrator.KubernetesApiError(404, "missing")
-        return self.jobs[name]
+        job = self.jobs[name]
+        job.setdefault("metadata", {}).setdefault("uid", "uid-" + name)
+        return job
 
-    def delete(self, name):
+    def pods_for_job(self, name):
+        return []
+
+    def delete(self, name, *, uid):
         self.deleted.append(name)
         self.jobs.pop(name, None)
         return {}
@@ -597,7 +602,7 @@ def test_reconciliation_tracks_heartbeat_and_fails_artifactless_success(
         assert run.status == "running"
         assert run.heartbeat_at is not None
 
-    client.jobs[name] = {"status": {"succeeded": 1}}
+    client.jobs[name] = {"status": {"succeeded": 1, "conditions": [{"type": "Complete", "status": "True"}]}}
     orchestrator.reconcile_stage_jobs(client, _settings())
     with stage_sessions() as session:
         run = session.query(MissionStageRun).one()
@@ -624,7 +629,7 @@ def test_reconciliation_persists_kubernetes_deadline_reason(
                     "failed": 1,
                     "conditions": [
                         {
-                            "type": "FailureTarget",
+                            "type": "Failed",
                             "status": "True",
                             "reason": "DeadlineExceeded",
                             "message": "Job exceeded its active deadline",
@@ -669,7 +674,7 @@ def test_reconciliation_deletes_jobs_for_cancelled_missions(stage_sessions, monk
         run = session.query(MissionStageRun).one()
         assert run.status == "cancelled"
         assert run.completed_at == completed_at
-        assert run.provenance[orchestrator.CANCELLATION_JOB_CLEANUP_AT_KEY]
+        assert run.provenance[orchestrator.JOB_CLEANUP_CONFIRMED_AT_KEY]
 
 
 def test_reconciliation_idempotently_recreates_a_disappeared_job(
@@ -1131,7 +1136,7 @@ def test_completed_detection_shards_queue_a_cpu_finalizer_through_scheduler(
                 )
             )
     client = FakeJobClient(
-        {shard_job_name: {"status": {"succeeded": plan.shard_count}}}
+        {shard_job_name: {"status": {"succeeded": plan.shard_count, "conditions": [{"type": "Complete", "status": "True"}]}}}
     )
     monkeypatch.setattr(orchestrator, "get_session", stage_sessions)
 
@@ -1215,7 +1220,7 @@ def test_completed_indexed_job_fails_closed_when_a_receipt_is_missing(
         run = session.query(MissionStageRun).filter_by(run_id=run_id).one()
         run.status = "running"
     client = FakeJobClient(
-        {reserved[0].job_name: {"status": {"succeeded": 5}}}
+        {reserved[0].job_name: {"status": {"succeeded": 5, "conditions": [{"type": "Complete", "status": "True"}]}}}
     )
     monkeypatch.setattr(orchestrator, "get_session", stage_sessions)
 
@@ -1343,3 +1348,83 @@ def test_job_create_conflict_rejects_a_forged_annotation(stage_sessions):
 
     with pytest.raises(RuntimeError, match="conflicts with the reserved"):
         orchestrator._create_job(ConflictJobClient(existing), reserved)
+
+
+@pytest.mark.parametrize("status", [
+    {"succeeded": 1, "active": 0},
+    {"failed": 1, "conditions": [{"type": "FailureTarget", "status": "True"}]},
+    {"succeeded": 1, "conditions": [{"type": "Complete", "status": "False"}]},
+])
+def test_partial_job_is_not_terminal(stage_sessions, monkeypatch, status):
+    _add_run(stage_sessions, "partial", "owner", "a" * 32)
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(session, _settings(), datetime.now(UTC))
+    monkeypatch.setattr(orchestrator, "get_session", stage_sessions)
+    client = FakeJobClient({reserved[0].job_name: {"status": status}})
+    orchestrator.reconcile_stage_jobs(client, _settings())
+    with stage_sessions() as session:
+        assert session.query(MissionStageRun).one().status == "queued"
+
+
+@pytest.mark.parametrize("terminal", ["succeeded", "failed", "cancelled"])
+def test_cleanup_waits_for_late_pods_for_every_terminal_state(stage_sessions, monkeypatch, terminal):
+    _add_run(stage_sessions, "cleanup", "owner", "b" * 32)
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(session, _settings(), datetime.now(UTC))
+        session.query(MissionStageRun).one().status = terminal
+    monkeypatch.setattr(orchestrator, "get_session", stage_sessions)
+    client = FakeJobClient({reserved[0].job_name: {"status": {}}})
+    client.pods_for_job = lambda name: [{"metadata": {"deletionTimestamp": "now"}}]
+    orchestrator.reconcile_stage_jobs(client, _settings())
+    orchestrator.reconcile_stage_jobs(client, _settings())
+    with stage_sessions() as session:
+        provenance = session.query(MissionStageRun).one().provenance
+        assert provenance["cleanup_requested_at"]
+        assert "cleanup_confirmed_at" not in provenance
+    client.pods_for_job = lambda name: []
+    orchestrator.reconcile_stage_jobs(client, _settings())
+    with stage_sessions() as session:
+        assert session.query(MissionStageRun).one().provenance["cleanup_confirmed_at"]
+
+
+def test_network_runs_without_sql_transaction_and_stale_observation_is_ignored(stage_sessions, monkeypatch):
+    _add_run(stage_sessions, "cancel-race", "owner", "c" * 32)
+    with stage_sessions() as session:
+        orchestrator.reserve_ready_jobs(session, _settings(), datetime.now(UTC))
+    open_sessions = 0
+    @contextmanager
+    def tracked_scope():
+        nonlocal open_sessions
+        with stage_sessions() as session:
+            open_sessions += 1
+            try:
+                yield session
+            finally:
+                open_sessions -= 1
+    monkeypatch.setattr(orchestrator, "get_session", tracked_scope)
+    client = FakeJobClient()
+    def slow_get(name):
+        assert open_sessions == 0
+        with stage_sessions() as session:
+            session.query(MissionStageRun).one().status = "cancelled"
+        return {"status": {"active": 1}}
+    client.get = slow_get
+    orchestrator.reconcile_stage_jobs(client, _settings())
+    with stage_sessions() as session:
+        assert session.query(MissionStageRun).one().status == "cancelled"
+
+
+def test_bounded_candidate_window_rotates_past_an_ineligible_owner(stage_sessions):
+    _add_run(stage_sessions, "active-a", "owner-a", "a" * 32, status="running")
+    _add_run(stage_sessions, "queued-a", "owner-a", "b" * 32)
+    _add_run(stage_sessions, "queued-b", "owner-b", "c" * 32)
+    with stage_sessions() as session:
+        active = session.query(MissionStageRun).filter_by(run_id="a" * 32).one()
+        active.executor = "kubernetes-job"
+        active.job_name = "active-a"
+    settings = _settings(maximum_candidates_per_pass=1)
+    with stage_sessions() as session:
+        assert orchestrator.reserve_ready_jobs(session, settings, datetime.now(UTC)) == []
+    with stage_sessions() as session:
+        jobs = orchestrator.reserve_ready_jobs(session, settings, datetime.now(UTC))
+        assert [job.request.run_id for job in jobs] == ["c" * 32]

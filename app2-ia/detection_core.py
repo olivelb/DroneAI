@@ -302,7 +302,9 @@ def run_yolo_detection(
         requested_classes,
         available_labels,
     )
-    fallback_conf = max(0.10, min(requested_conf, 0.20))
+    if not 0.0 <= requested_conf <= 1.0:
+        raise ValueError("YOLO confidence must be finite and between 0 and 1")
+    fallback_conf = requested_conf
     raw_results = model.predict(
         source=tile_path,
         conf=fallback_conf,
@@ -315,10 +317,6 @@ def run_yolo_detection(
         {
             "conf": requested_conf,
             "label": f"YOLO primary pass conf={requested_conf:.2f}",
-        },
-        {
-            "conf": fallback_conf,
-            "label": "YOLO fallback pass with lower threshold",
         },
     ]
 
@@ -357,6 +355,7 @@ def run_yolo_detection(
                 "image_size": YOLO_MODEL_IMAGE_SIZE,
                 "requested_classes": requested_classes,
                 "resolved_labels": requested_labels,
+                "confidence_policy": "strict",
                 "primary_confidence": requested_conf,
                 "fallback_confidence": fallback_conf,
             },

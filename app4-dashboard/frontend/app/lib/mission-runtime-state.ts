@@ -73,3 +73,19 @@ export const mergeMissionSnapshots = (
 
 export const summaryLogMessages = (mission: MissionSummary): string[] =>
   mission.logs.map((entry) => entry.message).slice(-100);
+
+
+export const catalogueWithSelectedDetail = (
+  items: MissionCatalogItem[], previous: Record<string, MissionSummary>, selected: string | null,
+): Record<string, MissionSummary> => {
+  const map = Object.fromEntries(items.map((item) => {
+    const summary = missionSummaryFromCatalog(item);
+    const detail = item.vol_id === selected ? previous[item.vol_id] : undefined;
+    return [item.vol_id, detail?.stage_runs ? {
+      ...detail, ...summary, services: detail.services, logs: detail.logs,
+      stage_runs: detail.stage_runs, parameters: detail.parameters, products: detail.products,
+    } : summary];
+  }));
+  if (selected && !map[selected] && previous[selected]) map[selected] = previous[selected];
+  return map;
+};

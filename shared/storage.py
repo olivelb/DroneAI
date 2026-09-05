@@ -213,10 +213,11 @@ def upload_verified_file(
     s3_key: str,
     bucket: str | None = None,
 ) -> dict[str, int | str]:
-    """Upload a required artifact and verify size and SHA-256 with HEAD.
+    """Upload an artifact and check its size and declared SHA-256 metadata.
 
-    S3 multipart ETags are not content hashes, so the digest is stored as
-    object metadata and checked after publication.
+    HEAD checks the declared digest, not independently the remote bytes.
+    Sensitive restores must hash downloaded content against this digest.
+    S3 multipart ETags are not content hashes.
     """
 
     bucket = bucket or S3_BUCKET
@@ -579,7 +580,11 @@ def _delete_error_keys(
 
 
 def delete_prefix(s3_prefix: str, bucket: str | None = None) -> int:
-    """Delete and reconcile all objects under a prefix."""
+    """Hide and reconcile current objects under a prefix.
+
+    This does not erase old versions in a versioned bucket. Use the explicit
+    version erasure operation only under the configured retention policy.
+    """
     bucket = bucket or S3_BUCKET
     client = _get_client()
     pending = sorted(set(list_objects(s3_prefix, bucket)))
@@ -827,3 +832,9 @@ def ensure_bucket(bucket: str | None = None) -> None:
     except ClientError:
         client.create_bucket(Bucket=bucket)
         logger.info("Created bucket: %s", bucket)
+
+
+def erase_prefix_versions(s3_prefix: str, bucket: str | None = None) -> int:
+    """Opt-in physical erasure; caller must drain writers and check holds."""
+    from shared.storage_erasure import erase_prefix_versions as erase
+    return erase(_get_client(), s3_prefix, bucket or S3_BUCKET, S3_DELETE_MAX_ATTEMPTS)

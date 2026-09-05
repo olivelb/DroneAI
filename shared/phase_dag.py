@@ -44,9 +44,13 @@ def stage_idempotency_key(
     attempt: int,
     parameters: dict[str, Any],
     upstream_artifact_ids: list[str],
+    *,
+    organization_id: str = "legacy-unassigned",
 ) -> str:
     canonical = json.dumps(
         {
+            "idempotency_version": 2,
+            "organization_id": organization_id,
             "vol_id": vol_id,
             "dag_version": STAGE_DAG_VERSION,
             "stage": stage,
@@ -94,6 +98,7 @@ def build_stage_run_specs(payload: dict[str, Any]) -> list[StageRunSpec]:
                 "model_variant": payload.get("ai_model_variant"),
                 "classes": payload.get("classes") or [],
                 "confidence": payload.get("ai_confidence"),
+                "confidence_policy": "strict",
                 "sam_prompt": payload.get("sam_prompt"),
                 "tile_size": payload.get("tile_size"),
             },
@@ -111,6 +116,7 @@ def build_stage_run_specs(payload: dict[str, Any]) -> list[StageRunSpec]:
                     0,
                     parameters,
                     external_inputs,
+                    organization_id=str(payload.get("organization_id", "legacy-unassigned")),
                 ),
                 "resource_class": resource_class_for_stage(stage, parameters),
             }
@@ -136,7 +142,7 @@ def initialize_stage_runs(
             idempotency_key=spec["idempotency_key"],
             resource_class=spec["resource_class"],
         )
-        for spec in build_stage_run_specs(payload)
+        for spec in build_stage_run_specs({**payload, "organization_id": mission.organization_id})
     ]
     for run in runs:
         session.add(run)

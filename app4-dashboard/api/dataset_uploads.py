@@ -484,3 +484,16 @@ def cleanup_expired_uploads() -> int:
 
 def run_upload_cleanup(stop_event: Event) -> None:
     recovery.run_upload_cleanup(stop_event, session_factory=get_session)
+
+
+def uploaded_parts(session: Session, session_id: str, file_id: str, principal: Principal) -> list[dict[str, int | str]]:
+    """Observe durable multipart progress only after checking tenant and owner."""
+    record = _owned_session(session, session_id, principal)
+    _require_uploading(record)
+    file_record = _session_file(record, file_id)
+    if file_record.status != "uploading":
+        raise HTTPException(status_code=409, detail="Upload file is not active")
+    key, upload_id = str(file_record.s3_key), str(file_record.multipart_upload_id)
+    session.commit()  # release SQL before the object store observation
+    return [{"part_number": item["PartNumber"], "etag": item["ETag"], "size": item["Size"]}
+            for item in storage.list_multipart_parts(key, upload_id)]

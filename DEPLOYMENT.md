@@ -156,3 +156,12 @@ CPU tests, PostGIS integration and mocked browser journeys do not replace a
 new scientific campaign on real datasets. The cleanup's evidence and remaining
 scope are recorded in the
 [cleanup audit](docs/audits/2026-08-28-current-production-cleanup.md).
+
+## Audit migration 0038 and execution cleanup
+
+Read [the September audit rollout](docs/audit-2026-09-05.md) before upgrading.
+It covers the artifact-reference fence, generic cleanup proof, Pod-list RBAC,
+destination-specific egress, per-mission volume mounts, Node 24 standalone,
+runtime API/CSP origins, database connection budgets and opt-in CAS maintenance.
+Never treat an accepted Job DELETE or an empty current-object listing as proof
+of complete physical erasure.

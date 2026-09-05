@@ -256,3 +256,20 @@ def test_yolo_result_records_weight_hash_runtime_and_inference_parameters(
     assert manifest["runtime"] == {"device": "cpu"}
     assert manifest["inference"]["requested_classes"] == ["car"]
     assert manifest["inference"]["primary_confidence"] == 0.35
+
+
+def test_strict_confidence_never_returns_a_lower_confidence_detection(tmp_path, monkeypatch):
+    weights = tmp_path / "yolo26l-obb.pt"
+    weights.write_bytes(b"verified")
+    result = SimpleNamespace(obb=SimpleNamespace(
+        xyxyxyxy=np.array([[[0, 0], [1, 0], [1, 1], [0, 1]]]),
+        cls=np.array([0]), conf=np.array([0.30]),
+    ), names={0: "small vehicle"})
+    class Model:
+        def predict(self, **kwargs):
+            assert kwargs["conf"] == 0.60
+            return [result]
+    monkeypatch.setattr(detection_core, "load_yolo_model", lambda variant: (Model(), ["small vehicle"], "yolo26l", "cpu", weights))
+    detections, attempt = run_yolo_detection("tile.jpg", ["car"], 0.60, "yolo26l")
+    assert detections == []
+    assert attempt["model_manifest"]["inference"]["confidence_policy"] == "strict"
