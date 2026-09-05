@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import zstandard
+from shared.gstile_streams import read_pack_content
 
 COLMAP_ROOT = Path(__file__).resolve().parents[2]
 if str(COLMAP_ROOT) not in sys.path:
@@ -366,16 +366,20 @@ def test_tiler_is_deterministic_and_spatially_bounded(tmp_path: Path) -> None:
     assert sum(node["tile"]["recordCount"] for node in first_manifest["nodes"] if "tile" in node) == 2_500
     for left, right in zip(first_manifest["packs"], second_manifest["packs"]):
         assert left["sha256"] == right["sha256"]
-        assert _sha256(first.output / left["path"]) == _sha256(second.output / right["path"])
-        assert left["encodings"]["zstd"] == right["encodings"]["zstd"]
-        encoded = left["encodings"]["zstd"]
-        compressed_path = first.output / encoded["path"]
-        raw_path = first.output / left["path"]
-        assert compressed_path.stat().st_size == encoded["byteLength"]
-        assert _sha256(compressed_path) == encoded["sha256"]
-        assert zstandard.ZstdDecompressor().decompress(
-            compressed_path.read_bytes()
-        ) == raw_path.read_bytes()
+        assert left["storage"] == right["storage"] == "streams"
+        assert "encodings" not in left
+        assert not (first.output / left["path"]).exists()
+        assert read_pack_content(first.output, left) == read_pack_content(second.output, right)
+        assert left["streams"] == right["streams"]
+        for kind in ("base", "sh"):
+            entry = left["streams"][kind]
+            file = first.output / entry["path"]
+            assert file.stat().st_size == entry["byteLength"]
+            assert _sha256(file) == entry["sha256"]
+    assert not list(first.output.rglob("*.gst"))
+    assert not list(first.output.rglob("*.zst"))
+    stored = sum(p.stat().st_size for p in (first.output / "packs").iterdir())
+    assert first_manifest["statistics"]["storedPackBytes"] == stored
     assert read_binary_ply_layout(source).vertex_count == 2_500
     event_names = {str(event["event"]) for event in events}
     assert {
@@ -423,13 +427,10 @@ def test_tiler_aggregates_adjacent_tiles_losslessly_and_deterministically(
     for pack in manifest["packs"]:
         if pack["id"] not in tiles_by_pack:
             continue
-        content = (first.output / pack["path"]).read_bytes()
+        content = read_pack_content(first.output, pack)
         assert len(content) == pack["byteLength"]
         assert hashlib.sha256(content).hexdigest() == pack["sha256"]
-        if encoded := pack.get("encodings", {}).get("zstd"):
-            assert zstandard.ZstdDecompressor().decompress(
-                (first.output / encoded["path"]).read_bytes()
-            ) == content
+        assert "encodings" not in pack
         cursor = PACK_HEADER_SIZE
         for tile in sorted(
             tiles_by_pack[pack["id"]], key=lambda value: value["byteOffset"]
@@ -521,7 +522,7 @@ def _representation_payloads(
     manifest: dict[str, object],
 ) -> dict[tuple[str, str], bytes]:
     packs = {
-        pack["id"]: (bundle / pack["path"]).read_bytes()
+        pack["id"]: read_pack_content(bundle, pack)
         for pack in manifest["packs"]
     }
     payloads = {}
@@ -566,7 +567,11 @@ def test_manifest_rejects_zstd_path_traversal(tmp_path: Path) -> None:
     _write_ply(source, _records(1_024))
     result = build_gstile_bundle(source, tmp_path / "bundle")
     manifest = json.loads(result.manifest_path.read_text("ascii"))
-    manifest["packs"][0]["encodings"]["zstd"]["path"] = "../secret.zst"
+    # Historical input still validates compressed transport paths.
+    pack = manifest["packs"][0]
+    pack.pop("storage")
+    pack.pop("q96Header")
+    pack["encodings"] = {"zstd": {"path": "../secret.zst", "byteLength": 1, "sha256": "a" * 64}}
     with pytest.raises(ValueError, match="escapes"):
         validate_manifest(manifest)
 
@@ -669,7 +674,7 @@ def test_adaptive_v4_is_deterministic_and_has_conservative_render_bounds(
             representation = node["lodTile"]
             pack = packs[representation["pack"]]
             decoded = decode_pack(
-                (first.output / pack["path"]).read_bytes(),
+                read_pack_content(first.output, pack),
                 representation["quantization"],
             )
             assert node["geometricError"] >= float(

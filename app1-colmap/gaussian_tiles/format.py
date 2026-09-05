@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
-import zstandard
 
 from shared.gstile_manifest import (
     GSTILE_PACK_HEADER_SIZE,
@@ -235,51 +234,38 @@ def encode_pack(
 @dataclass(frozen=True)
 class PreparedPack:
     content: bytes
-    compressed: bytes | None
+    streams: dict[str, bytes]
     record_count: int
     payload_crc32: int
     sha256: str
-    compressed_sha256: str | None
 
 
 def prepare_encoded_pack(content: bytes) -> PreparedPack:
-    """Pure preparation: no filesystem effects and one Zstd context per call."""
+    """Prepare only the two attribute streams; no discarded canonical compression."""
+    from shared.gstile_streams import split_q96
     record_count, payload_crc32 = validate_pack_content(content)
-    content_sha256 = hashlib.sha256(content).hexdigest()
-    compressed = zstandard.ZstdCompressor(
-        level=1,
-        write_checksum=True,
-        write_content_size=True,
-    ).compress(content)
-    if len(compressed) >= len(content):
-        compressed = None
-    return PreparedPack(content, compressed, record_count, payload_crc32, content_sha256,
-                        hashlib.sha256(compressed).hexdigest() if compressed is not None else None)
+    return PreparedPack(content, split_q96(content), record_count, payload_crc32,
+                        hashlib.sha256(content).hexdigest())
 
 
 def write_prepared_pack_atomic(path: Path, prepared: PreparedPack) -> dict[str, Any]:
-    """Persist on the calling writer thread, retaining the existing fsync policy."""
-    content, compressed = prepared.content, prepared.compressed
+    """Persist only base and SH. Q96 metadata describes a virtual lossless layout."""
+    from shared.gstile_streams import stream_metadata
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_bytes_atomic(path, content)
-    encodings: dict[str, dict[str, Any]] = {}
-    if compressed is not None:
-        compressed_path = path.with_suffix(path.suffix + ".zst")
-        _write_bytes_atomic(compressed_path, compressed)
-        encodings["zstd"] = {
-            "path": compressed_path.as_posix(),
-            "byteLength": len(compressed),
-            "sha256": prepared.compressed_sha256,
-        }
+    streams: dict[str, Any] = {"version": 1}
+    for kind, content in prepared.streams.items():
+        stream_path = path.with_suffix(path.suffix + "." + kind)
+        _write_bytes_atomic(stream_path, content)
+        streams[kind] = stream_metadata(content, stream_path.as_posix())
     return {
+        "storage": "streams",
+        "q96Header": prepared.content[:32].hex(),
+        "streams": streams,
         "path": path.as_posix(),
-        "byteLength": len(content),
+        "byteLength": len(prepared.content),
         "recordCount": prepared.record_count,
-        # The immutable bytes are already resident here. Hashing them before
-        # the write avoids reading every completed pack back from disk.
         "sha256": prepared.sha256,
         "payloadCrc32": f"{prepared.payload_crc32:08x}",
-        **({"encodings": encodings} if encodings else {}),
     }
 
 
@@ -369,10 +355,8 @@ def write_bundle_aggregate_pack_atomic(
             "byteOffset": PACK_HEADER_SIZE,
         }
     )
-    if zstd_encoding := pack.get("encodings", {}).get("zstd"):
-        zstd_encoding["path"] = relative.with_suffix(
-            relative.suffix + ".zst"
-        ).as_posix()
+    for kind in ("base", "sh"):
+        pack["streams"][kind]["path"] = relative.with_suffix(relative.suffix + "." + kind).as_posix()
     return pack
 
 

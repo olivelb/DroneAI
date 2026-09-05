@@ -154,21 +154,31 @@ def gaussian_viewer_descriptor(
         base = PurePosixPath(manifest_relative).parent
         signed_packs: list[dict[str, Any]] = []
         for pack in cast(list[dict[str, Any]], payload["packs"]):
-            relative = (base / safe_bundle_path(pack["path"], "pack.path")).as_posix()
-            entry = files.get(relative)
-            if entry is None:
-                raise ValueError(f"Viewer workspace does not publish {relative}")
-            if entry.blob.size_bytes != pack["byteLength"] or entry.blob.checksum_sha256 != pack["sha256"]:
-                raise ValueError(f"GSTile pack integrity differs for {pack['id']}")
             signed_pack: dict[str, Any] = {
-                "id": pack["id"],
-                "url": storage.get_presigned_url(
-                    entry.blob.key,
-                    expires=expires_seconds,
-                ),
-                "byteLength": pack["byteLength"],
-                "sha256": pack["sha256"],
+                "id": pack["id"], "byteLength": pack["byteLength"], "sha256": pack["sha256"],
             }
+            if pack.get("storage") != "streams":
+                relative = (base / safe_bundle_path(pack["path"], "pack.path")).as_posix()
+                entry = files.get(relative)
+                if entry is None:
+                    raise ValueError(f"Viewer workspace does not publish {relative}")
+                if entry.blob.size_bytes != pack["byteLength"] or entry.blob.checksum_sha256 != pack["sha256"]:
+                    raise ValueError(f"GSTile pack integrity differs for {pack['id']}")
+                signed_pack["url"] = storage.get_presigned_url(entry.blob.key, expires=expires_seconds)
+            if streams := pack.get("streams"):
+                signed_streams: dict[str, Any] = {"version": 1}
+                for kind in ("base", "sh"):
+                    stream = streams[kind]
+                    stream_relative = (base / safe_bundle_path(stream["path"], "streams." + kind)).as_posix()
+                    stream_entry = files.get(stream_relative)
+                    if (stream_entry is None or stream_entry.blob.size_bytes != stream["byteLength"]
+                        or stream_entry.blob.checksum_sha256 != stream["sha256"]):
+                        raise ValueError(f"GSTile attribute stream integrity differs for {pack['id']}/{kind}")
+                    signed_streams[kind] = {
+                        "url": storage.get_presigned_url(stream_entry.blob.key, expires=expires_seconds),
+                        "byteLength": stream["byteLength"], "sha256": stream["sha256"],
+                    }
+                signed_pack["streams"] = signed_streams
             zstd = pack.get("encodings", {}).get("zstd")
             if zstd is not None:
                 encoded_relative = (

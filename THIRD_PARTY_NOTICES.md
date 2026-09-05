@@ -21,3 +21,7 @@ The dependency and citation table in `README.md` contains the broader
 repository-specific inventory. Built container images should be audited
 separately because they include additional operating-system and Python
 packages.
+
+## Native Windows GSTile viewer
+
+The native viewer uses nlohmann/json 3.12.0 (MIT); its license is included in the portable package. Windows SDK and Direct3D remain subject to Microsoft terms. No DroneGS CUDA or PlayCanvas runtime is linked into this standalone executable.

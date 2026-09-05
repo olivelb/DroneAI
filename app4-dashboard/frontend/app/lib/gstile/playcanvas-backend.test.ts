@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  PlayCanvasResidentBackend,
   configurePlayCanvasGsplatArenaResource,
   configureHighQualityGsplatRendering,
   coordinateFrameCameraPosition,
@@ -279,5 +280,18 @@ describe("PlayCanvas high-quality Gaussian rendering", () => {
       radialSorting: false,
       renderer: 2,
     });
+  });
+});
+
+describe("splat edge opacity control", () => {
+  it("accepts the full range before device initialization", () => {
+    const backend = new PlayCanvasResidentBackend();
+    for (const value of [0.25, 0.5, 1, 1.05, 2])
+      expect(() => backend.setEdgeOpacity(value)).not.toThrow();
+  });
+  it("rejects values that could produce invalid GPU opacity", () => {
+    const backend = new PlayCanvasResidentBackend();
+    for (const value of [0, -1, 0.249, 2.001, NaN, Infinity])
+      expect(() => backend.setEdgeOpacity(value)).toThrow(RangeError);
   });
 });

@@ -1,3 +1,4 @@
+import { nativeGaussianRasterChunks } from "./playcanvas-gaussian-kernel";
 import type {
   GaussianCameraState,
   GaussianViewFrame,
@@ -32,9 +33,13 @@ import {
   type GsTileRangeScheduler,
 } from "./range-source";
 import { selectGsTileLod } from "./lod-selection";
+import { nextLodCut } from "./lod-transition";
+import { decodeHomeView } from "./home-view";
+import { assembleAttributeTile, validateAttributeStream } from "./attribute-streams";
 import {
   DEFAULT_GSTILE_PREFETCH_BYTES,
   gstileAdaptivePrefetchBudget,
+  gsTilePrefetchContent,
   gstilePrefetchProjection,
   planGsTilePrefetchPacks,
   predictGsTileCameraPose,
@@ -103,6 +108,7 @@ const gsTilePackTransport = (
   pack: GsTileManifest["packs"][number],
   signedUrls?: GsTilePackTransportUrls,
 ): GsTileNetworkTransport => {
+  if (pack.storage === "streams") throw new Error("This pack has no canonical transport");
   const zstd = pack.encodings?.zstd;
   if (zstd && signedUrls?.zstd) {
     return {
@@ -591,6 +597,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #resources: PcResource[] = [];
   #canvas: HTMLCanvasElement | null = null;
   #residentGaussians = 0;
+  #edgeOpacity = 1;
   #residentBytes = 0;
   #selectedNodes = 0;
   #targetGaussians = 0;
@@ -644,6 +651,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   readonly #recycleDecodeInput: boolean;
   #lodGeneration = 0;
   #lodSelectionKey = "";
+  #baseOnlyNodes = new Set<string>();
+  #loadingSh = false;
+  #lastInteractionMs = 0;
+  #lodTargetKey = "";
+  #cachedLodTarget: ReturnType<typeof selectGsTileLod> | null = null;
+  #lodReschedule = false;
   #lodPendingKey = "";
   #lodUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   #lodPrefetchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -780,6 +793,11 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
 
     const app = new pc.Application(canvas, { graphicsDevice: device });
+    const chunks = pc.ShaderChunks.get(device, pc.SHADERLANGUAGE_WGSL);
+    const raster = nativeGaussianRasterChunks(chunks.get("gsplatPS")!, chunks.get("gsplatHybridVS")!);
+    chunks.set("gsplatPS", raster.fragment);
+    chunks.set("gsplatHybridVS", raster.vertex);
+    device.scope.resolve("gstileEdgeOpacity").setValue(this.#edgeOpacity);
     if (this.#debugTraceEnabled && device.gpuProfiler) {
       device.gpuProfiler.enabled = true;
     }
@@ -859,6 +877,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#updateCameraPose();
 
     this.#lodManifest = manifest;
+    this.#cachedLodTarget = null;
+    try { this.restoreHomeView(); } catch (error) { console.warn("Saved GSTile view ignored", error); }
     this.#maximumLodDepth = Math.max(
       ...manifest.nodes.map((node) => Math.max(node.id.length - 1, 0)),
     );
@@ -873,6 +893,33 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodSignal = signal;
     await this.#synchronizeLod(signal, this.#initialResidentGaussians);
     this.#scheduleLodUpdate();
+  }
+
+  saveHomeView() {
+    if (!this.#lodManifest) return;
+    const saved = JSON.stringify({ version: 1, target: this.#target, yaw: this.#yaw, pitch: this.#pitch,
+      distance: this.#distance, fov: this.#camera?.camera?.fov ?? this.#initialVerticalFovDegrees, frame: this.#viewFrame });
+    decodeHomeView(saved);
+    localStorage.setItem("droneai-gstile-home:" + this.#lodManifest.bundleId, saved);
+  }
+
+  restoreHomeView() {
+    if (!this.#lodManifest) return;
+    const raw = localStorage.getItem("droneai-gstile-home:" + this.#lodManifest.bundleId);
+    if (!raw) return;
+    const saved = decodeHomeView(raw);
+    this.#target = [...saved.target]; this.#yaw = saved.yaw; this.#pitch = saved.pitch;
+    this.#distance = saved.distance; this.#viewFrame = saved.frame;
+    if (this.#camera?.camera) this.#camera.camera.fov = saved.fov;
+    this.#cameraDirty = true; this.#updateCameraPose();
+  }
+
+  setEdgeOpacity(multiplier: number) {
+    if (!Number.isFinite(multiplier) || multiplier < 0.25 || multiplier > 2)
+      throw new RangeError("Edge opacity must be between 0.25 and 2");
+    this.#edgeOpacity = multiplier;
+    this.#app?.graphicsDevice.scope.resolve("gstileEdgeOpacity").setValue(multiplier);
+    this.#requestRender();
   }
 
   setCamera(camera: GaussianCameraState) {
@@ -1015,10 +1062,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#pc = null;
     this.#canvas = null;
     this.#lodManifest = null;
+    this.#cachedLodTarget = null;
     this.#lodManifestUrl = "";
     this.#lodScheduler = null;
     this.#lodPackUrls = undefined;
     this.#lodSignal = null;
+    this.#baseOnlyNodes.clear();
     this.#lodSelectionKey = "";
     this.#lodPendingKey = "";
     this.#targetGaussians = 0;
@@ -1603,6 +1652,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       viewportHeight: projection.viewportHeight,
       maximumResidentGaussians,
       maximumProjectedErrorPixels: this.#maximumProjectedErrorPixels,
+      previousNodeIds: [...(this.#mergedArena?.slots.keys() ?? [])],
       includeSiblingLeaves: this.#includeSiblingLeaves,
       retainOffscreenCoverage:
         options.retainOffscreenCoverage ?? this.#retainOffscreenCoverage,
@@ -1626,6 +1676,28 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const pack = manifest.packs.find((candidate) => candidate.id === tile.pack);
     if (!pack)
       throw new Error(`GSTile node ${node.id} references a missing pack`);
+    const signed = this.#lodPackUrls?.get(pack.id);
+    if (pack.storage === "streams" && this.#lodPackUrls && !signed?.streams)
+      throw new Error("Signed attribute stream URLs are missing");
+    if (pack.streams && (!this.#lodPackUrls || signed?.streams)) {
+      const fetchStream = async (kind: "base" | "sh") => {
+        const stream = pack.streams![kind];
+        const url = signed?.streams?.[kind] ?? new URL(stream.path, this.#lodManifestUrl).toString();
+        const range = { start: 0, length: stream.byteLength };
+        const identity = "sha256:" + stream.sha256.toLowerCase();
+        const started = performance.now();
+        const content = await scheduler.fetch(url, range, signal, identity);
+        timings.fetchServiceMs += performance.now() - started;
+        await this.#verifyLodPackContent({ ...pack, ...stream }, content, range, identity, timings);
+        validateAttributeStream(content, kind, pack.recordCount);
+        signal.throwIfAborted();
+        return content;
+      };
+      const base = await fetchStream("base");
+      const sh = this.#loadingSh ? await fetchStream("sh") : null;
+      const content = assembleAttributeTile(base, sh, pack, (tile.byteOffset - 32) / 96, tile.recordCount);
+      return { pc, app, manifest, tile: { ...tile, byteOffset: 32 }, pack, content };
+    }
     const transport = gsTilePackTransport(
       this.#lodManifestUrl,
       pack,
@@ -1823,12 +1895,55 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     signal: AbortSignal,
     maximumResidentGaussians = this.#maximumResidentGaussians,
   ) {
+    if (this.#lodSyncController) {
+      this.#lodReschedule = true;
+      return;
+    }
     const manifest = this.#lodManifest;
-    const selection = this.#lodSelection(maximumResidentGaussians);
-    if (!manifest || !selection) return;
+    if (!manifest) return;
+    // Intermediate cuts must not feed back into the target's hysteresis.
+    // Re-evaluate only after a camera/viewport interaction or budget change.
+    const targetKey = JSON.stringify([manifest.bundleId, this.#lastInteractionMs,
+      maximumResidentGaussians, this.#maximumProjectedErrorPixels]);
+    if (!this.#cachedLodTarget || this.#lodTargetKey !== targetKey) {
+      this.#cachedLodTarget = this.#lodSelection(maximumResidentGaussians);
+      this.#lodTargetKey = targetKey;
+    }
+    const requested = this.#cachedLodTarget;
+    if (!requested) return;
+    const selection = { ...requested, selectedNodeIds: [...requested.selectedNodeIds] };
+    const desiredIds = selection.selectedNodeIds;
+    const desiredCount = selection.residentGaussians;
+    if (!desiredIds.length) {
+      if (this.#mergedArena) this.#mergedArena.loaded.entity.enabled = false;
+      this.#lodState = "steady"; this.#targetNodes = 0; this.#targetGaussians = 0;
+      this.#requestRender();
+      return;
+    }
+    if (this.#mergedArena) this.#mergedArena.loaded.entity.enabled = true;
+    const step = nextLodCut(manifest.nodes, [...(this.#mergedArena?.slots.keys() ?? [])],
+      desiredIds, maximumResidentGaussians);
+    // A bounded group is committed atomically, then the latest camera is selected again.
+    selection.selectedNodeIds = step.ids;
+    selection.residentGaussians = step.ids.reduce((sum, id) => {
+      const n = manifest.nodes.find(n => n.id === id)!;
+      return sum + (n.tile ?? n.lodTile)!.recordCount;
+    }, 0);
+    const upgrades: string[] = [];
+    let upgradeCount = 0;
+    if (step.complete && performance.now() - this.#lastInteractionMs > 200) {
+      for (const id of step.ids) {
+        if (!this.#baseOnlyNodes.has(id)) continue;
+        const n = manifest.nodes.find(n => n.id === id)!;
+        const count = (n.tile ?? n.lodTile)!.recordCount;
+        if (upgrades.length && upgradeCount + count > 65536) break;
+        upgrades.push(id); upgradeCount += count;
+      }
+    }
+    this.#loadingSh = upgrades.length > 0;
     const key = gstileLodSelectionKey(selection.selectedNodeIds);
-    this.#targetGaussians = selection.residentGaussians;
-    this.#targetNodes = selection.selectedNodeIds.length;
+    this.#targetGaussians = desiredCount;
+    this.#targetNodes = desiredIds.length;
     this.#maximumSelectedErrorPixels = Math.max(
       selection.maximumSelectedErrorPixels,
       selection.unresolvedMaximumErrorPixels,
@@ -1842,16 +1957,15 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#selectedLeafDepthCounts = selection.selectedLeafDepthCounts;
     this.#maximumSelectedProxyScreenRadiusPixels =
       selection.maximumSelectedProxyScreenRadiusPixels;
-    if (key === this.#lodSelectionKey) {
+    if (key === this.#lodSelectionKey && !upgrades.length) {
       this.#pendingNodes = 0;
-      this.#lodState = selection.budgetLimited ? "budget-limited" : "steady";
+      this.#lodState = this.#baseOnlyNodes.size ? "refining" :
+        selection.budgetLimited ? "budget-limited" : "steady";
+      if (this.#baseOnlyNodes.size) this.#scheduleLodUpdate(false);
       return;
     }
     if (key === this.#lodPendingKey) return;
 
-    this.#lodSyncController?.abort(
-      new DOMException("Superseded GSTile LOD selection", "AbortError"),
-    );
     const controller = new AbortController();
     const generation = ++this.#lodGeneration;
     this.#lodSyncController = controller;
@@ -1876,7 +1990,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         });
     const mergedPlan = planMergedArenaSlots(
           this.#maximumResidentGaussians,
-          this.#mergedArena?.slots ?? new Map(),
+          new Map([...(this.#mergedArena?.slots ?? new Map())].filter(([id]) => !upgrades.includes(id))),
           selectedArenaNodes,
         );
     const rebuildMergedArena = !this.#mergedArena;
@@ -2225,10 +2339,19 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       this.#lodResourceShMs = resourceShMs;
       this.#lodStreamUploadMs = streamUploadMs;
       this.#lodSceneAttachMs = sceneAttachMs;
-      this.#lodSelectionKey = "";
+      for (const id of [...this.#baseOnlyNodes]) if (!step.ids.includes(id)) this.#baseOnlyNodes.delete(id);
+      for (const id of mergedLoadNodeIds) {
+        const n = nodes.get(id)!;
+        const pack = manifest.packs.find(p => p.id === (n.tile ?? n.lodTile)!.pack)!;
+        const usesStreams = !!pack.streams && (!this.#lodPackUrls || !!this.#lodPackUrls.get(pack.id)?.streams);
+        if (usesStreams && !this.#loadingSh) this.#baseOnlyNodes.add(id);
+        else this.#baseOnlyNodes.delete(id);
+      }
+      this.#lodReschedule = !step.complete || this.#baseOnlyNodes.size > 0;
       this.#lodSelectionKey = key;
       this.#pendingNodes = 0;
-      this.#lodState = selection.budgetLimited ? "budget-limited" : "steady";
+      this.#lodState = !step.complete || this.#baseOnlyNodes.size ? "refining" :
+        selection.budgetLimited ? "budget-limited" : "steady";
       // Publish an arena cut in the same task that mutates its textures. This
       // keeps the old work-buffer from indexing new arena contents when rAF is
       // throttled and removes a full-frame transition lag in active tabs. One
@@ -2270,6 +2393,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       if (generation === this.#lodGeneration) {
         this.#lodPendingKey = "";
         this.#lodSyncController = null;
+        this.#loadingSh = false;
+        this.#updateDebugSnapshot(performance.now(), true);
+        if (this.#lodReschedule && !signal.aborted) {
+          this.#lodReschedule = false;
+          this.#scheduleLodUpdate(false);
+        }
       }
     }
     if (retryWithoutAssembly) await this.#synchronizeLod(signal, maximumResidentGaussians);
@@ -2333,6 +2462,13 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const manifest = this.#lodManifest;
     const scheduler = this.#lodScheduler;
     if (!manifest || !scheduler || signal.aborted) return;
+    // Older signed descriptors may expose only canonical URLs, even when the
+    // manifest also advertises optional streams. Plan the accessible transport.
+    const prefetchManifest = {
+      ...manifest,
+      packs: manifest.packs.map(pack => pack.streams && this.#lodPackUrls &&
+        !this.#lodPackUrls.get(pack.id)?.streams ? { ...pack, streams: undefined } : pack),
+    };
     const controller = new AbortController();
     this.#lodPrefetchController = controller;
     const abort = () => controller.abort(signal.reason);
@@ -2382,19 +2518,19 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodPrefetchPredictionActive = predictedPose !== null;
     this.#lodPrefetchPredictionCandidateNodes = predictedNodeIds.length;
     const predictedNodeIdSet = new Set(predictedNodeIds);
-    const packsById = new Map(manifest.packs.map((pack) => [pack.id, pack]));
+    const packsById = new Map(prefetchManifest.packs.map((pack) => [pack.id, pack]));
     const locallyAvailablePackIds = await scheduler.locallyAvailable(
-      manifest.packs.map((pack) => ({
+      prefetchManifest.packs.map((pack) => ({
         id: pack.id,
         url: "",
-        range: { start: 0, length: pack.byteLength },
-        immutableIdentity: `sha256:${pack.sha256.toLowerCase()}`,
+        range: { start: 0, length: gsTilePrefetchContent(pack).byteLength },
+        immutableIdentity: `sha256:${gsTilePrefetchContent(pack).sha256.toLowerCase()}`,
       })),
       controller.signal,
     );
     controller.signal.throwIfAborted();
     this.#lodPrefetchLocallyAvailableBytes = [...locallyAvailablePackIds].reduce(
-      (total, packId) => total + (packsById.get(packId)?.byteLength ?? 0),
+      (total, packId) => total + (packsById.has(packId) ? gsTilePrefetchContent(packsById.get(packId)!).byteLength : 0),
       0,
     );
     this.#lodPrefetchLocallyAvailablePacks = locallyAvailablePackIds.size;
@@ -2412,7 +2548,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
     this.#lodPrefetchSkippedCandidatePacks = skippedCandidatePackIds.size;
     this.#lodPrefetchSkippedCandidateBytes = [...skippedCandidatePackIds].reduce(
-      (total, packId) => total + (packsById.get(packId)?.byteLength ?? 0),
+      (total, packId) => total + (packsById.has(packId) ? gsTilePrefetchContent(packsById.get(packId)!).byteLength : 0),
       0,
     );
     const schedulerStatistics = scheduler.statistics();
@@ -2428,7 +2564,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodPrefetchStaleMotionCap = motionIsStale && budget.adaptive;
     this.#lodPrefetchUtilityRatio = budget.utilityRatio;
     const planned = planGsTilePrefetchPacks(
-      manifest,
+      prefetchManifest,
       residentNodeIds,
       candidateNodeIds,
       budget.maximumBytes,
@@ -2436,7 +2572,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     );
     this.#lodPrefetchPlannedNodes = planned.length;
     this.#lodPrefetchPlannedBytes = planned.reduce(
-      (total, entry) => total + entry.pack.byteLength,
+      (total, entry) => total + gsTilePrefetchContent(entry.pack).byteLength,
       0,
     );
     const predictedPlanned = planned.filter((entry) =>
@@ -2444,7 +2580,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     );
     this.#lodPrefetchPredictedNodes = predictedPlanned.length;
     this.#lodPrefetchPredictedBytes = predictedPlanned.reduce(
-      (total, entry) => total + entry.pack.byteLength,
+      (total, entry) => total + gsTilePrefetchContent(entry.pack).byteLength,
       0,
     );
     if (planned.length === 0) {
@@ -2456,6 +2592,18 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
 
       const results = await Promise.allSettled(
         planned.map(async ({ pack }) => {
+          const signed = this.#lodPackUrls?.get(pack.id);
+          if (pack.streams && (!this.#lodPackUrls || signed?.streams)) {
+            const stream = pack.streams.base, range = { start: 0, length: stream.byteLength };
+            const identity = "sha256:" + stream.sha256;
+            const url = signed?.streams?.base ?? new URL(stream.path, this.#lodManifestUrl).toString();
+            const content = await scheduler.fetch(url, range, controller.signal, identity, undefined, "prefetch");
+            await this.#verifyLodPackContent({ ...pack, ...stream }, content, range, identity);
+            validateAttributeStream(content, "base", pack.recordCount);
+            controller.signal.throwIfAborted();
+            this.#lodPrefetchCompletedNodes++; this.#lodPrefetchCompletedBytes += content.byteLength;
+            return;
+          }
           const range = { start: 0, length: pack.byteLength };
           const immutableIdentity = `sha256:${pack.sha256.toLowerCase()}`;
           const transport = gsTilePackTransport(
@@ -2499,36 +2647,23 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
   }
 
-  #scheduleLodUpdate() {
+  #scheduleLodUpdate(interaction = true) {
     const signal = this.#lodSignal;
     if (!this.#lodManifest || !signal || signal.aborted) return;
-    this.#cancelLodPrefetch(
-      new DOMException("GSTile interaction interrupted prefetch", "AbortError"),
-    );
-    if (this.#lodSyncController && !this.#lodSyncController.signal.aborted) {
-      this.#lodSyncController.abort(
-        new DOMException(
-          "GSTile interaction superseded refinement",
-          "AbortError",
-        ),
-      );
-      this.#lodPendingKey = "";
-      this.#pendingNodes = 0;
-      if (this.#loadedTiles.size > 0) this.#lodState = "steady";
+    if (interaction) {
+      this.#lastInteractionMs = performance.now();
+      this.#cancelLodPrefetch(new DOMException("GSTile interaction interrupted prefetch", "AbortError"));
     }
-    if (this.#lodUpdateTimer !== null) clearTimeout(this.#lodUpdateTimer);
+    // Throttle, never debounce: sustained movement must still stream.
+    if (this.#lodUpdateTimer !== null) return;
     this.#lodUpdateTimer = setTimeout(() => {
       this.#lodUpdateTimer = null;
       this.#requestRender();
       void this.#synchronizeLod(signal).catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError")
-          return;
-        console.error(
-          "GSTile LOD update failed; keeping the previous complete representation",
-          error,
-        );
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        console.error("GSTile LOD update failed; keeping the previous representation", error);
       });
-    }, this.#lodUpdateDelayMilliseconds);
+    }, interaction ? this.#lodUpdateDelayMilliseconds : Math.min(16, this.#lodUpdateDelayMilliseconds));
   }
 
   #debugSnapshot() {
@@ -2670,6 +2805,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     return {
       generatedAt: new Date().toISOString(),
       selection: {
+        targetNodeIds: this.#cachedLodTarget?.selectedNodeIds ?? [],
         selectedNodeIds,
         selectedCount: selectedNodeIds.length,
         loadedCount: loaded.length,
@@ -2685,6 +2821,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         layerPlacementCount: layer?.gsplatPlacements.length ?? null,
       },
       performance: {
+        baseOnlyNodes: [...this.#baseOnlyNodes],
+        loadingSh: this.#loadingSh,
         assemblyWorkerDisabled: this.#assemblyWorkerUnavailable,
         assemblyWorkerFailures: this.#assemblyWorkerFailures,
         decodeInputRetainedBytes: this.#decodeWorkerPool?.retainedInputBytes ?? 0,

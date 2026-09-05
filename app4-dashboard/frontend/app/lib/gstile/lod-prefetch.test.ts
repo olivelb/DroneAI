@@ -5,6 +5,7 @@ import {
   GSTILE_PREFETCH_UTILITY_SAMPLE_BYTES,
   MINIMUM_GSTILE_PREFETCH_BYTES,
   gstileAdaptivePrefetchBudget,
+  gsTilePrefetchContent,
   gstilePrefetchProjection,
   planGsTilePrefetchPacks,
   predictGsTileCameraPose,
@@ -430,5 +431,22 @@ describe("GSTile LOD halo prefetch", () => {
     expect(() =>
       planGsTilePrefetchPacks(manifest(), [], ["missing"], 1_000),
     ).toThrow(/incomplete/);
+  });
+});
+
+
+describe("split-stream halo caching", () => {
+  it("uses physical base bytes and identity rather than absent historical packs", () => {
+    const value = manifest();
+    const original = value.packs[0];
+    original.streams = {
+      base: { path: "packs/a.gst.base", byteLength: 68, sha256: "f".repeat(64) },
+      sh: { path: "packs/a.gst.sh", byteLength: 92, sha256: "e".repeat(64) },
+    } as NonNullable<GsTilePack["streams"]>;
+    const nodeId = value.nodes.find(n => n.tile?.pack === original.id)!.id;
+    expect(gsTilePrefetchContent(original)).toBe(original.streams.base);
+    expect(planGsTilePrefetchPacks(value, [], [nodeId], 68)).toHaveLength(1);
+    expect(planGsTilePrefetchPacks(value, [], [nodeId], 67)).toHaveLength(0);
+    expect(planGsTilePrefetchPacks(value, [], [nodeId], 68, [original.id])).toEqual([]);
   });
 });

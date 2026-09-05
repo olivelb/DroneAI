@@ -1,0 +1,28 @@
+name: Native GSTile viewer
+on:
+  pull_request:
+    paths:
+      - "native-viewer/**"
+      - "shared/gstile_manifest.py"
+      - "shared/gstile_streams.py"
+      - "app1-colmap/gaussian_tiles/format.py"
+      - "docs/contracts/gstile-v1.md"
+      - ".github/workflows/native-viewer-windows.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build portable executable and run contract tests
+        shell: pwsh
+        run: |
+          ./native-viewer/build.ps1 -BuildDirectory "$env:GITHUB_WORKSPACE/native-viewer/build" -OutputDirectory "$env:RUNNER_TEMP/GSTileViewer"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: GSTileViewer-windows-x64
+          path: "${{ runner.temp }}/GSTileViewer"
+      # GPU qualification runs on target hardware, not hosted software adapters.

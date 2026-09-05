@@ -70,6 +70,49 @@ const options = {
 };
 
 describe("GSTile LOD selection", () => {
+  it("culls elongated offscreen boxes without discarding visible Gaussian support", () => {
+    const value = manifest();
+    value.nodes[0].bounds = { min: [-1, -1, -10], max: [10, 1, 1] };
+    value.nodes[2].bounds = { min: [8, -1, -10], max: [9, 1, 1] };
+    const camera = {
+      ...options,
+      cameraPosition: [0, 0, 2] as [number, number, number],
+      viewportWidth: 1080,
+      maximumProjectedErrorPixels: 1,
+    };
+    expect(selectGsTileLod(value, camera).selectedNodeIds).toEqual(["r0"]);
+    value.nodes[2].renderBounds = { min: [0, -1, -10], max: [9, 1, 1] };
+    expect(new Set(selectGsTileLod(value, camera).selectedNodeIds))
+      .toEqual(new Set(["r0", "r1"]));
+  });
+
+  it("selects affordable exact leaves even when intermediate proxies exceed budget", () => {
+    const value = manifest();
+    const wide = { min: [-1, -1, -1], max: [100, 1, 1] } as GsTileNode["bounds"];
+    value.nodes[0].bounds = wide;
+    value.nodes[0].geometricError = 2;
+    const left = value.nodes[1];
+    left.tile = undefined;
+    left.lodTile = tile(8_000);
+    left.children = ["r00", "r01"];
+    left.geometricError = 1;
+    left.bounds = wide;
+    value.nodes[2].tile = tile(1_000);
+    value.nodes.push(
+      { id: "r00", bounds: { min: [-1, -1, -1], max: [0, 1, 1] },
+        gaussianCount: 1_000, geometricError: 0, tile: tile(1_000) },
+      { id: "r01", bounds: { min: [99, -1, -1], max: [100, 1, 1] },
+        gaussianCount: 7_000, geometricError: 0, tile: tile(7_000) },
+    );
+    const selected = selectGsTileLod(value, {
+      ...options, maximumResidentGaussians: 3_000,
+      maximumProjectedErrorPixels: 1,
+    });
+    expect(new Set(selected.selectedNodeIds)).toEqual(new Set(["r00", "r1"]));
+    expect(selected.residentGaussians).toBe(2_000);
+    expect(selected.budgetLimited).toBe(false);
+  });
+
   it("spends spare resident budget below the nominal SSE", () => {
     const selection = selectGsTileLod(manifest(), options);
     expect(selection.selectedNodeIds).toEqual(["r0", "r1"]);

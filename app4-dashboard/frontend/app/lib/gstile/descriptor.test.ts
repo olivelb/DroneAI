@@ -168,3 +168,55 @@ describe("GSTile signed descriptor", () => {
     expect(() => decodeGsTileViewerDescriptor(value)).toThrow(/HTTP\(S\) URL/);
   });
 });
+
+describe("GSTile signed attribute streams", () => {
+  const value = () => {
+    const result = descriptor();
+    const streams = {
+      version: 1,
+      base: {path: "packs/r.gst.base", byteLength: 68, sha256: "d".repeat(64)},
+      sh: {path: "packs/r.gst.sh", byteLength: 92, sha256: "e".repeat(64)},
+    };
+    Object.assign(result.manifest.packs[0], {streams});
+    const signed = {
+      version: 1,
+      base: {...streams.base, url: "https://objects.example/base?signature=test"},
+      sh: {...streams.sh, url: "https://objects.example/sh?signature=test"},
+    };
+    Object.assign(result.packs[0], {streams: signed});
+    return {result, signed};
+  };
+  it("binds both independent identities and URLs", () => {
+    const {result, signed} = value();
+    expect(decodeGsTileViewerDescriptor(result).packUrls.get("r")?.streams).toEqual({
+      base: signed.base.url, sh: signed.sh.url,
+    });
+  });
+  it("rejects a mismatched SH identity and a non-HTTP base URL", () => {
+    const {result, signed} = value();
+    signed.sh.sha256 = "f".repeat(64);
+    expect(() => decodeGsTileViewerDescriptor(result)).toThrow(/identity/);
+    signed.sh.sha256 = "e".repeat(64);
+    signed.base.url = "file:///private";
+    expect(() => decodeGsTileViewerDescriptor(result)).toThrow(/URL/);
+  });
+  it("retains canonical fallback when streams were not negotiated", () => {
+    const {result} = value();
+    Reflect.deleteProperty(result.packs[0], "streams");
+    expect(decodeGsTileViewerDescriptor(result).packUrls.get("r")?.streams).toBeUndefined();
+  });
+  it("opens a stream-only descriptor without a canonical URL and rejects missing streams", () => {
+    const {result} = value();
+    const bytes = new Uint8Array(32);
+    bytes.set(new TextEncoder().encode("GSTILE1\0"));
+    const h = new DataView(bytes.buffer);
+    h.setUint16(8, 1, true); h.setUint16(10, 32, true); h.setUint16(12, 96, true); h.setUint32(16, 1, true);
+    Object.assign(result.manifest.packs[0], {storage: "streams", q96Header: Array.from(bytes, b=>b.toString(16).padStart(2,"0")).join("")});
+    Reflect.deleteProperty(result.packs[0], "url");
+    expect(decodeGsTileViewerDescriptor(result).packUrls.get("r")?.identity).toBeUndefined();
+    expect(decodeGsTileViewerDescriptor(result).packUrls.get("r")?.streams?.sh).toContain("/sh");
+    Reflect.deleteProperty(result.packs[0], "streams");
+    expect(()=>decodeGsTileViewerDescriptor(result)).toThrow(/Stream-only/);
+  });
+
+});

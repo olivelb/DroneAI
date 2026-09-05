@@ -1389,6 +1389,8 @@ def build_gstile_bundle(
                 "packTargetBytes": options.pack_target_bytes,
                 "packGrouping": "depth-spatial-v1",
                 "packBytes": sum(pack["byteLength"] for pack in tree.packs),
+                "storedPackBytes": sum(p["streams"][k]["byteLength"] for p in tree.packs for k in ("base", "sh")),
+                "attributeStreamBytes": sum(pack["streams"][kind]["byteLength"] for pack in tree.packs for kind in ("base", "sh")),
                 "bytesPerGaussian": sum(pack["byteLength"] for pack in tree.packs)
                 / root_work.count,
                 "filteredGaussianCount": filtered_gaussian_count,
