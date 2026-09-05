@@ -253,11 +253,14 @@ class Sam3Backend:
                     "prompt": prompt,
                     "confidence": requested_confidence,
                     "mask_threshold": self.mask_threshold,
+                    "geometry_policy": "complete-pixel-edges",
                 },
             ),
         }
         if masks is None or boxes is None or scores is None or len(scores) == 0:
             return [], attempt
+
+        from shared.detection_masks import mask_polygons
 
         detections: list[DetectionRecord] = []
         for mask, box, score in zip(masks, boxes, scores, strict=False):
@@ -267,9 +270,12 @@ class Sam3Backend:
                 cast(NDArray[Any], mask.detach().cpu().numpy()),
                 fallback_box,
             )
+            polygons = mask_polygons(cast(NDArray[Any], mask.detach().cpu().numpy()))
             detections.append(
                 {
                     "polygon": polygon,
+                    "mask_polygons": polygons or [[[*fallback_box, fallback_box[0]]]],
+                    "geometry_fallback": not bool(polygons),
                     "center_x": center_x,
                     "center_y": center_y,
                     "confidence": float(score),

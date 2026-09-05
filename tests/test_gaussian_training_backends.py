@@ -284,7 +284,9 @@ def test_dronegs_adapter_allows_nonempty_output_only_for_resume(tmp_path):
     assert command[command.index("--resume-from") + 1] == str(checkpoint)
 
 
-def test_dronegs_quality_canary_rejects_below_threshold(tmp_path):
+def test_dronegs_quality_canary_warns_below_threshold_without_rejecting_output(
+    tmp_path,
+):
     dataset = tmp_path / "dataset"
     dataset.mkdir()
     executable = tmp_path / "fake_dronegs"
@@ -358,12 +360,14 @@ Path(arguments["--run-manifest"]).write_text(
         ),
     )
 
-    with pytest.raises(RuntimeError, match="quality canary failed"):
-        DroneGSBackend(str(executable)).train(training_request)
+    result = DroneGSBackend(str(executable)).train(training_request)
 
     canary = json.loads((tmp_path / "output" / "canary_result.json").read_text(encoding="utf-8"))
     assert canary["status"] == "failed"
     assert canary["failed_metrics"] == ["psnr", "ssim"]
+    assert result.ply_path.is_file()
+    assert result.manifest_path is not None
+    assert result.quality_canary == canary
 
 
 def test_dronegs_adapter_rejects_nonempty_output(tmp_path):

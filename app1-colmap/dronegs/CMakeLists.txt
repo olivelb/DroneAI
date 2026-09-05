@@ -134,8 +134,13 @@ set_target_properties(dronegs_cuda PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
     POSITION_INDEPENDENT_CODE ON
 )
+option(DRONEGS_FAST_MATH "Enable fast CUDA math; disable for numerical reference qualification" ON)
+set(DRONEGS_CUDA_OPTIONS --expt-relaxed-constexpr)
+if(DRONEGS_FAST_MATH)
+    list(APPEND DRONEGS_CUDA_OPTIONS --use_fast_math)
+endif()
 target_compile_options(dronegs_cuda PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;--use_fast_math>
+    "$<$<COMPILE_LANGUAGE:CUDA>:${DRONEGS_CUDA_OPTIONS}>"
 )
 
 add_executable(dronegs src/main.cpp)
@@ -179,7 +184,7 @@ if(DRONEGS_BUILD_TESTS)
     add_executable(dronegs_training_tests tests/test_training.cu tests/test_topology_compaction.cu tests/test_topology_snapshot.cu tests/test_refinement_workspace.cu)
     # Compile the snapshot oracle's device path with the production kernel flags.
     set_source_files_properties(tests/test_topology_snapshot.cu PROPERTIES
-        COMPILE_OPTIONS "--expt-relaxed-constexpr;--use_fast_math")
+        COMPILE_OPTIONS "${DRONEGS_CUDA_OPTIONS}")
     target_link_libraries(dronegs_training_tests PRIVATE dronegs_cuda)
     set_target_properties(
         dronegs_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

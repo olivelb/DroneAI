@@ -874,3 +874,60 @@ def test_organization_request_quota_does_not_treat_platform_as_tenant(
     response = TestClient(application).get("/platform/organizations")
 
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize("token", [None, 42, "", "a.é.b", "a.e.é", "a..b", "a.b.c.d", "a.b." + "a" * 9000, "a.!." + "a" * 43])
+def test_malformed_sessions_are_controlled_rejections(monkeypatch, token):
+    monkeypatch.setenv("DRONEAI_SESSION_SECRET", "s" * 40)
+    assert security._verified_session_payload(token) is None
+
+
+@pytest.mark.parametrize("code", [401, 403, 413, 429, 503])
+def test_cors_wraps_early_rejections(monkeypatch, code):
+    monkeypatch.setattr(security, "configured_cors_origins", lambda: ["https://dashboard.example"])
+    app = http_middleware.DashboardApplication()
+    @app.middleware("http")
+    async def reject(request, call_next):
+        from fastapi.responses import JSONResponse
+        return JSONResponse({}, status_code=code, headers={"Retry-After": "2"})
+    client = TestClient(app)
+    allowed = client.get("/", headers={"Origin": "https://dashboard.example"})
+    assert allowed.status_code == code
+    assert allowed.headers["access-control-allow-origin"] == "https://dashboard.example"
+    assert allowed.headers["access-control-allow-credentials"] == "true"
+    assert "Retry-After" in allowed.headers["access-control-expose-headers"]
+    denied = client.get("/", headers={"Origin": "https://evil.example"})
+    assert "access-control-allow-origin" not in denied.headers
+
+
+def test_slow_authentication_does_not_block_the_event_loop(monkeypatch):
+    import asyncio
+    import threading
+    from fastapi.responses import Response
+    started = threading.Event()
+    release = threading.Event()
+    def authenticate(request):
+        started.set()
+        assert release.wait(2)
+        return None
+    monkeypatch.setattr(security, "authenticate_request", authenticate)
+    monkeypatch.setenv("DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED", "true")
+    async def run():
+        middleware = rate_limit.OrganizationRequestQuotaMiddleware(lambda *args: None)
+        request = Request({"type": "http", "method": "GET", "path": "/missions", "headers": []})
+        async def next_request(request):
+            return Response()
+        task = asyncio.create_task(middleware.dispatch(request, next_request))
+        while not started.is_set():
+            await asyncio.sleep(0.001)
+        release.set()
+        assert (await task).status_code == 200
+    asyncio.run(run())
+
+
+def test_signed_cookie_and_credential_share_identity_bucket(monkeypatch):
+    monkeypatch.setenv("DRONEAI_SESSION_SECRET", "s" * 40)
+    principal = security.Principal(subject="member", role="operator", organization_id="tenant-a", member_id="member", credential_id="credential", auth_version=1, authentication_method="database")
+    token = security.issue_session_token(principal, 3600)
+    assert rate_limit._public_credential_identity(token) == "tenant:credential"
+    assert rate_limit._public_credential_identity(token + "tampered") is None

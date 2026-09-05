@@ -9,6 +9,7 @@ import re
 import ssl
 import urllib.error
 import urllib.request
+import urllib.parse
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -368,7 +369,11 @@ def build_stage_job(request: StageJobRequest, config: StageJobConfig) -> JsonObj
                 },
                 "volumeMounts": [
                     {"name": "tmp", "mountPath": "/tmp"},
-                    {"name": "work", "mountPath": "/work"},
+                    {
+                        "name": "work", "mountPath": "/work",
+                        **({"subPath": request.workspace_prefix} if config.work_volume is not None
+                           and "emptyDir" not in config.work_volume.source else {}),
+                    },
                     {"name": "cache", "mountPath": "/cache"},
                 ],
             }
@@ -442,6 +447,7 @@ class KubernetesJobClient:
         host = os.getenv("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
         port = os.getenv("KUBERNETES_SERVICE_PORT_HTTPS", "443")
         self._base_url = f"https://{host}:{port}/apis/batch/v1/namespaces/{namespace}/jobs"
+        self._pods_url = f"https://{host}:{port}/api/v1/namespaces/{namespace}/pods"
 
     def _call(self, method: str, url: str, payload: JsonObject | None = None) -> JsonObject:
         with open(self._token_path, encoding="utf-8") as handle:
@@ -474,9 +480,16 @@ class KubernetesJobClient:
     def get(self, name: str) -> JsonObject:
         return self._call("GET", f"{self._base_url}/{name}")
 
-    def delete(self, name: str) -> JsonObject:
+    def pods_for_job(self, name: str) -> list[JsonObject]:
+        # Job controller labels exist on indexed and ordinary Pods. Do not
+        # ignore terminating or terminal Pods: absence is the cleanup proof.
+        query = urllib.parse.urlencode({"labelSelector": f"job-name={name}"})
+        result = self._call("GET", f"{self._pods_url}?{query}")
+        return cast(list[JsonObject], result.get("items") or [])
+
+    def delete(self, name: str, *, uid: str) -> JsonObject:
         return self._call(
             "DELETE",
             f"{self._base_url}/{name}",
-            {"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Background"},
+            {"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground", "preconditions": {"uid": uid}},
         )

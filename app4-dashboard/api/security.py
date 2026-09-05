@@ -435,7 +435,11 @@ def _verified_session_payload(token: str) -> dict[str, object] | None:
         signing_keys = session_signing_keys()
     except RuntimeError:
         return None
+    if not isinstance(token, str) or len(token) > 8192:
+        return None
     parts = token.split(".")
+    if any(not part or not all(c.isascii() and (c.isalnum() or c in "_-") for c in part) for part in parts):
+        return None
     candidate_secrets: tuple[str, ...]
     if len(parts) == 3:
         kid, encoded, signature = parts
@@ -448,7 +452,7 @@ def _verified_session_payload(token: str) -> dict[str, object] | None:
         candidate_secrets = tuple(signing_keys.keys.values())
     else:
         return None
-    if not encoded or not signature:
+    if not encoded or len(signature) != 43:
         return None
     verified = any(
         secrets.compare_digest(
@@ -564,9 +568,9 @@ def _session_public_credential_identity(token: str) -> str | None:
         realm = str(payload.get("realm", "tenant"))
     except (KeyError, TypeError, ValueError):
         return None
-    if realm != "tenant" or not credential_id:
+    if realm not in {"tenant", "platform"} or not credential_id:
         return None
-    return f"tenant:{credential_id}"
+    return f"{realm}:{credential_id}"
 
 
 def authenticate_api_key(token: str | None) -> Principal | None:
@@ -580,7 +584,7 @@ def authenticate_api_key(token: str | None) -> Principal | None:
     if not token:
         return None
     for configured_key, principal in _configured_keys():
-        if secrets.compare_digest(token, configured_key):
+        if secrets.compare_digest(token.encode("utf-8"), configured_key.encode("utf-8")):
             return principal
     if database_authentication_enabled(production=is_production()):
         credential_id = credential_id_from_token(token)

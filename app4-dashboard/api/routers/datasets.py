@@ -461,3 +461,13 @@ def abort_direct_upload_session(
             session_id,
             principal,
         )
+
+
+@router.get("/datasets/upload-sessions/{session_id}/files/{file_id}/parts")
+def read_direct_upload_parts(
+    session_id: str,
+    file_id: str,
+    principal: Annotated[Principal, Depends(require_operator)],
+) -> list[dict[str, int | str]]:
+    with get_session() as session:
+        return dataset_uploads.uploaded_parts(session, session_id, file_id, principal)

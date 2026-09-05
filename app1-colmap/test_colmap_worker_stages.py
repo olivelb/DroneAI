@@ -29,19 +29,124 @@ from gaussian_ortho.generate_gaussian_orthophoto import (
     GaussianFilteredPartition,
     GaussianFilteringPhaseState,
     GaussianPartitionModel,
+    GaussianSceneState,
     GaussianTrainingState,
 )
+from gaussian_ortho.colmap_loader import CameraInfo
 from gaussian_ortho.partition import CellBounds
 from gaussian_ortho.render_geometry import GaussianRenderGeometry
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
 )
+from shared.checksums import sha256_file
 from shared.facade_process import FACADE_PARAMETER_DEFAULTS
 from shared.quality_profiles import quality_profile
 
 
 class TestColmapStageHelpers(unittest.TestCase):
+    def test_portable_gaussian_recipe_never_reads_dense_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            params = {
+                **DRONEGS_PRODUCTION_PROFILE_V1.pipeline_defaults(),
+                **FACADE_PARAMETER_DEFAULTS,
+                "gs_data_factor": "1",
+            }
+            preparation = types.SimpleNamespace(
+                params=params,
+                facade_mode=False,
+                orthophoto_mode="map",
+                mission_s3_prefix="missions/portable",
+                dense_path=os.path.join(tmp_dir, "dense-does-not-exist"),
+            )
+            reconstruction = types.SimpleNamespace(utm_crs="EPSG:32631")
+            alignment = types.SimpleNamespace(alignment_transform_path=None)
+            with patch.object(
+                gaussian_stage,
+                "dense_sparse_model_ready",
+                side_effect=AssertionError("portable recipe must not inspect dense"),
+            ):
+                product = gaussian_stage.prepare_gaussian_product_run(
+                    preparation,
+                    reconstruction,
+                    alignment,
+                    tmp_dir,
+                    "portable",
+                    prepare_checkpoints=False,
+                    require_source_workspace=False,
+                )
+
+            self.assertEqual(product.config.data_factor, 1)
+            preparation.params["gs_data_factor"] = "auto"
+            with self.assertRaisesRegex(ValueError, "resolved gs_data_factor"):
+                gaussian_stage.prepare_gaussian_product_run(
+                    preparation,
+                    reconstruction,
+                    alignment,
+                    tmp_dir,
+                    "portable",
+                    prepare_checkpoints=False,
+                    require_source_workspace=False,
+                )
+
+    def test_filter_scene_artifact_round_trip_needs_no_images_or_point_cloud(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            camera = CameraInfo(
+                uid=7,
+                image_name="frame.jpg",
+                width=5280,
+                height=3956,
+                fx=4000.0,
+                fy=4001.0,
+                cx=2640.0,
+                cy=1978.0,
+                R=np.eye(3, dtype=np.float32),
+                T=np.array([1.0, 2.0, 3.0], dtype=np.float32),
+                sparse_observations=42,
+            )
+            scene = GaussianSceneState(
+                train_cameras=[camera],
+                test_cameras=[],
+                registered_cameras=[camera],
+                point_cloud=None,
+                transform_data={
+                    "R": np.eye(3).tolist(),
+                    "scale": 1.25,
+                    "t": [600_000.0, 4_900_000.0, 120.0],
+                },
+                mean_exif_alt=120.0,
+                colmap_to_meters=1.25,
+                scale_source="geographic-sim3",
+                facade_frame=None,
+                texture_camera_count=1,
+                texture_filter_applied=False,
+                minimum_sparse_observations=20,
+                seed_max_error=1.0,
+                seed_min_track=3,
+                gaussian_seed_point_count=50_000,
+                images_dir="/must/not/be-read",
+                scene=None,
+                cells=[],
+                use_partition=False,
+            )
+
+            path = phase_artifacts.write_filter_scene_artifact(tmp_dir, scene)
+            loaded = phase_artifacts.read_filter_scene_artifact(
+                tmp_dir,
+                path,
+                str(sha256_file(path)),
+                render_mode="map",
+            )
+
+            self.assertIsNone(loaded.point_cloud)
+            self.assertEqual(loaded.images_dir, "")
+            self.assertEqual(loaded.registered_cameras[0].width, 5280)
+            np.testing.assert_array_equal(
+                loaded.registered_cameras[0].T,
+                camera.T,
+            )
+            self.assertEqual(loaded.transform_data["scale"], 1.25)
+
     def test_non_facade_asset_selection_delegates_to_generic_discovery(self):
         images = [Path("/input/image.jpg")]
         sidecars = [Path("/input/image.MRK")]
@@ -348,8 +453,9 @@ class TestColmapStageHelpers(unittest.TestCase):
                 ),
                 patch.object(worker_runtime, "report_mission_progress") as report,
             ):
-                callback(checkpoint, 10)
+                synced = callback(checkpoint, 10)
 
+        self.assertFalse(synced)
         self.assertIn("remains locally durable", report.call_args.kwargs["log"])
 
     def test_gaussian_product_run_resolves_one_reusable_typed_recipe(self):
@@ -423,6 +529,13 @@ class TestColmapStageHelpers(unittest.TestCase):
             model_path = Path(tmp_dir, "training", "final.ply")
             model_path.parent.mkdir()
             model_path.write_bytes(b"ply")
+            filter_scene_path = Path(
+                tmp_dir,
+                ".droneai",
+                "gaussian-filter-scene.json",
+            )
+            filter_scene_path.parent.mkdir()
+            filter_scene_path.write_text("{}", encoding="utf-8")
             phase = types.SimpleNamespace(
                 backend_name="dronegs",
                 trainer_binary_sha256="a" * 64,
@@ -472,6 +585,7 @@ class TestColmapStageHelpers(unittest.TestCase):
                 config,
                 phase,
                 model_path=model_path,
+                filter_scene_path=filter_scene_path,
             )
             artifact = phase_artifacts.read_training_artifact(tmp_dir, config)
             self.assertEqual(artifact.model_path, model_path)
@@ -507,6 +621,13 @@ class TestColmapStageHelpers(unittest.TestCase):
                     merged_model=None,
                     final_ply=None,
                     facade_subset_result=None,
+                    quality_alerts=(
+                        {
+                            "severity": "warning",
+                            "cell": "cell_24",
+                            "failed_metrics": ["psnr"],
+                        },
+                    ),
                     partition_models=(
                         GaussianPartitionModel(
                             bounds=bounds,
@@ -523,6 +644,7 @@ class TestColmapStageHelpers(unittest.TestCase):
                 config,
                 partition_phase,
                 model_path=None,
+                filter_scene_path=filter_scene_path,
             )
             partition_artifact = phase_artifacts.read_training_artifact(
                 tmp_dir,
@@ -532,6 +654,10 @@ class TestColmapStageHelpers(unittest.TestCase):
             self.assertEqual(partition_artifact.gaussian_count, 1_200_000)
             self.assertEqual(len(partition_artifact.partition_models), 1)
             self.assertEqual(partition_artifact.partition_models[0].bounds, bounds)
+            self.assertEqual(
+                partition_artifact.quality_alerts,
+                partition_phase.training_state.quality_alerts,
+            )
 
             partition_geometry = GaussianRenderGeometry(
                 geo_origin=np.array([600_000.0, 4_900_000.0, 120.0]),

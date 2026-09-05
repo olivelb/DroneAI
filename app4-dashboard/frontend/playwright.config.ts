@@ -58,6 +58,7 @@ export default defineConfig({
   webServer: process.env.GSTILE_EXTERNAL_SERVER === "1" ? undefined : {
     command: "corepack npm run start -- --hostname 127.0.0.1 --port 3000",
     url: "http://127.0.0.1:3000",
+    env: { DRONEAI_PUBLIC_API_URL: "http://127.0.0.1:30080" },
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

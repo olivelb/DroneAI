@@ -132,6 +132,9 @@ rules:
 - apiGroups: ["batch"]
   resources: ["jobs"]
   verbs: ["create", "get", "list", "watch", "delete"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list"]
 ---
 # --- RoleBinding ---
 apiVersion: rbac.authorization.k8s.io/v1

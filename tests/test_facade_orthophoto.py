@@ -468,7 +468,6 @@ def test_colmap_subset_removes_tracks_to_omitted_images(tmp_path):
 
     sys.path.insert(0, str(Path(__file__).parents[1] / "app1-colmap"))
     from gaussian_ortho.colmap_subset import (
-        _read_colmap_images_bin,
         _read_colmap_points3d_bin,
         _write_colmap_cameras_bin,
         _write_colmap_images_bin,
@@ -518,14 +517,16 @@ def test_colmap_subset_removes_tracks_to_omitted_images(tmp_path):
     assert points[7]["track"] == [(1, 0)]
 
     empty_target = tmp_path / "empty-target"
-    export_colmap_subset(
-        str(source),
-        str(empty_target),
-        ["keep.jpg"],
-        point_ids=set(),
-    )
-    images = _read_colmap_images_bin(empty_target / "sparse" / "0" / "images.bin")
-    assert images[1]["point3D_ids"] == [-1]
+    with pytest.raises(
+        RuntimeError,
+        match="no images with retained 3D observations",
+    ):
+        export_colmap_subset(
+            str(source),
+            str(empty_target),
+            ["keep.jpg"],
+            point_ids=set(),
+        )
 
 
 def test_colmap_subset_can_apply_trainer_point_quality_gate(tmp_path):

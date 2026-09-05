@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
 import tempfile
 import time
@@ -30,6 +32,10 @@ from shared.config import S3_BUCKET
 MAX_OVERLAY_MANIFESTS = 64
 MAX_MATERIALIZED_FILES = 100_000
 ARTIFACT_SELECTIVE_RESTORE_ENV = "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED"
+VERIFICATION_CACHE_FLUSH_BYTES = 64 * 1024 * 1024
+VERIFICATION_CACHE_FLUSH_FILE_COUNT = 64
+
+logger = logging.getLogger(__name__)
 
 
 def _strict_boolean_environment(name: str) -> bool:
@@ -172,6 +178,108 @@ def resolve_workspace_path(workspace: str | Path, raw_path: str) -> Path:
     return candidate
 
 
+def _role_only_parent_override(
+    relative_path: str,
+    size: int,
+    desired_role: str,
+    parent_entry: ManifestFile | None,
+) -> ManifestFile | None:
+    if parent_entry is None:
+        raise ValueError(
+            f"Declared unchanged workspace path has no parent: {relative_path}"
+        )
+    if parent_entry.blob.size_bytes != size:
+        raise ValueError(
+            f"Declared unchanged workspace path changed size: {relative_path}"
+        )
+    if parent_entry.role == desired_role:
+        return None
+    return ManifestFile(
+        path=relative_path,
+        role=desired_role,
+        blob=parent_entry.blob,
+    )
+
+
+def _validate_publish_roles(
+    default_role: str,
+    role_overrides: dict[str, str] | None,
+    unchanged_parent_paths: frozenset[str],
+) -> dict[str, str]:
+    overrides = role_overrides or {}
+    for override_path, role in overrides.items():
+        _safe_relative_path(override_path)
+        if not ROLE_PATTERN.fullmatch(role):
+            raise ValueError(f"Invalid workspace artifact role: {role!r}")
+    if not ROLE_PATTERN.fullmatch(default_role):
+        raise ValueError(f"Invalid workspace artifact role: {default_role!r}")
+    for unchanged_path in unchanged_parent_paths:
+        _safe_relative_path(unchanged_path)
+    return overrides
+
+
+def _validated_publication_selection(
+    included_paths: frozenset[str] | None,
+    overrides: dict[str, str],
+    parents: tuple[ManifestParent, ...],
+    unchanged_parent_paths: frozenset[str],
+) -> set[str] | None:
+    if included_paths is None:
+        return None
+    requested_paths = {
+        _safe_relative_path(path).as_posix() for path in included_paths
+    }
+    if not requested_paths:
+        raise ValueError("Workspace publication path selection cannot be empty")
+    if parents:
+        raise ValueError(
+            "Selected product publication cannot inherit parent manifests"
+        )
+    if unchanged_parent_paths:
+        raise ValueError(
+            "Selected product publication cannot declare unchanged parent paths"
+        )
+    unselected_overrides = set(overrides) - requested_paths
+    if unselected_overrides:
+        raise ValueError(
+            "Workspace role overrides are outside the publication selection: "
+            f"{sorted(unselected_overrides)}"
+        )
+    return requested_paths
+
+
+def _publication_candidates(
+    root: Path,
+    requested_paths: set[str] | None,
+) -> list[Path]:
+    if requested_paths is None:
+        return sorted(root.rglob("*"))
+    candidates: list[Path] = []
+    for requested_path in sorted(requested_paths):
+        candidate = root / _safe_relative_path(requested_path)
+        resolved = candidate.resolve()
+        if root not in resolved.parents:
+            raise ValueError(
+                f"Selected workspace path escapes its root: {requested_path!r}"
+            )
+        candidates.append(candidate)
+    return candidates
+
+
+def _validate_requested_paths(
+    requested_paths: set[str] | None,
+    local_paths: set[str],
+) -> None:
+    if requested_paths is None:
+        return
+    missing_requested = requested_paths - local_paths
+    if missing_requested:
+        raise ValueError(
+            "Selected workspace publication paths are missing: "
+            f"{sorted(missing_requested)}"
+        )
+
+
 def publish_workspace(
     workspace: str | Path,
     s3_prefix: str,
@@ -180,6 +288,8 @@ def publish_workspace(
     role_overrides: dict[str, str] | None = None,
     parents: tuple[ManifestParent, ...] = (),
     allow_partial_workspace: bool = False,
+    unchanged_parent_paths: frozenset[str] = frozenset(),
+    included_paths: frozenset[str] | None = None,
     organization_id: str,
     cancellation_check: Callable[[], None] | None = None,
 ) -> PublishedWorkspace:
@@ -187,6 +297,11 @@ def publish_workspace(
 
     Unchanged parent files remain inherited. Deletion is deliberately
     unsupported until the manifest contract gains explicit tombstones.
+
+    ``included_paths`` publishes an explicit product boundary directly from a
+    larger workspace without copying the selected files into a staging tree.
+    It is intended for parentless derived-product manifests whose lineage is
+    already represented by stage artifact edges.
     """
 
     started_at = time.monotonic()
@@ -197,13 +312,17 @@ def publish_workspace(
     prefix = s3_prefix.strip("/")
     if not prefix:
         raise ValueError("Workspace S3 prefix cannot be empty")
-    overrides = role_overrides or {}
-    for override_path, role in overrides.items():
-        _safe_relative_path(override_path)
-        if not ROLE_PATTERN.fullmatch(role):
-            raise ValueError(f"Invalid workspace artifact role: {role!r}")
-    if not ROLE_PATTERN.fullmatch(default_role):
-        raise ValueError(f"Invalid workspace artifact role: {default_role!r}")
+    overrides = _validate_publish_roles(
+        default_role,
+        role_overrides,
+        unchanged_parent_paths,
+    )
+    requested_paths = _validated_publication_selection(
+        included_paths,
+        overrides,
+        parents,
+        unchanged_parent_paths,
+    )
 
     inherited: dict[str, ManifestFile] = {}
     for parent in parents:
@@ -223,18 +342,30 @@ def publish_workspace(
     local_paths: set[str] = set()
     transferred_bytes = 0
     cas_reused_bytes = 0
-    for file_path in sorted(root.rglob("*")):
+    for file_path in _publication_candidates(root, requested_paths):
         if cancellation_check is not None:
             cancellation_check()
+        relative = file_path.relative_to(root).as_posix()
         if file_path.is_symlink():
             raise ValueError(f"Workspace cannot publish symbolic link: {file_path}")
         if not file_path.is_file():
             continue
-        relative = file_path.relative_to(root).as_posix()
         local_paths.add(relative)
         size = file_path.stat().st_size
-        digest = sha256_file(file_path)
         parent_entry = inherited.get(relative)
+        desired_role = overrides.get(relative, default_role)
+        if relative in unchanged_parent_paths:
+            role_override = _role_only_parent_override(
+                relative,
+                size,
+                desired_role,
+                parent_entry,
+            )
+            if role_override is not None:
+                files.append(role_override)
+                cas_reused_bytes += size
+            continue
+        digest = sha256_file(file_path)
         if (
             parent_entry is not None
             and parent_entry.blob.size_bytes == size
@@ -251,7 +382,7 @@ def publish_workspace(
             cas_reused_bytes += size
         entry = ManifestFile(
             path=relative,
-            role=overrides.get(relative, default_role),
+            role=desired_role,
             blob=ManifestBlob(
                 key=uploaded.key,
                 size_bytes=uploaded.size_bytes,
@@ -260,6 +391,12 @@ def publish_workspace(
         )
         files.append(entry)
 
+    missing_unchanged = unchanged_parent_paths - local_paths
+    if missing_unchanged:
+        raise ValueError(
+            f"Declared unchanged workspace paths are missing: {sorted(missing_unchanged)}"
+        )
+    _validate_requested_paths(requested_paths, local_paths)
     missing_inherited = set(inherited) - local_paths
     if missing_inherited and not allow_partial_workspace:
         raise ValueError(
@@ -431,6 +568,168 @@ def _prune_unmanaged_workspace_files(
     return pruned_file_count, pruned_bytes
 
 
+def _download_workspace_file(
+    entry: ManifestFile,
+    local_path: Path,
+) -> None:
+    """Download and verify one blob before atomically exposing its final path."""
+
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=local_path.parent,
+            prefix=f".{local_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as descriptor:
+            temporary_path = Path(descriptor.name)
+        storage.download_file(entry.blob.key, temporary_path)
+        actual_size = temporary_path.stat().st_size
+        actual_digest = str(sha256_file(temporary_path))
+        if (
+            actual_size != entry.blob.size_bytes
+            or actual_digest != entry.blob.checksum_sha256
+        ):
+            raise OSError(
+                f"Workspace file verification failed for {entry.path}: "
+                f"size={actual_size}/{entry.blob.size_bytes}, "
+                f"sha256={actual_digest}/{entry.blob.checksum_sha256}"
+            )
+        os.replace(temporary_path, local_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            with suppress(OSError):
+                temporary_path.unlink(missing_ok=True)
+
+
+def _file_verification_fingerprint(path: Path) -> dict[str, int]:
+    stat = path.stat()
+    return {
+        "device": stat.st_dev,
+        "inode": stat.st_ino,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "ctime_ns": stat.st_ctime_ns,
+    }
+
+
+def _load_verification_cache(path: Path | None) -> dict[str, dict[str, Any]]:
+    if path is None:
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict) or raw.get("version") != 1:
+        return {}
+    files = raw.get("files")
+    if not isinstance(files, dict):
+        return {}
+    return {
+        relative: entry
+        for relative, entry in files.items()
+        if isinstance(relative, str) and isinstance(entry, dict)
+    }
+
+
+def _cached_file_is_verified(
+    path: Path,
+    entry: ManifestFile,
+    cached: dict[str, Any] | None,
+) -> bool:
+    if cached is None:
+        return False
+    if cached.get("checksum_sha256") != entry.blob.checksum_sha256:
+        return False
+    if cached.get("size_bytes") != entry.blob.size_bytes:
+        return False
+    try:
+        fingerprint = _file_verification_fingerprint(path)
+    except OSError:
+        return False
+    return all(cached.get(key) == value for key, value in fingerprint.items())
+
+
+def _verification_cache_entry(path: Path, entry: ManifestFile) -> dict[str, Any]:
+    return {
+        "checksum_sha256": entry.blob.checksum_sha256,
+        "size_bytes": entry.blob.size_bytes,
+        **_file_verification_fingerprint(path),
+    }
+
+
+def _store_verification_cache(
+    path: Path | None,
+    files: dict[str, dict[str, Any]],
+) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as descriptor:
+            temporary_path = Path(descriptor.name)
+            json.dump(
+                {"version": 1, "files": files},
+                descriptor,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            descriptor.flush()
+            os.fsync(descriptor.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            with suppress(OSError):
+                temporary_path.unlink(missing_ok=True)
+
+
+def _persist_verification_cache_best_effort(
+    cache_path: Path | None,
+    cache: dict[str, dict[str, Any]],
+) -> None:
+    try:
+        _store_verification_cache(cache_path, cache)
+    except OSError as error:
+        logger.warning(
+            "Could not persist workspace verification cache %s: %s",
+            cache_path,
+            error,
+        )
+
+
+def _remember_verified_file(
+    cache_path: Path | None,
+    cache: dict[str, dict[str, Any]],
+    relative_path: str,
+    local_path: Path,
+    entry: ManifestFile,
+    dirty_file_count: int,
+    dirty_bytes: int,
+) -> tuple[int, int]:
+    if cache_path is None:
+        return 0, 0
+    cache[relative_path] = _verification_cache_entry(local_path, entry)
+    dirty_file_count += 1
+    dirty_bytes += entry.blob.size_bytes
+    if (
+        dirty_file_count >= VERIFICATION_CACHE_FLUSH_FILE_COUNT
+        or dirty_bytes >= VERIFICATION_CACHE_FLUSH_BYTES
+    ):
+        _persist_verification_cache_best_effort(cache_path, cache)
+        return 0, 0
+    return dirty_file_count, dirty_bytes
+
+
 def restore_workspace_measured(
     manifest_key: str,
     destination: str | Path,
@@ -440,9 +739,14 @@ def restore_workspace_measured(
     selection: WorkspaceSelection | None = None,
     expected_organization_id: str,
     exact_inventory: bool = False,
+    verification_cache_path: str | Path | None = None,
 ) -> RestoredWorkspace:
     started_at = time.monotonic()
     destination_root = Path(destination).resolve()
+    cache_path = (
+        Path(verification_cache_path).resolve() if verification_cache_path else None
+    )
+    verification_cache = _load_verification_cache(cache_path)
     destination_root.mkdir(parents=True, exist_ok=True)
     manifest, resolved_files, manifest_bytes_total = _load_manifest_overlay(
         manifest_key,
@@ -473,6 +777,8 @@ def restore_workspace_measured(
     logical_bytes = 0
     downloaded_bytes = 0
     reused_bytes = 0
+    cache_dirty_file_count = 0
+    cache_dirty_bytes = 0
     for entry in sorted(selected_files, key=lambda item: item.path):
         if cancellation_check is not None:
             cancellation_check()
@@ -485,20 +791,39 @@ def restore_workspace_measured(
         local_path.parent.mkdir(parents=True, exist_ok=True)
         logical_bytes += expected_size
         if local_path.is_file() and local_path.stat().st_size == expected_size:
-            actual_digest = str(sha256_file(local_path))
-            if actual_digest == expected_digest:
+            if _cached_file_is_verified(
+                local_path,
+                entry,
+                verification_cache.get(relative_raw),
+            ):
                 reused_bytes += expected_size
                 continue
-        storage.download_file(entry.blob.key, local_path)
+            actual_digest = str(sha256_file(local_path))
+            if actual_digest == expected_digest:
+                cache_dirty_file_count, cache_dirty_bytes = _remember_verified_file(
+                    cache_path,
+                    verification_cache,
+                    relative_raw,
+                    local_path,
+                    entry,
+                    cache_dirty_file_count,
+                    cache_dirty_bytes,
+                )
+                reused_bytes += expected_size
+                continue
+        _download_workspace_file(entry, local_path)
+        cache_dirty_file_count, cache_dirty_bytes = _remember_verified_file(
+            cache_path,
+            verification_cache,
+            relative_raw,
+            local_path,
+            entry,
+            cache_dirty_file_count,
+            cache_dirty_bytes,
+        )
         downloaded_bytes += expected_size
-        actual_size = local_path.stat().st_size
-        actual_digest = str(sha256_file(local_path))
-        if actual_size != expected_size or actual_digest != expected_digest:
-            local_path.unlink(missing_ok=True)
-            raise OSError(
-                f"Workspace file verification failed for {relative_raw}: "
-                f"size={actual_size}/{expected_size}, sha256={actual_digest}/{expected_digest}"
-            )
+    if cache_dirty_file_count:
+        _persist_verification_cache_best_effort(cache_path, verification_cache)
     return RestoredWorkspace(
         size_bytes=logical_bytes,
         file_count=len(seen),

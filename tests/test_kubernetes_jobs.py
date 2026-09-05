@@ -159,6 +159,12 @@ def test_stage_job_uses_the_configured_work_volume(volume, expected):
         if item["name"] == "work"
     )
     assert work == {"name": "work", **expected}
+    mount = next(
+        item
+        for item in job["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
+        if item["name"] == "work"
+    )
+    assert mount["subPath"] == "organizations/acme-survey/missions/mission-work-volume"
 
 
 @pytest.mark.parametrize(

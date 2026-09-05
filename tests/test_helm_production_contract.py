@@ -389,6 +389,9 @@ def test_protected_network_policies_default_deny_and_allow_only_required_ports()
         for port in rule["ports"]
     }
     assert stage_ports == {53, 443, 5432}
+    for policy in policies.values():
+        for rule in policy["spec"].get("egress", []):
+            assert rule.get("to"), "Every allowed egress port needs explicit destinations"
     assert 9092 not in stage_ports
     api_ingress = policies["dashboard-api-allow"]["spec"]["ingress"]
     assert all(

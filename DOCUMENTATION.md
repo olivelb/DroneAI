@@ -387,18 +387,18 @@ sequenceDiagram
     R->>S3: publish verified workspace manifest
     R->>DB: artifact edge + succeeded, release training
     API->>K8S: create Gaussian training Job
-    GT->>S3: restore reconstruction, publish trained model
+    GT->>S3: restore reconstruction, publish compact training handoff
     GT->>DB: artifact edge + succeeded, release filtering
     API->>K8S: create Gaussian filtering Job
-    GF->>S3: restore training, publish filtered model
+    GF->>S3: restore model + filter scene, publish compact filtered handoff
     GF->>DB: artifact edge + succeeded, release rasterization and optional viewer
     opt Gaussian viewer selected
         API->>K8S: create Gaussian viewer Job
-        GV->>S3: restore filtering, publish viewer bundle
+        GV->>S3: restore filtered models only, publish viewer bundle
         GV->>DB: non-blocking artifact edge + terminal state
     end
     API->>K8S: create rasterization Job
-    RA->>S3: restore filtering, publish RGB/height workspace
+    RA->>S3: restore filtered models only, publish RGB/height products
     RA->>DB: artifact edge + succeeded
     alt Aerial map with detection selected
         RA->>DB: release detection
@@ -479,10 +479,28 @@ and `PipelineCancelledError`. There is no Kafka control thread in the executor.
 ### Workspace cleanup
 
 All COLMAP stage adapters call their workspace cleanup in a `finally` block.
-Cleanup clears process-local cancellation state and removes stage scratch
-data. Immutable published inputs and outputs are not deleted by this cleanup.
-Mission retention separately waits for compute to stop; its safety checks are
-unchanged by the worker retirement.
+Cleanup clears process-local cancellation state. A successful stage removes
+its scratch workspace and its local verification cache; an exception preserves
+both below the bounded stage work root so a retry of the same run can continue.
+Each workspace is protected by a non-blocking exclusive lease. Cleanup errors
+are logged and preserve the workspace instead of masking the stage result.
+
+Input restoration reconciles the upstream manifest into that existing
+workspace. Downloads and local promotion copies use a sibling temporary file,
+verify it, then expose it with an atomic rename. A small verification cache is
+kept outside the published workspace and checkpointed after at most 64 files or
+64 MiB. On retry, an unchanged file identity (blob digest and size plus local
+device, inode, size, mtime and ctime) avoids rereading its contents; any
+fingerprint mismatch falls back to SHA-256 verification and repairs a corrupt
+file from CAS. This cache is a same-run optimization under the exclusive lease,
+not a replacement for the immutable manifest.
+
+Transfer recovery is file-granular. Scientific computation resumes at its last
+durable stage-specific checkpoint (for example, completed Gaussian cells);
+code without such a checkpoint may recompute its local operation while still
+avoiding a complete workspace download or revalidation. The work root must use
+a persistent volume to survive pod or node replacement. Mission retention and
+orphan-workspace collection remain separate operational concerns.
 
 ### Pipeline profiles
 
@@ -581,9 +599,32 @@ A completed Gaussian training result is reusable according to its immutable
 training contract, not according to the current PSNR/SSIM acceptance
 thresholds. If only a canary threshold changes, app1 recomputes the canary from
 the persisted manifest and evaluation metrics. It neither quarantines the
-valid PLY nor restarts 30,000 iterations. A compatible result that still fails
-the new threshold fails fast; a newly accepted result discards the large
-optimizer checkpoint after promotion.
+valid PLY nor restarts 30,000 iterations. A compatible result that misses the
+new threshold emits a structured cell warning and remains reusable. The large
+optimizer checkpoint is discarded after successful model promotion.
+
+Resident training also publishes a lightweight `cell_recovery.json` contract
+for every completed cell. The contract binds the source reconstruction,
+projected bounds, selected cameras and native crops, subset policy, training
+recipe, trainer binary, promoted PLY manifest, recorded canary, and core/buffer
+population. The canary may be passed or failed; a failed result remains an
+explicit quality warning. A retry validates this record before exporting the cell subset or
+reading either large PLY. Compatible completed cells are therefore skipped
+directly and processing resumes at the first incomplete or incompatible cell.
+
+Host cache size, decode/prefetch worker counts, scratch/output paths, resume
+cursor, automatic-selection metadata, qualification policy label and canary
+thresholds are operational controls; changing them does not invalidate a
+scientifically compatible completed cell.
+
+The cell artifacts are synchronized to durable S3 storage in dependency order:
+`point_cloud.ply`, `buffer.ply`, `trainer_run.json`, `canary_result.json`, then
+`cell_recovery.json`. Publishing the marker last prevents a restarted pod from
+accepting a partially synchronized cell. Outputs created before this contract
+remain safe: they take the legacy full-validation path once, then receive a
+recovery record after their buffer/core validation succeeds. A hash-bound sync
+receipt is stored after the marker; it suppresses redundant large uploads while
+causing an interrupted synchronization to resume on the next local recovery.
 
 ### GPU index normalization
 
@@ -772,6 +813,11 @@ the source photograph and expanded by a 128 px margin. DroneGS decodes that
 native JPEG region directly and then composes `tile_mode` inside it, avoiding
 any intermediate image resampling or JPEG recompression. A single partition
 (1×1) remains the default until resident-cap and streamed-product gates pass.
+After point-quality, restricted-track, native-crop and capacity filtering, an
+image is retained only if at least one of its original COLMAP observations
+still references an exported 3D point. Images with zero retained 3D support,
+including held-out views, are removed before DroneGS scheduling; a cell with no
+supported image fails during subset preparation rather than after GPU startup.
 
 #### Step 3: Training
 
@@ -1266,9 +1312,11 @@ These are the assumptions that must remain true for the current implementation t
 5. The Sim3 path applies rotation and scale to Gaussian means/axes in float32
    while translation is kept as a float64 GeoTIFF origin. The PCA path keeps
    the model in COLMAP frame and passes `R_geo` to preserve SH consistency.
-6. Reruns require the sparse SfM model
-   (`sparse/{cameras,images,points3D}.bin`) and optionally the alignment
-   transform; PCA fallback is used only when that transform is absent.
+6. Reconstruction and Gaussian training require the sparse/dense COLMAP
+   workspace. Training resolves the image data factor and publishes the
+   immutable camera/alignment geometry needed by filtering; filtering,
+   rasterization and viewer runs must not materialize COLMAP images,
+   databases, sparse or dense directories.
 7. Inside worker containers, COLMAP GPU indices are relative to visible
    devices, so a single visible GPU always uses index `0`.
 8. Indexed detection completion requires the full persisted shard plan and one

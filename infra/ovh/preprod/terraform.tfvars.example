@@ -10,4 +10,5 @@ terraform_state_bucket = "droneai-preprod-tfstate-fe7dc125"
 # RAM quota covers the existing b3-8 plus one l4-90 (98 GB total).
 enable_gpu_pool = true
 gpu_flavor      = "l4-90"
+gpu_architecture = "ada" # Must match the confirmed GPU flavor.
 gpu_max_nodes   = 1

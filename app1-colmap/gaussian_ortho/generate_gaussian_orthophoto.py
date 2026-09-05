@@ -19,15 +19,16 @@ from __future__ import annotations
 import math
 import json
 import os
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
 
+from shared.checksums import sha256_file
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
@@ -41,6 +42,12 @@ from .colmap_loader import (
 from .scene_info import build_scene_info
 from .colmap_subset import (
     export_colmap_subset,
+)
+from .cell_recovery import (
+    CellRecoveryRecord,
+    cell_recipe_sha256,
+    load_cell_recovery_record,
+    write_cell_recovery_record,
 )
 from gaussian_training import (
     DroneGSTuning,
@@ -214,10 +221,35 @@ def _compute_facade_gps_scale(
     return 1.0, "model-units", os.path.join(dense_path, "images")
 
 
+def _manifest_ply_matches(
+    manifest: dict[str, Any],
+    ply_path: Path,
+    *,
+    verify_content: bool,
+) -> bool:
+    if verify_content:
+        return bool(manifest_matches_ply(manifest, ply_path))
+    artifact = manifest.get("artifacts", {}).get("point_cloud.ply", {})
+    expected_hash = artifact.get("sha256")
+    expected_bytes = artifact.get("bytes")
+    try:
+        actual_bytes = ply_path.stat().st_size
+    except OSError:
+        return False
+    return (
+        isinstance(expected_hash, str)
+        and len(expected_hash) == 64
+        and isinstance(expected_bytes, int)
+        and not isinstance(expected_bytes, bool)
+        and expected_bytes == actual_bytes
+    )
+
+
 def _reusable_dronegs_result(
     request: TrainingRequest,
     *,
     trainer_binary_sha256: str,
+    verify_ply_content: bool = True,
 ) -> TrainingResult | None:
     """Return a previously promoted result only when its contract matches."""
     output = Path(request.output_path)
@@ -265,21 +297,24 @@ def _reusable_dronegs_result(
         or manifest.get("trainer_binary_sha256") != trainer_binary_sha256
         or manifest.get("dataset", {}).get("fingerprint") != request.dataset_fingerprint
         or any(not manifest_parameter_matches(parameters.get(key), value) for key, value in expected.items())
-        or not manifest_matches_ply(manifest, ply_path)
+        or not _manifest_ply_matches(
+            manifest,
+            ply_path,
+            verify_content=verify_ply_content,
+        )
     ):
         return None
     canary = evaluate_quality_canary(manifest, request.dronegs)
     write_quality_canary(output, canary)
-    if canary["failed_metrics"]:
-        raise RuntimeError("DroneGS quality canary failed: " + ", ".join(canary["failed_metrics"]))
-    # The promoted PLY + manifest + canary are the durable result. Keeping the
-    # much larger optimizer checkpoint after a successful recovery wastes disk.
+    # Completed training remains reusable even when quality is below policy;
+    # the structured canary is surfaced as a cell-scoped warning downstream.
     (output / "training.ckpt").unlink(missing_ok=True)
     return TrainingResult(
         backend="dronegs",
         ply_path=ply_path,
         manifest_path=manifest_path,
         effective_seed=request.seed,
+        quality_canary=canary,
     )
 
 
@@ -416,6 +451,9 @@ class GaussianSceneState:
     scene: SceneInfo | None
     cells: list[tuple[CellBounds | None, SceneInfo]]
     use_partition: bool
+    pca_rotation_geo: np.ndarray | None = None
+    pca_alignment_angle_deg: float | None = None
+    projected_geo_origin: np.ndarray | None = None
 
 
 def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
@@ -563,6 +601,29 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
         point_cloud,
         dense_path=config.dense_path,
     )
+    pca_rotation_geo = None
+    pca_alignment_angle_deg = None
+    projected_geo_origin = None
+    if config.render_mode == "map" and transform_data is None:
+        from .pca_alignment import compute_pca_rotation
+
+        pca_rotation_geo, pca_alignment_angle_deg = compute_pca_rotation(
+            registered_cameras,
+            point_cloud.points,
+        )
+        camera_positions = np.array(
+            [camera.T for camera in registered_cameras],
+            dtype=np.float64,
+        )
+        aligned_camera_positions = (pca_rotation_geo @ camera_positions.T).T
+        projected_geo_origin = compute_projected_geo_origin(
+            registered_cameras,
+            images_dir,
+            config.utm_crs,
+            aligned_camera_positions,
+            colmap_to_meters,
+            mean_exif_alt,
+        )
     return GaussianSceneState(
         train_cameras=train_cameras,
         test_cameras=test_cameras,
@@ -583,6 +644,9 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
         scene=scene,
         cells=[(None, scene)],
         use_partition=False,
+        pca_rotation_geo=pca_rotation_geo,
+        pca_alignment_angle_deg=pca_alignment_angle_deg,
+        projected_geo_origin=projected_geo_origin,
     )
 
 
@@ -726,6 +790,7 @@ class GaussianTrainingState:
     facade_subset_result: dict[str, object] | None
     preparation_reports: tuple[dict[str, object], ...] = ()
     partition_models: tuple[GaussianPartitionModel, ...] = ()
+    quality_alerts: tuple[dict[str, object], ...] = ()
 
     @property
     def total_gaussians(self) -> int:
@@ -1036,6 +1101,236 @@ def _scientific_subset_report(
     return {key: value for key, value in subset_export.items() if key not in operational_fields}
 
 
+def _build_training_request(
+    config: GaussianOrthoConfig,
+    *,
+    data_path: str,
+    output_path: str,
+    dataset_fingerprint: str,
+    resume_from: str | None,
+) -> TrainingRequest:
+    prefetch_depth, decode_workers = resident_image_cache_tuning(
+        config.resident_partitioning,
+        max_width=config.max_width,
+    )
+    return TrainingRequest(
+        data_path=data_path,
+        output_path=output_path,
+        iterations=config.iterations,
+        strategy="mrnf",
+        sh_degree=config.sh_degree,
+        max_cap=config.cap_max,
+        resize_factor=config.data_factor,
+        max_width=config.max_width,
+        tile_mode=config.tile_mode,
+        tile_mode_auto=config.tile_mode_auto,
+        seed=config.training_seed,
+        dataset_fingerprint=dataset_fingerprint,
+        dronegs=DroneGSTuning(
+            profile_id=config.dronegs_profile_id,
+            qualification_policy_id=config.dronegs_qualification_policy_id,
+            optimizer_profile=config.dronegs_optimizer_profile,
+            pruning_policy=config.dronegs_pruning_policy,
+            raster_profile=config.dronegs_raster_profile,
+            initial_scale_policy=config.dronegs_initial_scale_policy,
+            initial_max_projected_sigma_pixels=(config.dronegs_initial_max_projected_sigma_pixels),
+            maximum_scale_growth_factor=(config.dronegs_maximum_scale_growth_factor),
+            sh_degree_interval=config.dronegs_sh_degree_interval,
+            topology_cooldown=min(
+                config.dronegs_topology_cooldown,
+                max(1, config.iterations // 5),
+            ),
+            photometric_finish=min(
+                config.dronegs_photometric_finish,
+                max(1, config.iterations // 5),
+            ),
+            photometric_mse_percent=config.dronegs_photometric_mse_percent,
+            adaptive_growth_target=bool(
+                config.resident_partitioning
+                or config.dronegs_capacity_targeted_growth
+            ),
+            adaptive_native_crop_tiles=bool(config.resident_partitioning),
+            prefetch_depth=prefetch_depth,
+            decode_workers=decode_workers,
+            host_image_cache_mib=config.dronegs_host_image_cache_mib,
+            background_mode=getattr(config, "dronegs_background_mode", "black"),
+            loss_pixel_mask=getattr(config, "dronegs_loss_pixel_mask", "active"),
+            opacity_sh_enabled=config.opacity_sh_enabled,
+            checkpoint_every=config.dronegs_checkpoint_every,
+            resume_from=resume_from,
+            test_every=config.dronegs_test_every,
+            test_split=config.dronegs_test_split,
+            test_guard_percent=config.dronegs_test_guard_percent,
+            save_eval_images=config.dronegs_test_every > 0,
+            canary_min_psnr=config.dronegs_canary_min_psnr,
+            canary_min_ssim=config.dronegs_canary_min_ssim,
+        ),
+    )
+
+
+def _portable_training_parameters(request: TrainingRequest) -> dict[str, object]:
+    """Bind scientific training inputs, not host or qualification policy."""
+
+    payload = asdict(request)
+    # The resolved tile mode is scientific; whether it was selected
+    # automatically is not.
+    payload.pop("tile_mode_auto", None)
+    for key in (
+        "data_path",
+        "output_path",
+        "dataset_fingerprint",
+    ):
+        payload.pop(key)
+    dronegs = payload.get("dronegs")
+    if not isinstance(dronegs, dict):
+        raise TypeError("DroneGS training parameters are not portable")
+    for key in (
+        "qualification_policy_id",
+        "prefetch_depth",
+        "decode_workers",
+        "host_image_cache_mib",
+        "save_eval_images",
+        "resume_from",
+        "canary_min_psnr",
+        "canary_min_ssim",
+    ):
+        # These fields control execution, recovery transport, or post-training
+        # acceptance. They do not alter the promoted Gaussian model and must
+        # not invalidate already qualified cells.
+        dronegs.pop(key, None)
+    return cast(dict[str, object], payload)
+
+
+def _cell_quality_alert(
+    cell_label: str,
+    canary: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    if not canary:
+        return None
+    failed = canary.get("failed_metrics")
+    if not isinstance(failed, list) or not failed:
+        return None
+    return {
+        "severity": "warning",
+        "cell": cell_label,
+        "qualification_policy_id": canary.get("qualification_policy_id"),
+        "failed_metrics": list(failed),
+        "psnr": canary.get("psnr"),
+        "minimum_psnr": canary.get("minimum_psnr"),
+        "ssim": canary.get("ssim"),
+        "minimum_ssim": canary.get("minimum_ssim"),
+        "held_out_image_count": canary.get("held_out_image_count"),
+    }
+
+
+def _report_cell_quality_alert(
+    config: GaussianOrthoConfig,
+    progress: int,
+    alert: Mapping[str, object],
+) -> None:
+    failed_metrics = cast(list[str], alert["failed_metrics"])
+    details = ", ".join(
+        f"{metric}={alert.get(metric)!r} "
+        f"(minimum={alert.get(f'minimum_{metric}')!r})"
+        for metric in failed_metrics
+    )
+    _report(
+        config.vol_id,
+        "GAUSS",
+        progress,
+        f"[DroneGS] Quality warning for {alert['cell']}: {details}; "
+        "continuing with the completed cell",
+        config.report_fn,
+    )
+
+
+def _record_cell_quality_alert(
+    alerts: list[dict[str, object]],
+    *,
+    config: GaussianOrthoConfig,
+    progress: int,
+    cell_label: str,
+    canary: Mapping[str, object] | None,
+) -> None:
+    alert = _cell_quality_alert(cell_label, canary)
+    if alert is None:
+        return
+    alerts.append(alert)
+    _report_cell_quality_alert(config, progress, alert)
+
+
+def _sync_completed_cell(
+    config: GaussianOrthoConfig,
+    cell_output: str | Path,
+) -> None:
+    """Upload data before the marker so a remote retry never sees a torn cell."""
+
+    if config.checkpoint_callback is None:
+        return
+    output = Path(cell_output)
+    marker = output / "cell_recovery.json"
+    receipt = output / ".cell_recovery.s3-synced"
+    marker_sha256 = str(sha256_file(marker))
+    try:
+        if receipt.read_text(encoding="ascii").strip() == marker_sha256:
+            return
+    except (OSError, UnicodeError):
+        pass
+
+    for name in (
+        "point_cloud.ply",
+        "buffer.ply",
+        "trainer_run.json",
+        "canary_result.json",
+    ):
+        path = output / name
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        if config.checkpoint_callback(path, config.iterations) is False:
+            return
+    if config.checkpoint_callback(marker, config.iterations) is False:
+        return
+    # A partial receipt is harmless: its digest will not match on retry.
+    receipt.write_text(marker_sha256 + "\n", encoding="ascii")
+    config.checkpoint_callback(receipt, config.iterations)
+
+
+def _recover_completed_cell(
+    *,
+    cell_output: str | Path,
+    cell_label: str,
+    cell_recipe: str,
+    cell_bounds: CellBounds,
+    trainer_binary_sha256: str,
+) -> CellRecoveryRecord | None:
+    recovery = load_cell_recovery_record(
+        cell_output,
+        expected_cell_label=cell_label,
+        expected_recipe_sha256=cell_recipe,
+        expected_bounds=cell_bounds,
+        expected_trainer_binary_sha256=trainer_binary_sha256,
+    )
+    if recovery is None:
+        return None
+    # The recipe and compact record already bind the scientific request,
+    # trainer, manifest, canary and file sizes. Do not re-run model/canary
+    # validation for every completed cell on each process restart.
+    return recovery
+
+
+def _require_partition_recovery_inputs(
+    bounds: CellBounds | None,
+    source_dataset_fingerprint: str | None,
+) -> tuple[CellBounds, str]:
+    if bounds is None:
+        raise RuntimeError("Partitioned Gaussian cell has no durable bounds")
+    if source_dataset_fingerprint is None:
+        raise RuntimeError(
+            "Partitioned Gaussian scene has no source dataset identity"
+        )
+    return bounds, source_dataset_fingerprint
+
+
 def train_and_merge_gaussian_models(
     config: GaussianOrthoConfig,
     scene_state: GaussianSceneState,
@@ -1055,22 +1350,137 @@ def train_and_merge_gaussian_models(
     facade_subset_result: dict[str, object] | None = None
     preparation_reports: list[dict[str, object]] = []
     facade_partition_reports: list[dict[str, object]] = []
+    quality_alerts: list[dict[str, object]] = []
     sparse_dir = os.path.join(config.dense_path, "sparse", "0")
     if not os.path.isdir(sparse_dir):
         sparse_dir = os.path.join(config.dense_path, "sparse")
     images_dir_path = os.path.join(config.dense_path, "images")
+    source_dataset_fingerprint = (
+        compute_dataset_identity(config.dense_path).fingerprint
+        if scene_state.use_partition
+        else None
+    )
+
+    def remember_partition_subset(
+        cell_label: str,
+        cell_workspace: str,
+        subset_report: dict[str, object],
+    ) -> None:
+        preparation_reports.append(
+            {
+                "cell": cell_label,
+                "training_workspace": cell_workspace,
+                "timings_seconds": subset_report.get("timings_seconds"),
+                "image_transport": subset_report.get("image_transport"),
+                "process_peak_rss_kib": subset_report.get(
+                    "process_peak_rss_kib"
+                ),
+            }
+        )
+        if config.render_mode == "facade":
+            facade_partition_reports.append(
+                {
+                    "cell": cell_label,
+                    **_scientific_subset_report(subset_report),
+                }
+            )
 
     for index, (cell_bounds, cell_scene) in enumerate(scene_state.cells):
         cell_label = f"cell_{index}" if scene_state.use_partition else "full"
         pct_start = 15 + int(65 * index / n_cells)
         pct_end = 15 + int(65 * (index + 1) / n_cells)
         cell_output = os.path.join(config.checkpoint_dir, cell_label)
+        cell_recipe: str | None = None
+        subset_export: str | dict[str, object] | None = None
 
         if scene_state.use_partition:
+            durable_bounds, durable_source_fingerprint = (
+                _require_partition_recovery_inputs(
+                    cell_bounds, source_dataset_fingerprint
+                )
+            )
             cell_workspace = _training_workspace_path(
                 config,
                 f"{cell_label}_workspace",
             )
+            camera_names = [
+                camera.image_name for camera in cell_scene.train_cameras
+            ]
+            subset_max_point_error = (
+                scene_state.seed_max_error
+                if config.render_mode == "facade"
+                else 1.0
+            )
+            subset_min_track_length = (
+                scene_state.seed_min_track
+                if config.render_mode == "facade"
+                else 3
+            )
+            subset_max_points = (
+                max(1, int(config.cap_max * 0.85))
+                if config.render_mode == "facade"
+                else None
+            )
+            request_template = _build_training_request(
+                config,
+                data_path=cell_workspace,
+                output_path=cell_output,
+                dataset_fingerprint="pending-cell-dataset",
+                resume_from=None,
+            )
+            cell_recipe = cell_recipe_sha256(
+                source_dataset_fingerprint=durable_source_fingerprint,
+                cell_label=cell_label,
+                bounds=durable_bounds,
+                camera_names=camera_names,
+                image_crops=cell_scene.image_crops,
+                subset_parameters={
+                    "max_point_error": subset_max_point_error,
+                    "min_track_length": subset_min_track_length,
+                    "max_points": subset_max_points,
+                },
+                training_parameters=_portable_training_parameters(
+                    request_template
+                ),
+            )
+            recovery = _recover_completed_cell(
+                cell_output=cell_output,
+                cell_label=cell_label,
+                cell_recipe=cell_recipe,
+                cell_bounds=durable_bounds,
+                trainer_binary_sha256=trainer_binary_sha256,
+            )
+            if recovery is not None:
+                _record_cell_quality_alert(
+                    quality_alerts,
+                    config=config,
+                    progress=pct_end,
+                    cell_label=cell_label,
+                    canary=recovery.quality_canary,
+                )
+                remember_partition_subset(
+                    cell_label,
+                    cell_workspace,
+                    recovery.subset_report,
+                )
+                partition_models.append(
+                    GaussianPartitionModel(
+                        bounds=recovery.bounds,
+                        model_path=os.path.join(cell_output, "buffer.ply"),
+                        gaussian_count=recovery.gaussian_count,
+                        core_gaussian_count=recovery.core_gaussian_count,
+                    )
+                )
+                _sync_completed_cell(config, cell_output)
+                _report(
+                    config.vol_id,
+                    "GAUSS",
+                    pct_end,
+                    f"[DroneGS] Reused durable {cell_label} without "
+                    "rebuilding its workspace",
+                    config.report_fn,
+                )
+                continue
             _report(
                 config.vol_id,
                 "GAUSS",
@@ -1085,12 +1495,12 @@ def train_and_merge_gaussian_models(
             subset_export = export_colmap_subset(
                 source_sparse_dir=sparse_dir,
                 target_dir=cell_workspace,
-                camera_names=[camera.image_name for camera in cell_scene.train_cameras],
+                camera_names=camera_names,
                 images_dir=images_dir_path,
                 image_crops=cell_scene.image_crops,
-                max_point_error=(scene_state.seed_max_error if config.render_mode == "facade" else 1.0),
-                min_track_length=(scene_state.seed_min_track if config.render_mode == "facade" else 3),
-                max_points=(max(1, int(config.cap_max * 0.85)) if config.render_mode == "facade" else None),
+                max_point_error=subset_max_point_error,
+                min_track_length=subset_min_track_length,
+                max_points=subset_max_points,
                 return_report=True,
             )
             _report_subset_preparation(
@@ -1102,22 +1512,11 @@ def train_and_merge_gaussian_models(
             )
             if isinstance(subset_export, str):
                 raise RuntimeError("Resident subset export did not return its report")
-            preparation_reports.append(
-                {
-                    "cell": cell_label,
-                    "training_workspace": cell_workspace,
-                    "timings_seconds": subset_export.get("timings_seconds"),
-                    "image_transport": subset_export.get("image_transport"),
-                    "process_peak_rss_kib": subset_export.get("process_peak_rss_kib"),
-                }
+            remember_partition_subset(
+                cell_label,
+                cell_workspace,
+                subset_export,
             )
-            if config.render_mode == "facade":
-                facade_partition_reports.append(
-                    {
-                        "cell": cell_label,
-                        **_scientific_subset_report(subset_export),
-                    }
-                )
             training_data_path = cell_workspace
         elif config.render_mode == "facade":
             texture_workspace = _training_workspace_path(
@@ -1197,59 +1596,12 @@ def train_and_merge_gaussian_models(
             )
 
         dataset_identity = compute_dataset_identity(training_data_path)
-        prefetch_depth, decode_workers = resident_image_cache_tuning(
-            config.resident_partitioning,
-            max_width=config.max_width,
-        )
-        training_request = TrainingRequest(
+        training_request = _build_training_request(
+            config,
             data_path=training_data_path,
             output_path=cell_output,
-            iterations=config.iterations,
-            strategy="mrnf",
-            sh_degree=config.sh_degree,
-            max_cap=config.cap_max,
-            resize_factor=config.data_factor,
-            max_width=config.max_width,
-            tile_mode=config.tile_mode,
-            tile_mode_auto=config.tile_mode_auto,
-            seed=config.training_seed,
             dataset_fingerprint=dataset_identity.fingerprint,
-            dronegs=DroneGSTuning(
-                profile_id=config.dronegs_profile_id,
-                qualification_policy_id=config.dronegs_qualification_policy_id,
-                optimizer_profile=config.dronegs_optimizer_profile,
-                pruning_policy=config.dronegs_pruning_policy,
-                raster_profile=config.dronegs_raster_profile,
-                initial_scale_policy=config.dronegs_initial_scale_policy,
-                initial_max_projected_sigma_pixels=(config.dronegs_initial_max_projected_sigma_pixels),
-                maximum_scale_growth_factor=(config.dronegs_maximum_scale_growth_factor),
-                sh_degree_interval=config.dronegs_sh_degree_interval,
-                topology_cooldown=min(
-                    config.dronegs_topology_cooldown,
-                    max(1, config.iterations // 5),
-                ),
-                photometric_finish=min(
-                    config.dronegs_photometric_finish,
-                    max(1, config.iterations // 5),
-                ),
-                photometric_mse_percent=config.dronegs_photometric_mse_percent,
-                adaptive_growth_target=bool(config.resident_partitioning or config.dronegs_capacity_targeted_growth),
-                adaptive_native_crop_tiles=bool(config.resident_partitioning),
-                prefetch_depth=prefetch_depth,
-                decode_workers=decode_workers,
-                host_image_cache_mib=config.dronegs_host_image_cache_mib,
-                background_mode=getattr(config, "dronegs_background_mode", "black"),
-                loss_pixel_mask=getattr(config, "dronegs_loss_pixel_mask", "active"),
-                opacity_sh_enabled=config.opacity_sh_enabled,
-                checkpoint_every=config.dronegs_checkpoint_every,
-                resume_from=resume_from,
-                test_every=config.dronegs_test_every,
-                test_split=config.dronegs_test_split,
-                test_guard_percent=config.dronegs_test_guard_percent,
-                save_eval_images=config.dronegs_test_every > 0,
-                canary_min_psnr=config.dronegs_canary_min_psnr,
-                canary_min_ssim=config.dronegs_canary_min_ssim,
-            ),
+            resume_from=resume_from,
         )
         training_result = _reusable_dronegs_result(
             training_request,
@@ -1283,9 +1635,17 @@ def train_and_merge_gaussian_models(
                 config.vol_id,
                 "GAUSS",
                 pct_end,
-                f"[DroneGS] Reusing completed, canary-approved {cell_label}",
+                f"[DroneGS] Reusing completed {cell_label}",
                 config.report_fn,
             )
+
+        _record_cell_quality_alert(
+            quality_alerts,
+            config=config,
+            progress=pct_end,
+            cell_label=cell_label,
+            canary=getattr(training_result, "quality_canary", None),
+        )
 
         model = model_class(
             sh_degree=config.sh_degree,
@@ -1309,9 +1669,28 @@ def train_and_merge_gaussian_models(
             core_gaussian_count = int(cupy_module.count_nonzero(core_mask).item())
             if core_gaussian_count == 0:
                 raise RuntimeError(f"Gaussian {cell_label} core retained no splats")
+            if cell_recipe is None or not isinstance(subset_export, dict):
+                raise RuntimeError(
+                    f"Gaussian {cell_label} has no durable preparation contract"
+                )
             buffer_path = os.path.join(cell_output, "buffer.ply")
             model.active_sh_degree = config.sh_degree
             model.save_ply(buffer_path)
+            if not isinstance(training_request.dataset_fingerprint, str):
+                raise RuntimeError("Gaussian cell has no dataset fingerprint")
+            write_cell_recovery_record(
+                cell_output,
+                cell_label=cell_label,
+                recipe_sha256=cell_recipe,
+                dataset_fingerprint=training_request.dataset_fingerprint,
+                trainer_binary_sha256=trainer_binary_sha256,
+                buffer_path=buffer_path,
+                gaussian_count=model.num_gaussians,
+                core_gaussian_count=core_gaussian_count,
+                bounds=cell_bounds,
+                subset_report=subset_export,
+            )
+            _sync_completed_cell(config, cell_output)
             partition_models.append(
                 GaussianPartitionModel(
                     bounds=cell_bounds,
@@ -1384,6 +1763,7 @@ def train_and_merge_gaussian_models(
         facade_subset_result=facade_subset_result,
         preparation_reports=tuple(preparation_reports),
         partition_models=tuple(partition_models),
+        quality_alerts=tuple(quality_alerts),
     )
 
 
@@ -1472,18 +1852,26 @@ def prepare_gaussian_render_state(
             "Computing PCA nadir direction…",
             config.report_fn,
         )
-        from .pca_alignment import compute_pca_rotation
-
-        if scene_state.point_cloud is None:
-            raise RuntimeError("Sparse point cloud is unavailable")
         camera_positions = np.array(
             [camera.T for camera in cameras],
             dtype=np.float64,
         )
-        rotation_align, angle_deg = compute_pca_rotation(
-            cameras,
-            scene_state.point_cloud.points,
-        )
+        portable_pca = scene_state.pca_rotation_geo is not None
+        if portable_pca:
+            rotation_align = np.asarray(
+                scene_state.pca_rotation_geo,
+                dtype=np.float64,
+            )
+            angle_deg = float(scene_state.pca_alignment_angle_deg or 0.0)
+        else:
+            from .pca_alignment import compute_pca_rotation
+
+            if scene_state.point_cloud is None:
+                raise RuntimeError("Sparse point cloud is unavailable")
+            rotation_align, angle_deg = compute_pca_rotation(
+                cameras,
+                scene_state.point_cloud.points,
+            )
         rotation_geo = rotation_align.astype(np.float32)
         _report(
             config.vol_id,
@@ -1493,13 +1881,17 @@ def prepare_gaussian_render_state(
             config.report_fn,
         )
         geo_camera_positions = (rotation_align @ camera_positions.T).T
-        projected_origin = compute_projected_geo_origin(
-            cameras,
-            scene_state.images_dir,
-            config.utm_crs,
-            geo_camera_positions,
-            scene_state.colmap_to_meters,
-            scene_state.mean_exif_alt,
+        projected_origin = (
+            scene_state.projected_geo_origin
+            if portable_pca
+            else compute_projected_geo_origin(
+                cameras,
+                scene_state.images_dir,
+                config.utm_crs,
+                geo_camera_positions,
+                scene_state.colmap_to_meters,
+                scene_state.mean_exif_alt,
+            )
         )
         if projected_origin is not None:
             geo_origin = projected_origin

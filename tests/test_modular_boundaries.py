@@ -340,7 +340,7 @@ def test_frontend_workspace_cache_is_separate_from_local_editing_state():
     assert "PodState" not in store_source
     assert "selectedPath" in store_source
     assert "<AppProviders>" in page_source
-    assert "<WorkspaceDataProvider>" in providers_source
+    assert "<WorkspaceDataProvider key=" in providers_source
 
 
 def test_analysis_api_uses_bounded_detection_without_kafka_compute():

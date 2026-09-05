@@ -1,4 +1,7 @@
 {{- if .Values.networkPolicy.enabled }}
+{{- if not .Values.networkPolicy.dnsPeers }}
+{{- fail "networkPolicy.dnsPeers must explicitly identify cluster resolvers" }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -47,7 +50,9 @@ spec:
     ports:
     - { protocol: TCP, port: 3000 }
   egress:
-  - ports:
+  - to:
+    {{- toYaml .Values.networkPolicy.dnsPeers | nindent 4 }}
+    ports:
     - { protocol: UDP, port: 53 }
     - { protocol: TCP, port: 53 }
   - to:
@@ -86,7 +91,9 @@ spec:
     ports:
     - { protocol: TCP, port: {{ .Values.dashboardApi.observability.metricsPort }} }
   egress:
-  - ports:
+  - to:
+    {{- toYaml .Values.networkPolicy.dnsPeers | nindent 4 }}
+    ports:
     - { protocol: UDP, port: 53 }
     - { protocol: TCP, port: 53 }
   {{- if .Values.networkPolicy.externalHttpsCidrs }}
@@ -98,10 +105,24 @@ spec:
     ports:
     - { protocol: TCP, port: 443 }
   {{- end }}
-  - ports:
+  {{- if .Values.networkPolicy.databasePeers }}
+  - to:
+    {{- toYaml .Values.networkPolicy.databasePeers | nindent 4 }}
+    ports:
     - { protocol: TCP, port: {{ .Values.networkPolicy.databasePort }} }
-    - { protocol: TCP, port: {{ .Values.kafka.egressPort }} }
+  {{- end }}
+  {{- if .Values.networkPolicy.s3Peers }}
+  - to:
+    {{- toYaml .Values.networkPolicy.s3Peers | nindent 4 }}
+    ports:
     - { protocol: TCP, port: {{ .Values.networkPolicy.s3Port }} }
+  {{- end }}
+  {{- if .Values.networkPolicy.kafkaPeers }}
+  - to:
+    {{- toYaml .Values.networkPolicy.kafkaPeers | nindent 4 }}
+    ports:
+    - { protocol: TCP, port: {{ .Values.kafka.egressPort }} }
+  {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -123,7 +144,9 @@ spec:
     ports:
     - { protocol: TCP, port: {{ .Values.dashboardApi.observability.metricsPort }} }
   egress:
-  - ports:
+  - to:
+    {{- toYaml .Values.networkPolicy.dnsPeers | nindent 4 }}
+    ports:
     - { protocol: UDP, port: 53 }
     - { protocol: TCP, port: 53 }
   {{- if .Values.networkPolicy.externalHttpsCidrs }}
@@ -135,10 +158,30 @@ spec:
     ports:
     - { protocol: TCP, port: 443 }
   {{- end }}
-  - ports:
+  {{- if .Values.networkPolicy.databasePeers }}
+  - to:
+    {{- toYaml .Values.networkPolicy.databasePeers | nindent 4 }}
+    ports:
     - { protocol: TCP, port: {{ .Values.networkPolicy.databasePort }} }
-    - { protocol: TCP, port: {{ .Values.kafka.egressPort }} }
+  {{- end }}
+  {{- if .Values.networkPolicy.s3Peers }}
+  - to:
+    {{- toYaml .Values.networkPolicy.s3Peers | nindent 4 }}
+    ports:
     - { protocol: TCP, port: {{ .Values.networkPolicy.s3Port }} }
+  {{- end }}
+  {{- if .Values.networkPolicy.kafkaPeers }}
+  - to:
+    {{- toYaml .Values.networkPolicy.kafkaPeers | nindent 4 }}
+    ports:
+    - { protocol: TCP, port: {{ .Values.kafka.egressPort }} }
+  {{- end }}
+  {{- if .Values.networkPolicy.kubernetesApiPeers }}
+  - to:
+    {{- toYaml .Values.networkPolicy.kubernetesApiPeers | nindent 4 }}
+    ports:
+    - { protocol: TCP, port: {{ .Values.networkPolicy.kubernetesApiPort }} }
+  {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -153,7 +196,9 @@ spec:
       app.kubernetes.io/name: droneai-stage
   policyTypes: [Egress]
   egress:
-  - ports:
+  - to:
+    {{- toYaml .Values.networkPolicy.dnsPeers | nindent 4 }}
+    ports:
     - { protocol: UDP, port: 53 }
     - { protocol: TCP, port: 53 }
   {{- if .Values.networkPolicy.externalHttpsCidrs }}
@@ -165,7 +210,16 @@ spec:
     ports:
     - { protocol: TCP, port: 443 }
   {{- end }}
-  - ports:
+  {{- if .Values.networkPolicy.databasePeers }}
+  - to:
+    {{- toYaml .Values.networkPolicy.databasePeers | nindent 4 }}
+    ports:
     - { protocol: TCP, port: {{ .Values.networkPolicy.databasePort }} }
+  {{- end }}
+  {{- if .Values.networkPolicy.s3Peers }}
+  - to:
+    {{- toYaml .Values.networkPolicy.s3Peers | nindent 4 }}
+    ports:
     - { protocol: TCP, port: {{ .Values.networkPolicy.s3Port }} }
+  {{- end }}
 {{- end }}

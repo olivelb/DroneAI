@@ -95,3 +95,10 @@ Unmerged benchmark/profile branches must preserve these new boundaries:
   calibrated distortion model and version the footprint evidence;
 - do not weaken deletion/retention drain, token pre-auth limiting, or the
   distinction between CPU E2E and scientific qualification.
+
+## Follow-up on 5 September 2026
+
+The [new audit ledger](audit-2026-09-05.md) records subsequent changes. CAS now has
+an explicit offline maintenance collector with mark/sweep planning and a grace
+period. Online collection, a durable legal-hold registry and provider-qualified
+version erasure remain separate acceptance requirements.

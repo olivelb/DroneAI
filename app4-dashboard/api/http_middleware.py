@@ -82,19 +82,6 @@ class RequestBodyLimitMiddleware:
 
 
 def configure_http_middleware(application: FastAPI) -> None:
-    application.add_middleware(
-        CORSMiddleware,
-        allow_origins=security.configured_cors_origins(),
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=[
-            "Authorization",
-            "Content-Type",
-            "X-API-Key",
-            "X-Request-ID",
-        ],
-        expose_headers=["X-Request-ID"],
-    )
     application.add_middleware(rate_limit.RasterTileRateLimitMiddleware)
     application.add_middleware(rate_limit.OrganizationRequestQuotaMiddleware)
     application.add_middleware(rate_limit.IdentityRateLimitMiddleware)
@@ -115,3 +102,22 @@ def configure_http_middleware(application: FastAPI) -> None:
         RequestBodyLimitMiddleware,
         max_body_bytes=configured_http_max_body_bytes(),
     )
+
+
+class DashboardApplication(FastAPI):  # type: ignore[misc]
+    """Keep CORS outside even the ASGI server error and early rejection layers."""
+
+    def build_middleware_stack(self) -> ASGIApp:
+        return CORSMiddleware(
+            super().build_middleware_stack(),
+            allow_origins=security.configured_cors_origins(),
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=[
+                "Authorization",
+                "Content-Type",
+                "X-API-Key",
+                "X-Request-ID",
+            ],
+            expose_headers=["X-Request-ID", "Retry-After"],
+        )

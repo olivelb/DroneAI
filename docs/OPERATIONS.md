@@ -154,6 +154,14 @@ ephemeral-storage eviction threshold. The HQ raster class is
 `gpu-high-memory` (24 GiB request, 64 GiB limit); normal rasterization remains
 `gpu-standard` while its Gaussian cap is at most 3M.
 
+Gaussian training is the last stage allowed to materialize the reconstruction
+workspace. Its output manifest must contain only the reconstruction/training
+state, the checksum-bound filter-scene sidecar and the trained PLY files.
+Filtering, rasterization and viewer Jobs restore role-selected handoffs and
+must not contain `clean_images`, `database.db`, `sparse` or `dense`. Treat any
+such path in a post-training workspace as a deployment-contract regression;
+do not work around it by increasing the PVC or ephemeral-storage limit.
+
 Executor-specific `node_selector` entries may further restrict a pool or GPU
 architecture, but cannot contradict the resource-class selectors. Executor
 `tolerations` accept only explicit non-empty taint keys and validated Kubernetes
@@ -183,7 +191,10 @@ Keep one dated Markdown report under `docs/benchmarks/` and record:
 - quality-gate reports, final RGB/height GeoTIFF checks and detection counts;
 - one new detection attempt against an existing raster and one cancelled or
   failed stage followed by a new immutable attempt;
-- confirmation that the disposable Job workspaces and pods were removed.
+- confirmation that successful Job workspaces and pods were removed; for a
+  failure/retry canary, record the bounded retained workspace, same-run lease
+  and verification-cache reuse, then confirm its removal after success or by
+  the reviewed orphan-workspace retention procedure.
 
 Never store credentials, signed URLs, bearer tokens, private datasets or raw
 Terraform state in the report.

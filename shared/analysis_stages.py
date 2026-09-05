@@ -51,6 +51,7 @@ def create_analysis_stage(session: Any, mission: Any, analysis: Any, raster: Any
         "ai": {
             "backend": analysis.backend, "model_variant": analysis.model_variant,
             "classes": analysis.classes, "confidence": analysis.confidence,
+            "confidence_policy": "strict",
             "sam_prompt": analysis.prompt, "tile_size": analysis.tile_size,
         },
     }
@@ -62,6 +63,7 @@ def create_analysis_stage(session: Any, mission: Any, analysis: Any, raster: Any
         resource_class=resource_class_for_stage("detection", parameters),
         idempotency_key=stage_idempotency_key(
             mission.vol_id, "detection", attempt, parameters, upstream,
+            organization_id=mission.organization_id,
         ),
     )
     session.add(stage)
@@ -191,5 +193,12 @@ def feature_wkt(geometry: dict[str, Any]) -> WKTElement:
             for ring in polygon
         ]
         return WKTElement(f"POLYGON({', '.join(rings)})", srid=4326)
+    if geometry_type == "MultiPolygon":
+        polygons = cast(list[list[list[list[float]]]], coordinates)
+        bodies = []
+        for polygon in polygons:
+            rings = ["(" + ", ".join(f"{point[0]} {point[1]}" for point in ring) + ")" for ring in polygon]
+            bodies.append("(" + ", ".join(rings) + ")")
+        return WKTElement(f"MULTIPOLYGON({', '.join(bodies)})", srid=4326)
     raise ValueError(f"Unsupported AI geometry: {geometry_type}")
 

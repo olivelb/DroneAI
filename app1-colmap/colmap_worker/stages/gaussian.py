@@ -125,10 +125,10 @@ def _checkpoint_callback(
     durable_checkpoint_dir: str,
     checkpoint_s3_prefix: str,
     vol_id: str,
-) -> Callable[[Path, int], None]:
+) -> Callable[[Path, int], bool]:
     checkpoint_root = Path(durable_checkpoint_dir).resolve()
 
-    def persist(checkpoint_path: Path, iteration: int) -> None:
+    def persist(checkpoint_path: Path, iteration: int) -> bool:
         relative = checkpoint_path.resolve().relative_to(checkpoint_root)
         s3_key = f"{checkpoint_s3_prefix}/{relative.as_posix()}"
         try:
@@ -139,6 +139,7 @@ def _checkpoint_callback(
                 95,
                 log=f"Durable DroneGS checkpoint synced at iteration {iteration}.",
             )
+            return True
         except Exception as sync_error:
             runtime.report_mission_progress(
                 vol_id,
@@ -146,6 +147,7 @@ def _checkpoint_callback(
                 95,
                 log=f"DroneGS checkpoint remains locally durable; S3 sync failed: {sync_error}",
             )
+            return False
 
     return persist
 
@@ -163,6 +165,7 @@ def prepare_gaussian_product_run(
     vol_id: str,
     *,
     prepare_checkpoints: bool = True,
+    require_source_workspace: bool = True,
 ) -> GaussianProductRun:
     """Resolve one immutable Gaussian recipe from portable COLMAP state."""
     params = preparation.params
@@ -176,10 +179,20 @@ def prepare_gaussian_product_run(
     workspace_transform = os.path.join(workspace_dir, "alignment_transform.json")
     if not facade_mode and os.path.exists(workspace_transform):
         align_tf = workspace_transform
-    if not dense_sparse_model_ready(dense_path):
-        raise RuntimeError("Gaussian Splatting requires dense/sparse model (cameras.bin, images.bin, points3D.bin).")
-
-    data_factor = _resolve_data_factor(params, dense_path, vol_id)
+    if require_source_workspace:
+        if not dense_sparse_model_ready(dense_path):
+            raise RuntimeError(
+                "Gaussian Splatting requires dense/sparse model "
+                "(cameras.bin, images.bin, points3D.bin)."
+            )
+        data_factor = _resolve_data_factor(params, dense_path, vol_id)
+    else:
+        raw_data_factor = str(params.get("gs_data_factor", "auto"))
+        if raw_data_factor == "auto":
+            raise ValueError(
+                "Portable Gaussian handoff requires resolved gs_data_factor"
+            )
+        data_factor = int(raw_data_factor)
     resolved, warnings = resolve_dronegs_config(
         params,
         facade_mode=facade_mode,

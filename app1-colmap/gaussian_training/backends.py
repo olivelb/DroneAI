@@ -30,7 +30,7 @@ from .manifest_contract import (
 
 ProgressCallback = Callable[[int, float, int], None]
 CancellationCheck = Callable[[], None]
-CheckpointCallback = Callable[[Path, int], None]
+CheckpointCallback = Callable[[Path, int], bool | None]
 SUPPORTED_STRATEGIES = {"mrnf"}
 SUPPORTED_DRONEGS_PRUNING_POLICIES = {"spatial-bounds"}
 SUPPORTED_DRONEGS_RASTER_PROFILES = {"fastgs"}
@@ -290,6 +290,7 @@ class TrainingResult:
     ply_path: Path
     manifest_path: Path | None = None
     effective_seed: int | None = None
+    quality_canary: dict[str, Any] | None = None
 
 
 def evaluate_quality_canary(
@@ -641,17 +642,17 @@ class DroneGSBackend:
             raise RuntimeError("DroneGS manifest does not describe the requested dataset/profile")
         canary = evaluate_quality_canary(manifest, request.dronegs)
         write_quality_canary(output_path, canary)
-        if canary["failed_metrics"]:
-            raise RuntimeError("DroneGS quality canary failed: " + ", ".join(canary["failed_metrics"]))
-        # A completed PLY + manifest + passed canary is the durable recovery
-        # point. The much larger optimizer checkpoint is only useful while
-        # training is incomplete, so reclaim it after successful promotion.
+        # Quality thresholds are advisory at cell scope. The completed model
+        # remains a durable result and the structured canary is propagated as
+        # an alert so one weak resident cell cannot abort every later cell.
+        # The optimizer checkpoint is only useful while training is incomplete.
         (output_path / "training.ckpt").unlink(missing_ok=True)
         return TrainingResult(
             self.name,
             ply_path,
             manifest_path=manifest_path,
             effective_seed=request.seed,
+            quality_canary=canary,
         )
 
     @staticmethod

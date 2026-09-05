@@ -8,6 +8,7 @@ GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/__init__.py \
 	app1-colmap/gaussian_ortho/camera_footprint.py \
 	app1-colmap/gaussian_ortho/capacity_planning.py \
+	app1-colmap/gaussian_ortho/cell_recovery.py \
 	app1-colmap/gaussian_ortho/colmap_loader.py \
 	app1-colmap/gaussian_ortho/colmap_subset.py \
 	app1-colmap/gaussian_ortho/coverage_quality.py \
@@ -146,6 +147,7 @@ scripts-check:
 	shellcheck $(SHELL_SCRIPTS)
 
 docs-check:
+	$(PYTHON) tools/check_typed_api_scope.py
 	$(PYTHON) tools/check_markdown_links.py
 	$(PYTHON) tools/check_documentation_contracts.py
 	$(PYTHON) tools/production_qualification.py check-tree docs/benchmarks

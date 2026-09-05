@@ -416,3 +416,11 @@ def test_adaptive_native_crop_does_not_over_split_a_small_resident_view():
     )
 
     assert pixels == 1024 * 768
+
+
+def test_insufficient_vram_does_not_invent_a_positive_capacity():
+    from gaussian_ortho.capacity_planning import vram_gaussian_cap, GIB
+    import pytest
+    for total, free in ((4 * GIB, 4 * GIB), (8 * GIB, 4 * GIB), (8 * GIB, 0)):
+        with pytest.raises(ValueError, match="Insufficient VRAM"):
+            vram_gaussian_cap(total, free)

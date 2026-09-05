@@ -12,7 +12,7 @@ import { fetchMissionCatalog, fetchMissionDetail, getWsBaseUrl } from "./api";
 import { useAuth } from "./auth";
 import {
   autoSelectMission,
-  missionSummaryFromCatalog,
+  catalogueWithSelectedDetail,
   missionSummaryFromDetail,
   summaryLogMessages,
 } from "./mission-runtime-state";
@@ -51,6 +51,11 @@ export function MissionRuntimeProvider({
 }: {
   children: React.ReactNode;
 }) {
+  const { authStatus, authPrincipal } = useAuth();
+  return <AuthenticatedMissionRuntime key={JSON.stringify([authStatus, authPrincipal])}>{children}</AuthenticatedMissionRuntime>;
+}
+
+function AuthenticatedMissionRuntime({ children }: { children: React.ReactNode }) {
   const { authStatus } = useAuth();
   const [missions, setMissions] = useState<Record<string, MissionSummary>>({});
   const [activeMissionId, setActiveMissionId] = useState<string | null>(null);
@@ -59,12 +64,21 @@ export function MissionRuntimeProvider({
   const missionsRef = useRef<Record<string, MissionSummary>>({});
   const activeVolIdRef = useRef<string | null>(null);
   const detailRequestRef = useRef(0);
+  const catalogRequestRef = useRef(0);
+  const lifetime = useRef<AbortController | null>(null);
+  useEffect(() => {
+    lifetime.current = new AbortController();
+    return () => {
+      lifetime.current?.abort();
+    };
+  }, []);
 
   const refreshSelectedMission = useCallback(async (volId: string) => {
     const request = ++detailRequestRef.current;
     try {
-      const detail = await fetchMissionDetail(volId);
+      const detail = await fetchMissionDetail(volId, lifetime.current?.signal);
       if (
+        lifetime.current?.signal.aborted ||
         request !== detailRequestRef.current ||
         activeVolIdRef.current !== volId
       ) {
@@ -91,32 +105,18 @@ export function MissionRuntimeProvider({
   );
 
   const refreshSummary = useCallback(async () => {
+    const request = ++catalogRequestRef.current;
     try {
-      const catalog = await fetchMissionCatalog(100, 0);
+      const catalog = await fetchMissionCatalog(100, 0, lifetime.current?.signal);
+      while (catalog.items.length < catalog.total) {
+        if (lifetime.current?.signal.aborted || request !== catalogRequestRef.current) return;
+        const page = await fetchMissionCatalog(100, catalog.items.length, lifetime.current?.signal);
+        if (!page.items.length) break;
+        catalog.items.push(...page.items);
+      }
+      if (lifetime.current?.signal.aborted || request !== catalogRequestRef.current) return;
       const current = activeVolIdRef.current;
-      const map = Object.fromEntries(
-        catalog.items.map((mission) => {
-          const summary = missionSummaryFromCatalog(mission);
-          const selectedDetail =
-            mission.vol_id === current
-              ? missionsRef.current[mission.vol_id]
-              : undefined;
-          return [
-            mission.vol_id,
-            selectedDetail?.stage_runs
-              ? {
-                  ...selectedDetail,
-                  ...summary,
-                  services: selectedDetail.services,
-                  logs: selectedDetail.logs,
-                  stage_runs: selectedDetail.stage_runs,
-                  parameters: selectedDetail.parameters,
-                  products: selectedDetail.products,
-                }
-              : summary,
-          ];
-        }),
-      );
+      const map = catalogueWithSelectedDetail(catalog.items, missionsRef.current, current);
       const selected = autoSelectMission(map, current);
       missionsRef.current = map;
       setMissions(map);
@@ -134,16 +134,17 @@ export function MissionRuntimeProvider({
   useEffect(() => {
     if (authStatus !== "authenticated") return;
     const initialLoad = window.setTimeout(() => void refreshSummary(), 0);
-    const interval = window.setInterval(() => void refreshSummary(), 3_000);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") void refreshSummary();
+    }, 30_000);
+    const visible = () => { if (document.visibilityState === "visible") void refreshSummary(); };
+    document.addEventListener("visibilitychange", visible);
     return () => {
       window.clearTimeout(initialLoad);
       window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", visible);
     };
   }, [authStatus, refreshSummary]);
-
-  useEffect(() => {
-    activeVolIdRef.current = activeMissionId;
-  }, [activeMissionId]);
 
   useEffect(() => {
     if (authStatus !== "authenticated") return;
@@ -158,7 +159,10 @@ export function MissionRuntimeProvider({
         try {
           const payload = parseStatusPayload(JSON.parse(event.data));
           const existing = missionsRef.current[payload.vol_id];
-          if (!existing || existing.stage_runs?.length) return;
+          if (!existing || existing.stage_runs?.length) {
+            if (activeVolIdRef.current === payload.vol_id) void refreshSelectedMission(payload.vol_id);
+            return;
+          }
           const services = {
             ...existing.services,
             ...(payload.service ? { [payload.service]: payload } : {}),
@@ -209,7 +213,7 @@ export function MissionRuntimeProvider({
       ws?.close();
       setWsConnected(false);
     };
-  }, [authStatus]);
+  }, [authStatus, refreshSelectedMission]);
 
   const activeMission = activeMissionId
     ? missions[activeMissionId] ?? null

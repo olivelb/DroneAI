@@ -24,6 +24,7 @@ from sqlalchemy.orm import (
 )
 
 from shared.config import DATABASE_URL
+from shared.database_settings import database_pool_options
 from shared.tenancy import (
     LEGACY_ORGANIZATION_ID,
     current_organization_id,
@@ -49,8 +50,7 @@ def get_engine() -> Any:
     if _engine is None:
         _engine = create_engine(
             DATABASE_URL,
-            pool_size=5,
-            max_overflow=10,
+            **database_pool_options(),
             pool_pre_ping=True,
             echo=False,
         )

@@ -314,14 +314,6 @@ def export_colmap_subset(
         for image_id, image in images.items()
         if image["name"] in selected_names
     }
-    used_camera_ids: set[int] = {
-        image["camera_id"] for image in filtered_images.values()
-    }
-    filtered_cameras: dict[int, ColmapCameraRecord] = {
-        camera_id: camera
-        for camera_id, camera in cameras.items()
-        if camera_id in used_camera_ids
-    }
     timings["select_cameras"] = perf_counter() - phase_started
 
     phase_started = perf_counter()
@@ -335,6 +327,12 @@ def export_colmap_subset(
     else:
         visible_point_ids = point_ids
     crops = image_crops or {}
+    unknown_crop_names = set(crops) - selected_names
+    if unknown_crop_names:
+        raise ValueError(
+            "native image crops reference images outside the requested subset: "
+            + ", ".join(sorted(unknown_crop_names))
+        )
     filtered_points: dict[int, ColmapPointRecord] = {}
     rejected_for_restricted_track = 0
     observations_rejected_outside_native_crops = 0
@@ -375,12 +373,41 @@ def export_colmap_subset(
             for point_id, point in filtered_points.items()
             if point_id in retained_ids
         }
-    valid_point_ids = set(filtered_points)
-    for image in filtered_images.values():
+    selected_images_before_support_filter = len(filtered_images)
+    retained_observations = {
+        (image_id, point2d_index): point_id
+        for point_id, point in filtered_points.items()
+        for image_id, point2d_index in point["track"]
+    }
+    for image_id, image in filtered_images.items():
         image["point3D_ids"] = [
-            point_id if point_id in valid_point_ids else -1
-            for point_id in image["point3D_ids"]
+            (
+                point_id
+                if retained_observations.get((image_id, point2d_index)) == point_id
+                else -1
+            )
+            for point2d_index, point_id in enumerate(image["point3D_ids"])
         ]
+    filtered_images = {
+        image_id: image
+        for image_id, image in filtered_images.items()
+        if any(point_id != -1 for point_id in image["point3D_ids"])
+    }
+    images_rejected_without_point_support = (
+        selected_images_before_support_filter - len(filtered_images)
+    )
+    if not filtered_images:
+        raise RuntimeError(
+            "COLMAP subset has no images with retained 3D observations"
+        )
+    used_camera_ids = {
+        image["camera_id"] for image in filtered_images.values()
+    }
+    filtered_cameras: dict[int, ColmapCameraRecord] = {
+        camera_id: camera
+        for camera_id, camera in cameras.items()
+        if camera_id in used_camera_ids
+    }
     timings["filter_points"] = perf_counter() - phase_started
     phase_started = perf_counter()
 
@@ -396,11 +423,17 @@ def export_colmap_subset(
     timings["write_sparse"] = perf_counter() - phase_started
     phase_started = perf_counter()
 
+    supported_image_names = {
+        image["name"] for image in filtered_images.values()
+    }
     _write_native_image_regions(
         Path(target_dir) / "image_regions.tsv",
         filtered_images,
         filtered_cameras,
-        crops,
+        {
+            name: crop for name, crop in crops.items()
+            if name in supported_image_names
+        },
     )
     timings["write_regions"] = perf_counter() - phase_started
     phase_started = perf_counter()
@@ -423,6 +456,10 @@ def export_colmap_subset(
         "process_peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         "sparse_path": str(target_sparse),
         "selected_images": len(filtered_images),
+        "selected_images_before_support_filter": (
+            selected_images_before_support_filter
+        ),
+        "images_rejected_without_point_support": images_rejected_without_point_support,
         "points_before_cap": points_before_cap,
         "exported_points": len(filtered_points),
         "max_points": max_points,
@@ -433,7 +470,7 @@ def export_colmap_subset(
         "observations_rejected_outside_native_crops": (
             observations_rejected_outside_native_crops
         ),
-        "track_scope": "selected-cameras-and-native-crops-v1",
+        "track_scope": "selected-cameras-native-crops-and-supported-images-v2",
         "exported_observations": sum(exported_track_lengths),
         "minimum_exported_track_length": (
             min(exported_track_lengths) if exported_track_lengths else None
