@@ -77,6 +77,7 @@ jobs:
             anchore/syft:v1.50.0@sha256:1288ea4c8b38767b4e620c1e312c8cb26b6e887a99b4f07ab6cd19fc6f225026 \
             "docker:${{ matrix.image }}" \
             --output "cyclonedx-json=/output/${{ matrix.artifact }}.cdx.json"
+      # Large COLMAP layers can exceed Trivy's five-minute default on hosted runners.
       - name: Record HIGH and CRITICAL image vulnerabilities
         run: |
           mkdir -p .trivy-cache
@@ -85,7 +86,7 @@ jobs:
             --volume "$PWD/.trivy-cache:/root/.cache" \
             --volume "$PWD/supply-chain:/output" \
             aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c \
-            image --image-src docker --scanners vuln \
+            image --timeout 15m --image-src docker --scanners vuln \
             --severity HIGH,CRITICAL --format json \
             --output "/output/${{ matrix.artifact }}.trivy.json" \
             "${{ matrix.image }}"
@@ -95,7 +96,7 @@ jobs:
           --volume /var/run/docker.sock:/var/run/docker.sock
           --volume "$PWD/.trivy-cache:/root/.cache"
           aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
-          image --image-src docker --scanners vuln --ignore-unfixed
+          image --timeout 15m --image-src docker --scanners vuln --ignore-unfixed
           --severity HIGH,CRITICAL --exit-code 1
           "${{ matrix.image }}"
       - name: Upload CUDA image supply-chain evidence
