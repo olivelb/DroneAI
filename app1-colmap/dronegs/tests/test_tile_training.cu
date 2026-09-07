@@ -7,6 +7,10 @@
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include "dronegs/training_benchmark.hpp"
 #include <stdexcept>
 
 #include <jpeglib.h>
@@ -104,6 +108,116 @@ dronegs::Scene make_corner_supported_scene() {
         }
     }
     return scene;
+}
+
+std::string read_bytes(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) throw std::runtime_error("cannot read test artifact");
+    return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+}
+
+void test_periodic_evaluation(const std::filesystem::path& root, dronegs::Options options) {
+    auto scene = make_scene();
+    auto invalid = options;
+    invalid.test_every = 2U;
+    invalid.eval_every = 1U;
+    auto invalid_gaussians = dronegs::initialize_fixed_topology(scene);
+    bool missing_held_out_rejected = false;
+    try { static_cast<void>(dronegs::train_ordered_mrnf(invalid, scene, invalid_gaussians)); }
+    catch (const std::invalid_argument&) { missing_held_out_rejected = true; }
+    if (!missing_held_out_rejected) throw std::runtime_error("periodic evaluation accepted no supported held-out frames");
+    auto held_out = scene.images.front();
+    held_out.id = 2U;
+    held_out.name = "held-out.jpg";
+    scene.images.push_back(held_out);
+    write_fixture_image(root / "images" / held_out.name);
+    options.iterations = 600U;
+    options.sh_degree_interval = 100U;
+    options.test_every = 2U;
+    options.prefetch_depth = 2U;
+    options.decode_workers = 2U;
+    options.background_mode = "random";
+    options.loss_pixel_mask = "all";
+    options.checkpoint_every = 600U;
+    options.dataset_fingerprint = "periodic-evaluation-fixture";
+    // Use one initial checkpoint: initial loss uses GPU atomic reductions and can
+    // differ by one ULP between independent processes, outside optimizer state.
+    options.output_path = root / "seed";
+    options.checkpoint_path = options.output_path / "training.ckpt";
+    options.stop_after = 1U;
+    auto seed = dronegs::initialize_fixed_topology(scene);
+    static_cast<void>(dronegs::train_ordered_mrnf(options, scene, seed));
+    options.resume_from = options.checkpoint_path;
+    options.stop_after = 0U;
+    options.output_path = root / "baseline";
+    options.checkpoint_path = options.output_path / "training.ckpt";
+    std::filesystem::create_directories(options.output_path);
+    auto baseline = dronegs::initialize_fixed_topology(scene);
+    const auto baseline_metrics = dronegs::train_ordered_mrnf(options, scene, baseline);
+    const auto expected = read_bytes(options.checkpoint_path);
+    if (baseline_metrics.gaussians_added == 0U) throw std::runtime_error("evaluation fixture did not exercise Gaussian growth");
+    if (baseline_metrics.periodic_evaluation_seconds != 0.0) {
+        throw std::runtime_error("disabled evaluations consumed time");
+    }
+    options.output_path = root / "observed";
+    options.checkpoint_path = options.output_path / "training.ckpt";
+    // Evaluate immediately before refinement at step 200 and near completion.
+    options.eval_every = 199U;
+    options.eval_start = 199U;
+    auto observed = dronegs::initialize_fixed_topology(scene);
+    const auto observed_metrics = dronegs::train_ordered_mrnf(options, scene, observed);
+    if (read_bytes(options.checkpoint_path) != expected ||
+        std::abs(*observed_metrics.final_held_out_psnr - *baseline_metrics.final_held_out_psnr) > 1.0e-5F ||
+        observed_metrics.periodic_evaluation_seconds <= 0.0 ||
+        observed_metrics.evaluation_seconds < observed_metrics.periodic_evaluation_seconds ||
+        observed_metrics.training_seconds <= 0.0) {
+        throw std::runtime_error("periodic evaluations changed optimizer/topology state or timings");
+    }
+    const auto curve = read_bytes(options.output_path / "evaluation" / "curve.csv");
+    if (curve.find("iteration_199,199,1,") == std::string::npos ||
+        curve.find("iteration_398,398,1,") == std::string::npos ||
+        curve.find("final,600,1,") == std::string::npos ||
+        curve.find("iteration_600") != std::string::npos ||
+        std::filesystem::exists(options.output_path / "evaluation" / "predictions")) {
+        throw std::runtime_error("periodic evaluation curve stages/images mismatch");
+    }
+    options.output_path = root / "paused";
+    options.checkpoint_path = options.output_path / "training.ckpt";
+    options.stop_after = 199U;
+    std::filesystem::create_directories(options.output_path);
+    auto paused = dronegs::initialize_fixed_topology(scene);
+    const auto pause_metrics = dronegs::train_ordered_mrnf(options, scene, paused);
+    if (pause_metrics.completed || read_bytes(options.output_path / "evaluation" / "curve.csv").find(
+            "iteration_199,199,1,") == std::string::npos) {
+        throw std::runtime_error("paused training missed scheduled evaluation");
+    }
+    options.resume_from = options.checkpoint_path;
+    options.output_path = root / "resumed";
+    options.checkpoint_path = options.output_path / "training.ckpt";
+    options.stop_after = 0U;
+    auto resumed = dronegs::initialize_fixed_topology(scene);
+    static_cast<void>(dronegs::train_ordered_mrnf(options, scene, resumed));
+    if (read_bytes(options.checkpoint_path) != expected ||
+        read_bytes(options.output_path / "evaluation" / "metrics.csv").find("stage,held_out_index") != 0U ||
+        read_bytes(options.output_path / "evaluation" / "curve.csv").find("iteration_398,398,199,") == std::string::npos) {
+        throw std::runtime_error("resumed evaluation changed checkpoint or lost CSV headers/session identity");
+    }
+    // Benchmark must load the final checkpoint repeatedly without changing it or exporting a model.
+    options.resume_from = options.checkpoint_path;
+    options.output_path = root / "benchmark";
+    std::filesystem::create_directories(options.output_path);
+    options.checkpoint_path.clear();
+    options.checkpoint_every = 0U;
+    options.eval_every = 0U;
+    options.eval_start = 0U;
+    auto initial = dronegs::initialize_fixed_topology(scene);
+    dronegs::benchmark_training_steps(options, scene, initial, {.warmups=1U, .repeats=2U, .views=2U});
+    const auto csv = read_bytes(options.output_path / "step_benchmark.csv");
+    if (read_bytes(options.resume_from) != expected || std::count(csv.begin(), csv.end(), '\n') != 7 ||
+        csv.find(",600,601,") == std::string::npos ||
+        std::filesystem::exists(options.output_path / "point_cloud.ply")) {
+        throw std::runtime_error("checkpoint benchmark modified its input or emitted invalid samples");
+    }
 }
 
 }  // namespace
@@ -227,6 +341,16 @@ int main() {
         const dronegs::TrainingCheckpointProgress saved_progress{};
         checkpoint_source.save_checkpoint(
             checkpoint, saved_progress, "tile-dataset", "tile-config");
+        const auto before_evaluation = read_bytes(checkpoint);
+        const dronegs::RasterCamera evaluation_camera{
+            .fx=30.0F, .fy=30.0F, .cx=8.0F, .cy=8.0F, .width=16U, .height=16U};
+        const std::vector<std::uint8_t> target(16U * 16U * 3U, 128U);
+        static_cast<void>(checkpoint_source.evaluate_quality(evaluation_camera, target.data(), target.size()));
+        const auto after_evaluation = root / "after-evaluation.ckpt";
+        checkpoint_source.save_checkpoint(after_evaluation, saved_progress, "tile-dataset", "tile-config");
+        if (read_bytes(after_evaluation) != before_evaluation) {
+            throw std::runtime_error("forward evaluation changed serialized optimizer/model state");
+        }
         dronegs::OrderedAlphaTrainingContext checkpoint_restored(
             gaussians, 16U * 16U, 2U, 100U,
             dronegs::MrnfOptimizerProfile::reference_absolute,
@@ -238,13 +362,14 @@ int main() {
             throw std::runtime_error(
                 "opacity-SH checkpoint v4 round-trip mismatch");
         }
+        test_periodic_evaluation(root, options);
         std::filesystem::remove_all(root);
         std::cout << "DroneGS tile training test passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "DroneGS tile training test failed: "
                   << error.what() << '\n';
-        std::filesystem::remove_all(root);
+        std::cerr << "Artifacts retained at " << root << std::endl;
         return 1;
     }
 }

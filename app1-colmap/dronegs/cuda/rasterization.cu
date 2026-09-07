@@ -53,7 +53,9 @@
  * GPL-3.0-or-later from dev.15 onward.
  */
 #include "dronegs/rasterization.hpp"
+#include "dronegs/geometry_diagnostics.hpp"
 #include "dronegs/ordered_training.hpp"
+#include "dronegs/checkpoint_writer.hpp"
 #include "dronegs/topology_percentiles.hpp"
 #include "topology_compaction.cuh"
 #include "topology_snapshot.cuh"
@@ -1237,6 +1239,9 @@ __global__ void initialize_bucket_tiles_kernel(
     }
 }
 
+#include "geometry_diagnostics.cuh"
+
+template<bool geometry = false>
 __global__ void render_alpha_tiles_kernel(
     const DeviceProjectedRecord* records,
     const std::uint32_t* record_indices,
@@ -1250,10 +1255,14 @@ __global__ void render_alpha_tiles_kernel(
     std::uint32_t* pixel_contributions,
     std::uint32_t* tile_max_contributions,
     std::uint32_t* bucket_checkpoints,
-    DeviceRenderStats* stats) {
+    DeviceRenderStats* stats,
+    const DeviceGeometryRecord* geometry_records = nullptr,
+    float* geometry_output = nullptr, DeviceRasterCamera geometry_camera = {}) {
     constexpr std::uint32_t threads_per_tile =
         alpha_tile_width * alpha_tile_height;
     __shared__ DeviceProjectedSplat batch[threads_per_tile];
+    __shared__ DeviceGeometryRecord geometry_batch[geometry ? threads_per_tile : 1U];
+    GeometryMoments geometry_moments;
     __shared__ std::uint32_t block_max_contributions;
 
     const std::uint32_t thread_index =
@@ -1297,6 +1306,8 @@ __global__ void render_alpha_tiles_kernel(
         if (load_index < end) {
             batch[thread_index] =
                 records[record_indices[load_index]].splat;
+            if constexpr (geometry) geometry_batch[thread_index] =
+                geometry_records[record_indices[load_index]];
         }
         __syncthreads();
         const auto batch_count = static_cast<std::uint32_t>(
@@ -1362,6 +1373,10 @@ __global__ void render_alpha_tiles_kernel(
                 ++contributing;
                 contributions = possible_contributions;
                 const float weight = remaining * alpha;
+                if constexpr (geometry) geometry_moments.add(weight, splat.depth,
+                    geometry_batch[index],
+                    (static_cast<float>(x)+0.5F-geometry_camera.cx)/geometry_camera.fx,
+                    (static_cast<float>(y)+0.5F-geometry_camera.cy)/geometry_camera.fy);
                 red += weight * splat.color[0];
                 green += weight * splat.color[1];
                 blue += weight * splat.color[2];
@@ -1381,6 +1396,8 @@ __global__ void render_alpha_tiles_kernel(
         rgb[pixel * 3U + 1U] = green + remaining * background_g;
         rgb[pixel * 3U + 2U] = blue + remaining * background_b;
         transmittance[pixel] = remaining;
+        if constexpr (geometry) geometry_moments.write(
+            geometry_output + pixel * geometry_channel_count, 1.0F-remaining);
         if (active_ends != nullptr) {
             active_ends[pixel] = active_end;
         }
@@ -4221,44 +4238,15 @@ std::uint64_t checkpoint_checksum(
     return hash;
 }
 
-void sync_checkpoint_file(const std::filesystem::path& path) {
-#ifndef _WIN32
-    const int descriptor = ::open(path.c_str(), O_RDONLY);
-    if (descriptor < 0) {
-        throw std::runtime_error(
-            "cannot open checkpoint for fsync: " + path.string());
-    }
-    const int result = ::fsync(descriptor);
-    ::close(descriptor);
-    if (result != 0) {
-        throw std::runtime_error(
-            "cannot fsync checkpoint: " + path.string());
-    }
-#else
-    static_cast<void>(path);
-#endif
-}
-
-void sync_checkpoint_directory(const std::filesystem::path& path) {
-#ifndef _WIN32
-    const int descriptor =
-        ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY);
-    if (descriptor >= 0) {
-        static_cast<void>(::fsync(descriptor));
-        ::close(descriptor);
-    }
-#else
-    static_cast<void>(path);
-#endif
-}
-
 }  // namespace
 
 static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
     const std::array<float, 3>& background,
     const std::vector<float>* image_gradient,
-    std::uint32_t active_sh_degree) {
+    std::uint32_t active_sh_degree,
+    GeometryRenderOutput* geometry_output = nullptr,
+    bool fastgs = false, bool opacity_sh = true) {
     validate_inputs(gaussians, camera, background);
     if (active_sh_degree > maximum_sh_degree) {
         throw std::invalid_argument("active SH degree must be between 0 and 3");
@@ -4271,6 +4259,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
             "tiled alpha backward image gradient shape is invalid");
     }
     const auto empty_result = [&]() {
+        if (geometry_output != nullptr) geometry_output->channels.assign(
+            pixel_count * geometry_channel_count, 0.0F);
         AlphaRenderGradients gradients{};
         if (image_gradient != nullptr) {
             gradients.dc =
@@ -4327,7 +4317,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_records.data(), device_projected_sh_basis.data(),
         device_depth_keys.data(),
         device_visible_splats.data(), active_sh_degree,
-        active_sh_degree, 0.0F, false);
+        opacity_sh ? active_sh_degree : 0U, 0.0F, fastgs);
     require_cuda(cudaGetLastError(), "launch alpha projection");
 
     sort_projected_records(
@@ -4400,6 +4390,24 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     const dim3 render_threads(alpha_tile_width, alpha_tile_height);
     const dim3 render_blocks(
         device_camera.tiles_x, device_camera.tiles_y);
+    std::optional<DeviceAllocation<DeviceGeometryRecord>> device_geometry_records;
+    std::optional<DeviceAllocation<float>> device_geometry_output;
+    if (geometry_output != nullptr) {
+        device_geometry_records.emplace(gaussians.size());
+        device_geometry_output.emplace(pixel_count * geometry_channel_count);
+        build_geometry_records_kernel<<<projection_blocks, threads_per_block>>>(
+            device_gaussians.data(), device_sorted_depth_keys.data(), gaussian_count,
+            device_camera, device_geometry_records->data());
+        require_cuda(cudaGetLastError(), "build diagnostic geometry records");
+        render_alpha_tiles_kernel<true><<<render_blocks, render_threads>>>(
+            device_sorted_records.data(), device_sorted_record_indices.data(),
+            device_tile_starts.data(), device_tile_ends.data(), camera.width, camera.height,
+            fastgs ? fastgs_maximum_fragment_alpha : alpha_maximum,
+            background[0], background[1], background[2],
+            device_rgb.data(), device_transmittance.data(), device_active_ends.data(),
+            nullptr, nullptr, nullptr, nullptr, device_stats.data(),
+            device_geometry_records->data(), device_geometry_output->data(), device_camera);
+    } else {
     render_alpha_tiles_kernel<<<render_blocks, render_threads>>>(
         device_sorted_records.data(),
         device_sorted_record_indices.data(),
@@ -4411,6 +4419,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_active_ends.data(),
         nullptr, nullptr, nullptr, nullptr,
         device_stats.data());
+    }
     require_cuda(cudaGetLastError(), "launch tiled alpha renderer");
 
     std::optional<DeviceAllocation<float>> device_image_gradient;
@@ -4488,6 +4497,10 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         .transmittance = std::vector<float>(pixel_count),
         .stats = {},
     };
+    if (geometry_output != nullptr) {
+        geometry_output->channels.resize(pixel_count * geometry_channel_count);
+        device_geometry_output->copy_to_host(geometry_output->channels.data());
+    }
     device_rgb.copy_to_host(output.rgb.data());
     device_transmittance.copy_to_host(output.transmittance.data());
     unsigned long long visible_splats = 0U;
@@ -4535,6 +4548,17 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         .render = std::move(output),
         .gradients = std::move(gradients),
     };
+}
+
+GeometryRenderOutput render_geometry_tiled_cuda(
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
+    const GeometryRenderOptions& options) {
+    if (static_cast<std::uint64_t>(camera.width) * camera.height > 16777216ULL)
+        throw std::invalid_argument("geometry diagnostic view exceeds 16M pixels; use fixed crops");
+    GeometryRenderOutput output;
+    output.appearance = render_alpha_cuda_impl(gaussians, camera, {0,0,0}, nullptr,
+        options.sh_degree, &output, options.fastgs, options.opacity_sh).render;
+    return output;
 }
 
 AlphaRenderOutput render_alpha_tiled_cuda(
@@ -5047,7 +5071,7 @@ struct OrderedAlphaTrainingContext::Impl {
             std::max<std::uint64_t>(1U, maximum_steps / 5U);
         const bool collect_stage_telemetry =
             apply_update &&
-            (telemetry_step == 2U ||
+            (force_gpu_stage_telemetry || telemetry_step == 2U ||
              (maximum_steps > 1U &&
               telemetry_step == maximum_steps - 1U) ||
              (telemetry_step > 1U &&
@@ -6224,6 +6248,7 @@ struct OrderedAlphaTrainingContext::Impl {
     float position_learning_rate_scale = 1.0F;
     MrnfLearningRates learning_rates{};
     std::optional<MrnfOptimizerTelemetry> latest_telemetry;
+    bool force_gpu_stage_telemetry = false;
     std::optional<MrnfGpuStageTelemetry> latest_gpu_stage_telemetry;
     float minimum_log_scale = -16.0F;
     float maximum_log_scale = 16.0F;
@@ -6374,6 +6399,10 @@ float OrderedAlphaTrainingContext::evaluate(
         camera, target_rgb, target_bytes, false, false,
         nullptr, nullptr, nullptr, mse_blend, true,
         RefinementStatisticsMode::collect, objective_policy);
+}
+
+void OrderedAlphaTrainingContext::set_gpu_stage_telemetry_enabled(bool enabled) {
+    impl_->force_gpu_stage_telemetry = enabled;
 }
 
 ImageQualityMetrics OrderedAlphaTrainingContext::evaluate_quality(
@@ -6595,206 +6624,25 @@ OrderedAlphaTrainingContext::capture_checkpoint(
 
 void TrainingCheckpointSnapshot::write_to(
     const std::filesystem::path& path) const {
-    const auto& snapshot = *impl_;
-    const auto temporary = path.string() + ".tmp";
-    std::ofstream stream(
-        temporary, std::ios::binary | std::ios::trunc);
-    if (!stream) {
-        throw std::runtime_error(
-            "cannot create checkpoint: " + temporary);
-    }
-    const auto write_value = [&stream](const auto& value) {
-        stream.write(
-            reinterpret_cast<const char*>(&value),
-            static_cast<std::streamsize>(sizeof(value)));
-    };
-    const auto write_string =
-        [&stream, &write_value](const std::string& value) {
-            const auto size =
-                static_cast<std::uint64_t>(value.size());
-            write_value(size);
-            stream.write(
-                value.data(),
-                static_cast<std::streamsize>(value.size()));
-        };
-    const auto write_device =
-        [&stream](const auto& allocation, std::size_t count) {
-            using value_type = std::remove_cv_t<
-                std::remove_pointer_t<
-                    decltype(allocation.data())>>;
-            if (count != 0U) {
-                stream.write(
-                    reinterpret_cast<const char*>(allocation.data()),
-                    static_cast<std::streamsize>(
-                        count * sizeof(value_type)));
-            }
-        };
-    const auto write_moment_pairs =
-        [&stream](const std::vector<float2>& moments,
-                  std::size_t count) {
-            if (count > moments.size()) {
-                throw std::logic_error(
-                    "checkpoint moment snapshot is truncated");
-            }
-            if (count == 0U) {
-                return;
-            }
-            constexpr std::size_t chunk_size = 1U << 20U;
-            std::vector<float> chunk(std::min(count, chunk_size));
-            for (std::size_t component = 0U; component < 2U;
-                 ++component) {
-                for (std::size_t offset = 0U; offset < count;
-                     offset += chunk_size) {
-                    const auto size =
-                        std::min(chunk_size, count - offset);
-                    for (std::size_t index = 0U; index < size; ++index) {
-                        const auto pair = moments[offset + index];
-                        chunk[index] = component == 0U ? pair.x : pair.y;
-                    }
-                    stream.write(
-                        reinterpret_cast<const char*>(chunk.data()),
-                        static_cast<std::streamsize>(
-                            size * sizeof(float)));
-                }
-            }
-        };
-    constexpr std::array<char, 16> magic{
-        'D', 'R', 'O', 'N', 'E', 'G', 'S', '-', 'C', 'K', 'P', 'T',
-        '-', 'V', '1', '\0'};
-    stream.write(magic.data(), magic.size());
-    constexpr std::uint32_t format_version = 5U;
-    write_value(format_version);
-    write_string(snapshot.dataset_fingerprint);
-    write_string(snapshot.configuration_fingerprint);
-    write_value(snapshot.progress.completed_iteration);
-    write_value(snapshot.progress.topology_refinements);
-    write_value(snapshot.progress.gaussians_added);
-    write_value(snapshot.progress.gaussians_pruned);
-    write_value(snapshot.progress.gaussian_slots_reused);
-    write_value(snapshot.progress.topology_compactions);
-    write_value(snapshot.progress.initial_loss);
-    const std::uint8_t has_initial_held_out_psnr =
-        snapshot.progress.initial_held_out_psnr.has_value() ? 1U : 0U;
-    const std::uint8_t has_initial_held_out_ssim =
-        snapshot.progress.initial_held_out_ssim.has_value() ? 1U : 0U;
-    write_value(has_initial_held_out_psnr);
-    if (has_initial_held_out_psnr) {
-        write_value(*snapshot.progress.initial_held_out_psnr);
-    }
-    write_value(has_initial_held_out_ssim);
-    if (has_initial_held_out_ssim) {
-        write_value(*snapshot.progress.initial_held_out_ssim);
-    }
-    const std::uint8_t has_initial_pixel_weighted_psnr =
-        snapshot.progress.initial_pixel_weighted_psnr.has_value()
-            ? 1U
-            : 0U;
-    const std::uint8_t has_initial_pixel_weighted_ssim =
-        snapshot.progress.initial_pixel_weighted_ssim.has_value()
-            ? 1U
-            : 0U;
-    write_value(has_initial_pixel_weighted_psnr);
-    if (has_initial_pixel_weighted_psnr) {
-        write_value(*snapshot.progress.initial_pixel_weighted_psnr);
-    }
-    write_value(has_initial_pixel_weighted_ssim);
-    if (has_initial_pixel_weighted_ssim) {
-        write_value(*snapshot.progress.initial_pixel_weighted_ssim);
-    }
-    write_value(snapshot.optimizer_steps);
-    write_value(snapshot.maximum_steps);
-    write_value(snapshot.noise_seed);
-    const auto count = snapshot.gaussian_count;
-    const auto portable_count = static_cast<std::uint64_t>(count);
-    write_value(portable_count);
-    write_value(snapshot.maximum_active_sh_degree);
-    write_value(snapshot.sh_degree_interval);
-    write_value(snapshot.active_sh_degree);
-    const auto profile =
-        static_cast<std::uint32_t>(snapshot.optimizer_profile);
-    write_value(profile);
-    const std::uint8_t portable_fastgs =
-        snapshot.fastgs_compatibility ? 1U : 0U;
-    write_value(portable_fastgs);
-    write_value(snapshot.position_learning_rate_scale);
-    write_value(snapshot.minimum_log_scale);
-    write_value(snapshot.maximum_log_scale);
-    write_value(snapshot.beta_first_power);
-    write_value(snapshot.beta_second_power);
-    write_device(snapshot.gaussians, count);
-    write_device(snapshot.first_dc, count * 3U);
-    write_device(snapshot.second_dc, count * 3U);
-    write_moment_pairs(
-        snapshot.sh_rest_moments,
-        count * maximum_sh_rest_values);
-    write_device(snapshot.first_opacity, count);
-    write_device(snapshot.second_opacity, count);
-    write_moment_pairs(
-        snapshot.opacity_sh_moments,
-        count * maximum_opacity_sh_coefficients);
-    write_device(snapshot.first_xyz, count * 3U);
-    write_device(snapshot.second_xyz, count * 3U);
-    write_device(snapshot.first_log_scale, count * 3U);
-    write_device(snapshot.second_log_scale, count * 3U);
-    write_device(snapshot.first_rotation, count * 4U);
-    write_device(snapshot.second_rotation, count * 4U);
-    write_device(snapshot.refine_weight_max, count);
-    write_device(snapshot.visibility_count, count);
-    write_device(snapshot.edge_weight_sum, count);
-    write_device(snapshot.absgrad_sum, count);
-    write_device(snapshot.absgrad_observation_count, count);
-    stream.flush();
-    if (!stream) {
-        throw std::runtime_error(
-            "failed to write checkpoint: " + temporary);
-    }
-    stream.close();
-    const auto payload_bytes =
-        static_cast<std::uint64_t>(
-            std::filesystem::file_size(temporary));
-    const auto checksum =
-        checkpoint_checksum(temporary, payload_bytes);
-    {
-        std::ofstream trailer(temporary, std::ios::binary | std::ios::app);
-        trailer.write(
-            reinterpret_cast<const char*>(&checksum),
-            static_cast<std::streamsize>(sizeof(checksum)));
-        trailer.flush();
-        if (!trailer) {
-            throw std::runtime_error(
-                "failed to append checkpoint checksum");
-        }
-    }
-    sync_checkpoint_file(temporary);
-    std::error_code error;
-    std::filesystem::rename(temporary, path, error);
-    if (error) {
-        const auto backup = path.string() + ".previous";
-        std::error_code backup_error;
-        std::filesystem::remove(backup, backup_error);
-        backup_error.clear();
-        if (std::filesystem::exists(path)) {
-            std::filesystem::rename(path, backup, backup_error);
-        }
-        if (backup_error) {
-            throw std::runtime_error(
-                "cannot preserve previous checkpoint: " +
-                backup_error.message());
-        }
-        error.clear();
-        std::filesystem::rename(temporary, path, error);
-        if (error && std::filesystem::exists(backup)) {
-            std::error_code restore_error;
-            std::filesystem::rename(backup, path, restore_error);
-        } else {
-            std::filesystem::remove(backup, backup_error);
-        }
-    }
-    if (error) {
-        throw std::runtime_error(
-            "cannot publish checkpoint: " + error.message());
-    }
-    sync_checkpoint_directory(path);
+#if DRONEGS_PROFILE_CHECKPOINT_WRITE_PHASES
+    checkpoint_io::WriteTimings phases;
+    checkpoint_io::write_checkpoint(
+        *impl_, path, checkpoint_io::default_checksum_mode, &phases);
+    std::cout << "{\"event\":\"checkpoint_write_phases\","
+        << "\"streaming_checksum\":" << (phases.checksum_inside_serialization ? "true" : "false")
+        << ",\"checksum_inside_serialization\":" << (phases.checksum_inside_serialization ? "true" : "false")
+        << ",\"payload_bytes\":" << phases.payload_bytes
+        << ",\"serialization_seconds\":" << phases.serialization_seconds
+        << ",\"checksum_seconds\":" << phases.checksum_seconds
+        << ",\"payload_flush_close_seconds\":" << phases.payload_flush_close_seconds
+        << ",\"trailer_seconds\":" << phases.trailer_seconds
+        << ",\"file_sync_seconds\":" << phases.file_sync_seconds
+        << ",\"publication_seconds\":" << phases.publication_seconds
+        << ",\"directory_sync_seconds\":" << phases.directory_sync_seconds
+        << ",\"total_seconds\":" << phases.total_seconds << "}\n" << std::flush;
+#else
+    checkpoint_io::write_checkpoint(*impl_, path);
+#endif
 }
 
 void OrderedAlphaTrainingContext::save_checkpoint(

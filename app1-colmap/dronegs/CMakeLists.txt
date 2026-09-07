@@ -143,12 +143,20 @@ target_compile_options(dronegs_cuda PRIVATE
     "$<$<COMPILE_LANGUAGE:CUDA>:${DRONEGS_CUDA_OPTIONS}>"
 )
 
+add_executable(dronegs_geometry_probe tools/geometry_probe.cpp)
+target_link_libraries(dronegs_geometry_probe PRIVATE dronegs_cuda)
+
 add_executable(dronegs src/main.cpp)
 target_link_libraries(dronegs PRIVATE dronegs_core dronegs_cuda)
+
+add_executable(dronegs_checkpoint_evaluation_probe tools/checkpoint_evaluation_probe.cpp)
+target_link_libraries(dronegs_checkpoint_evaluation_probe PRIVATE dronegs_cuda)
 
 if(DRONEGS_BUILD_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+    add_subdirectory(tests/checkpoint_writer)
 
     add_executable(dronegs_core_tests tests/test_core.cpp tests/test_topology_telemetry.cpp tests/test_topology_percentiles.cpp tests/test_refinement_workspace.cpp)
     target_link_libraries(dronegs_core_tests PRIVATE dronegs_core)
@@ -190,11 +198,37 @@ if(DRONEGS_BUILD_TESTS)
         dronegs_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     add_test(NAME dronegs_training_tests COMMAND dronegs_training_tests)
 
+    add_executable(dronegs_geometry_tests tests/test_geometry.cu)
+    target_link_libraries(dronegs_geometry_tests PRIVATE dronegs_cuda)
+    set_target_properties(dronegs_geometry_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    add_test(NAME dronegs_geometry_tests COMMAND dronegs_geometry_tests)
+    add_test(NAME dronegs_geometry_tool_tests COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geometry_diagnostics.py
+        $<TARGET_FILE:dronegs_geometry_probe>)
+    add_test(NAME dronegs_geometry_reference_tests COMMAND ${Python3_EXECUTABLE} -W error
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geometry_reference.py)
+
     add_executable(dronegs_tile_training_tests tests/test_tile_training.cu)
     target_link_libraries(dronegs_tile_training_tests PRIVATE dronegs_cuda)
     set_target_properties(
         dronegs_tile_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     add_test(NAME dronegs_tile_training_tests COMMAND dronegs_tile_training_tests)
+
+    add_executable(dronegs_checkpoint_evaluation_options_tests tests/test_checkpoint_evaluation_options.cpp)
+    target_link_libraries(dronegs_checkpoint_evaluation_options_tests PRIVATE dronegs_core)
+    add_test(NAME dronegs_checkpoint_evaluation_options_tests
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_checkpoint_evaluation_options_test.py
+            $<TARGET_FILE:dronegs_checkpoint_evaluation_options_tests>)
+    add_executable(dronegs_checkpoint_evaluation_gpu_tests tests/test_checkpoint_evaluation_gpu.cpp)
+    target_link_libraries(dronegs_checkpoint_evaluation_gpu_tests PRIVATE dronegs_cuda)
+    add_test(NAME dronegs_checkpoint_evaluation_gpu_tests
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_checkpoint_evaluation_options_test.py
+            $<TARGET_FILE:dronegs_checkpoint_evaluation_gpu_tests>)
+
+    add_test(NAME dronegs_training_benchmark_tool_tests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_training_benchmark_tool.py)
 
     add_test(
         NAME dronegs_lpips_tool_tests
@@ -203,6 +237,9 @@ if(DRONEGS_BUILD_TESTS)
 endif()
 
 if(DRONEGS_BUILD_BENCHMARKS)
+    add_executable(dronegs_training_step_benchmark src/main.cpp benchmarks/training_step_options.cpp)
+    target_compile_definitions(dronegs_training_step_benchmark PRIVATE DRONEGS_TRAINING_STEP_BENCHMARK=1)
+    target_link_libraries(dronegs_training_step_benchmark PRIVATE dronegs_cuda)
     add_executable(dronegs_topology_percentile_benchmark benchmarks/benchmark_topology_percentiles.cpp)
     target_link_libraries(dronegs_topology_percentile_benchmark PRIVATE dronegs_core)
     add_executable(dronegs_checkpoint_topology_benchmark benchmarks/benchmark_checkpoint_topology.cu)

@@ -75,7 +75,7 @@ const char* help_text() {
         "[--jpeg-idct-scale 0|1] [--test-every 0|N] "
         "[--test-split modulo|spatial-block] "
         "[--test-guard-percent 0..100] "
-        "[--save-eval-images 0|1] "
+        "[--save-eval-images 0|1] [--eval-every N] [--eval-start N] "
         "[--checkpoint-every N] [--checkpoint-path PATH] "
         "[--resume-from PATH] [--stop-after N] "
         "[--topology-cooldown N] "
@@ -104,7 +104,7 @@ Options parse_options(int argc, char** argv) {
         "--run-manifest", "--prefetch-depth", "--decode-workers",
         "--host-image-cache-mib",
         "--jpeg-idct-scale", "--test-every", "--test-split",
-        "--test-guard-percent", "--save-eval-images",
+        "--test-guard-percent", "--save-eval-images", "--eval-every", "--eval-start",
         "--checkpoint-every", "--checkpoint-path", "--resume-from",
         "--stop-after",
         "--topology-cooldown", "--photometric-finish",
@@ -203,6 +203,12 @@ Options parse_options(int argc, char** argv) {
         options.test_guard_percent = parse_u32(
             values.at("--test-guard-percent"),
             "--test-guard-percent");
+    }
+    if (values.contains("--eval-every")) {
+        options.eval_every = parse_unsigned(values.at("--eval-every"), "--eval-every");
+    }
+    if (values.contains("--eval-start")) {
+        options.eval_start = parse_unsigned(values.at("--eval-start"), "--eval-start");
     }
     if (values.contains("--save-eval-images")) {
         options.save_eval_images = parse_u32(
@@ -362,6 +368,14 @@ void validate_options(const Options& options) {
         options.test_every == 0U) {
         throw std::invalid_argument(
             "--test-guard-percent requires --test-every");
+    }
+    if ((options.eval_every != 0U && options.test_every < 2U) ||
+        options.eval_every > options.iterations ||
+        options.eval_start > options.iterations ||
+        (options.eval_start != 0U && options.eval_every == 0U)) {
+        throw std::invalid_argument(
+            "--eval-every requires held-out images; evaluation intervals/start "
+            "must not exceed --iter; --eval-start requires --eval-every");
     }
     if (options.save_eval_images > 1U) {
         throw std::invalid_argument(

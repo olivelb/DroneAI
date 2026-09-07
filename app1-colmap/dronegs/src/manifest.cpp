@@ -164,6 +164,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"decode_workers\": " << options.decode_workers << ",\n"
            << "    \"jpeg_idct_scale\": " << options.jpeg_idct_scale << ",\n"
            << "    \"test_every\": " << options.test_every << ",\n"
+           << "    \"eval_every\": " << options.eval_every << ",\n"
+           << "    \"eval_start\": " << options.eval_start << ",\n"
            << "    \"test_split\": \""
            << json_escape(options.test_split) << "\",\n"
            << "    \"test_guard_percent\": "
@@ -324,6 +326,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << measurements.checkpoint_write_seconds << ",\n"
            << "    \"evaluation_seconds\": "
            << measurements.evaluation_seconds << ",\n"
+           << "    \"periodic_evaluation_seconds\": "
+           << measurements.periodic_evaluation_seconds << ",\n"
            << "    \"final_ply_export_seconds\": "
            << measurements.export_seconds << ",\n"
            << "    \"checkpoint_seconds\": "
@@ -407,6 +411,13 @@ void write_completed_manifest(const Options& options, const Scene& scene,
             << "      \"sha256\": null, \"bytes\": "
             << std::filesystem::file_size(evaluation_csv) << "\n"
             << "    }";
+    }
+    const auto evaluation_curve = options.output_path / "evaluation" / "curve.csv";
+    if (std::filesystem::is_regular_file(evaluation_curve)) {
+        stream << ",\n    \"evaluation/curve.csv\": {\n      \"path\": \""
+               << json_escape(evaluation_curve.string()) << "\",\n"
+               << "      \"sha256\": null, \"bytes\": "
+               << std::filesystem::file_size(evaluation_curve) << "\n    }";
     }
     stream
            << "\n  },\n"

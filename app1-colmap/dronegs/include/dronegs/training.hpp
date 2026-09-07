@@ -147,6 +147,7 @@ struct TrainingMetrics {
     std::uint64_t topology_compactions = 0;
     std::uint32_t final_active_sh_degree = 0U;
     double evaluation_seconds = 0.0;
+    double periodic_evaluation_seconds = 0.0;
     std::optional<float> initial_held_out_psnr;
     std::optional<float> initial_held_out_ssim;
     std::optional<float> initial_pixel_weighted_psnr;
