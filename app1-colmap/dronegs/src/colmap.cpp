@@ -334,6 +334,18 @@ std::filesystem::path find_sparse_model(const std::filesystem::path& data_path) 
     throw std::runtime_error("COLMAP sparse binary model not found under " + data_path.string());
 }
 
+Scene load_colmap_camera_scene(const std::filesystem::path& data_path) {
+    const auto sparse = find_sparse_model(data_path);
+    Scene scene{
+        .cameras = load_cameras(sparse / "cameras.bin"),
+        .images = load_images(sparse / "images.bin"),
+        .points = {},
+    };
+    if (scene.cameras.empty() || scene.images.empty())
+        throw std::runtime_error("COLMAP camera scene must contain cameras and poses");
+    return scene;
+}
+
 Scene load_colmap_scene(const std::filesystem::path& data_path) {
     if (!std::filesystem::is_directory(data_path / "images")) {
         throw std::runtime_error("COLMAP dataset has no images directory");

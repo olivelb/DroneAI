@@ -8,6 +8,8 @@
 namespace dronegs {
 
 std::filesystem::path find_sparse_model(const std::filesystem::path& data_path);
+// Read poses/calibration without loading photos or sparse points.
+Scene load_colmap_camera_scene(const std::filesystem::path& data_path);
 Scene load_colmap_scene(const std::filesystem::path& data_path);
 std::string dataset_fingerprint(
     const Scene& scene,

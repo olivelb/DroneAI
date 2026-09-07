@@ -53,6 +53,7 @@
  * GPL-3.0-or-later from dev.15 onward.
  */
 #include "dronegs/rasterization.hpp"
+#include "dronegs/geometry_diagnostics.hpp"
 #include "dronegs/ordered_training.hpp"
 #include "dronegs/topology_percentiles.hpp"
 #include "topology_compaction.cuh"
@@ -1237,6 +1238,9 @@ __global__ void initialize_bucket_tiles_kernel(
     }
 }
 
+#include "geometry_diagnostics.cuh"
+
+template<bool geometry = false>
 __global__ void render_alpha_tiles_kernel(
     const DeviceProjectedRecord* records,
     const std::uint32_t* record_indices,
@@ -1250,10 +1254,14 @@ __global__ void render_alpha_tiles_kernel(
     std::uint32_t* pixel_contributions,
     std::uint32_t* tile_max_contributions,
     std::uint32_t* bucket_checkpoints,
-    DeviceRenderStats* stats) {
+    DeviceRenderStats* stats,
+    const DeviceGeometryRecord* geometry_records = nullptr,
+    float* geometry_output = nullptr, DeviceRasterCamera geometry_camera = {}) {
     constexpr std::uint32_t threads_per_tile =
         alpha_tile_width * alpha_tile_height;
     __shared__ DeviceProjectedSplat batch[threads_per_tile];
+    __shared__ DeviceGeometryRecord geometry_batch[geometry ? threads_per_tile : 1U];
+    GeometryMoments geometry_moments;
     __shared__ std::uint32_t block_max_contributions;
 
     const std::uint32_t thread_index =
@@ -1297,6 +1305,8 @@ __global__ void render_alpha_tiles_kernel(
         if (load_index < end) {
             batch[thread_index] =
                 records[record_indices[load_index]].splat;
+            if constexpr (geometry) geometry_batch[thread_index] =
+                geometry_records[record_indices[load_index]];
         }
         __syncthreads();
         const auto batch_count = static_cast<std::uint32_t>(
@@ -1362,6 +1372,10 @@ __global__ void render_alpha_tiles_kernel(
                 ++contributing;
                 contributions = possible_contributions;
                 const float weight = remaining * alpha;
+                if constexpr (geometry) geometry_moments.add(weight, splat.depth,
+                    geometry_batch[index],
+                    (static_cast<float>(x)+0.5F-geometry_camera.cx)/geometry_camera.fx,
+                    (static_cast<float>(y)+0.5F-geometry_camera.cy)/geometry_camera.fy);
                 red += weight * splat.color[0];
                 green += weight * splat.color[1];
                 blue += weight * splat.color[2];
@@ -1381,6 +1395,8 @@ __global__ void render_alpha_tiles_kernel(
         rgb[pixel * 3U + 1U] = green + remaining * background_g;
         rgb[pixel * 3U + 2U] = blue + remaining * background_b;
         transmittance[pixel] = remaining;
+        if constexpr (geometry) geometry_moments.write(
+            geometry_output + pixel * geometry_channel_count, 1.0F-remaining);
         if (active_ends != nullptr) {
             active_ends[pixel] = active_end;
         }
@@ -4258,7 +4274,9 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
     const std::array<float, 3>& background,
     const std::vector<float>* image_gradient,
-    std::uint32_t active_sh_degree) {
+    std::uint32_t active_sh_degree,
+    GeometryRenderOutput* geometry_output = nullptr,
+    bool fastgs = false, bool opacity_sh = true) {
     validate_inputs(gaussians, camera, background);
     if (active_sh_degree > maximum_sh_degree) {
         throw std::invalid_argument("active SH degree must be between 0 and 3");
@@ -4271,6 +4289,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
             "tiled alpha backward image gradient shape is invalid");
     }
     const auto empty_result = [&]() {
+        if (geometry_output != nullptr) geometry_output->channels.assign(
+            pixel_count * geometry_channel_count, 0.0F);
         AlphaRenderGradients gradients{};
         if (image_gradient != nullptr) {
             gradients.dc =
@@ -4327,7 +4347,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_records.data(), device_projected_sh_basis.data(),
         device_depth_keys.data(),
         device_visible_splats.data(), active_sh_degree,
-        active_sh_degree, 0.0F, false);
+        opacity_sh ? active_sh_degree : 0U, 0.0F, fastgs);
     require_cuda(cudaGetLastError(), "launch alpha projection");
 
     sort_projected_records(
@@ -4400,6 +4420,24 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     const dim3 render_threads(alpha_tile_width, alpha_tile_height);
     const dim3 render_blocks(
         device_camera.tiles_x, device_camera.tiles_y);
+    std::optional<DeviceAllocation<DeviceGeometryRecord>> device_geometry_records;
+    std::optional<DeviceAllocation<float>> device_geometry_output;
+    if (geometry_output != nullptr) {
+        device_geometry_records.emplace(gaussians.size());
+        device_geometry_output.emplace(pixel_count * geometry_channel_count);
+        build_geometry_records_kernel<<<projection_blocks, threads_per_block>>>(
+            device_gaussians.data(), device_sorted_depth_keys.data(), gaussian_count,
+            device_camera, device_geometry_records->data());
+        require_cuda(cudaGetLastError(), "build diagnostic geometry records");
+        render_alpha_tiles_kernel<true><<<render_blocks, render_threads>>>(
+            device_sorted_records.data(), device_sorted_record_indices.data(),
+            device_tile_starts.data(), device_tile_ends.data(), camera.width, camera.height,
+            fastgs ? fastgs_maximum_fragment_alpha : alpha_maximum,
+            background[0], background[1], background[2],
+            device_rgb.data(), device_transmittance.data(), device_active_ends.data(),
+            nullptr, nullptr, nullptr, nullptr, device_stats.data(),
+            device_geometry_records->data(), device_geometry_output->data(), device_camera);
+    } else {
     render_alpha_tiles_kernel<<<render_blocks, render_threads>>>(
         device_sorted_records.data(),
         device_sorted_record_indices.data(),
@@ -4411,6 +4449,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_active_ends.data(),
         nullptr, nullptr, nullptr, nullptr,
         device_stats.data());
+    }
     require_cuda(cudaGetLastError(), "launch tiled alpha renderer");
 
     std::optional<DeviceAllocation<float>> device_image_gradient;
@@ -4488,6 +4527,10 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         .transmittance = std::vector<float>(pixel_count),
         .stats = {},
     };
+    if (geometry_output != nullptr) {
+        geometry_output->channels.resize(pixel_count * geometry_channel_count);
+        device_geometry_output->copy_to_host(geometry_output->channels.data());
+    }
     device_rgb.copy_to_host(output.rgb.data());
     device_transmittance.copy_to_host(output.transmittance.data());
     unsigned long long visible_splats = 0U;
@@ -4535,6 +4578,17 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         .render = std::move(output),
         .gradients = std::move(gradients),
     };
+}
+
+GeometryRenderOutput render_geometry_tiled_cuda(
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
+    const GeometryRenderOptions& options) {
+    if (static_cast<std::uint64_t>(camera.width) * camera.height > 16777216ULL)
+        throw std::invalid_argument("geometry diagnostic view exceeds 16M pixels; use fixed crops");
+    GeometryRenderOutput output;
+    output.appearance = render_alpha_cuda_impl(gaussians, camera, {0,0,0}, nullptr,
+        options.sh_degree, &output, options.fastgs, options.opacity_sh).render;
+    return output;
 }
 
 AlphaRenderOutput render_alpha_tiled_cuda(

@@ -143,6 +143,9 @@ target_compile_options(dronegs_cuda PRIVATE
     "$<$<COMPILE_LANGUAGE:CUDA>:${DRONEGS_CUDA_OPTIONS}>"
 )
 
+add_executable(dronegs_geometry_probe tools/geometry_probe.cpp)
+target_link_libraries(dronegs_geometry_probe PRIVATE dronegs_cuda)
+
 add_executable(dronegs src/main.cpp)
 target_link_libraries(dronegs PRIVATE dronegs_core dronegs_cuda)
 
@@ -192,6 +195,16 @@ if(DRONEGS_BUILD_TESTS)
     set_target_properties(
         dronegs_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     add_test(NAME dronegs_training_tests COMMAND dronegs_training_tests)
+
+    add_executable(dronegs_geometry_tests tests/test_geometry.cu)
+    target_link_libraries(dronegs_geometry_tests PRIVATE dronegs_cuda)
+    set_target_properties(dronegs_geometry_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    add_test(NAME dronegs_geometry_tests COMMAND dronegs_geometry_tests)
+    add_test(NAME dronegs_geometry_tool_tests COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geometry_diagnostics.py
+        $<TARGET_FILE:dronegs_geometry_probe>)
+    add_test(NAME dronegs_geometry_reference_tests COMMAND ${Python3_EXECUTABLE} -W error
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geometry_reference.py)
 
     add_executable(dronegs_tile_training_tests tests/test_tile_training.cu)
     target_link_libraries(dronegs_tile_training_tests PRIVATE dronegs_cuda)
