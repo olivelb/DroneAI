@@ -28,6 +28,7 @@ struct RunMeasurements {
     double checkpoint_write_seconds = 0.0;
     std::uint64_t periodic_checkpoints = 0;
     double evaluation_seconds = 0.0;
+    double periodic_evaluation_seconds = 0.0;
     double export_seconds = 0.0;
     double wall_seconds = 0.0;
     float initial_loss = 0.0F;

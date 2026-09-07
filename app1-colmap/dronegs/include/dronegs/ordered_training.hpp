@@ -95,6 +95,10 @@ public:
         const RasterCamera& camera, const std::uint8_t* target_rgb,
         std::size_t target_bytes, float mse_blend = 0.0F,
         const ImageObjectivePolicy& objective_policy = {});
+    // Force sampling on every update; false restores the normal sampling cadence.
+    // Diagnostic only; does not change optimizer/checkpoint state.
+    void set_gpu_stage_telemetry_enabled(bool enabled);
+
     ImageQualityMetrics evaluate_quality(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
         std::size_t target_bytes,

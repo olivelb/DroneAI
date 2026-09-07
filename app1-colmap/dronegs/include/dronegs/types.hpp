@@ -44,6 +44,8 @@ struct Options {
     std::string test_split = "modulo";
     std::uint32_t test_guard_percent = 0;
     std::uint32_t save_eval_images = 0;
+    std::uint64_t eval_every = 0;
+    std::uint64_t eval_start = 0;
     std::uint64_t topology_cooldown = 0;
     std::uint64_t photometric_finish = 0;
     std::uint32_t photometric_mse_percent = 0;

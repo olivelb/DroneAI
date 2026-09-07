@@ -5047,7 +5047,7 @@ struct OrderedAlphaTrainingContext::Impl {
             std::max<std::uint64_t>(1U, maximum_steps / 5U);
         const bool collect_stage_telemetry =
             apply_update &&
-            (telemetry_step == 2U ||
+            (force_gpu_stage_telemetry || telemetry_step == 2U ||
              (maximum_steps > 1U &&
               telemetry_step == maximum_steps - 1U) ||
              (telemetry_step > 1U &&
@@ -6224,6 +6224,7 @@ struct OrderedAlphaTrainingContext::Impl {
     float position_learning_rate_scale = 1.0F;
     MrnfLearningRates learning_rates{};
     std::optional<MrnfOptimizerTelemetry> latest_telemetry;
+    bool force_gpu_stage_telemetry = false;
     std::optional<MrnfGpuStageTelemetry> latest_gpu_stage_telemetry;
     float minimum_log_scale = -16.0F;
     float maximum_log_scale = 16.0F;
@@ -6374,6 +6375,10 @@ float OrderedAlphaTrainingContext::evaluate(
         camera, target_rgb, target_bytes, false, false,
         nullptr, nullptr, nullptr, mse_blend, true,
         RefinementStatisticsMode::collect, objective_policy);
+}
+
+void OrderedAlphaTrainingContext::set_gpu_stage_telemetry_enabled(bool enabled) {
+    impl_->force_gpu_stage_telemetry = enabled;
 }
 
 ImageQualityMetrics OrderedAlphaTrainingContext::evaluate_quality(

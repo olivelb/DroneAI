@@ -13,6 +13,10 @@
  * GPL-3.0-or-later from dev.15 onward.
  */
 #include "dronegs/training.hpp"
+#include "dronegs/training_benchmark.hpp"
+#include "dronegs/checkpoint_evaluation.hpp"
+#include <bit>
+#include <functional>
 
 #include <cuda_runtime.h>
 
@@ -843,12 +847,21 @@ struct HeldOutAggregate {
     double seconds = 0.0;
 };
 
+// Optional diagnostic sink; normal evaluation never constructs or invokes it.
+struct HeldOutPredictionSink {
+    std::function<bool(std::size_t)> wants_prediction;
+    std::function<void(std::size_t, std::size_t, const FrameDescriptor&,
+        const TrainingFrame&, const RasterCamera&, const std::vector<float>&)> consume;
+};
+
+
 HeldOutAggregate evaluate_held_out(
     const Options& options, ImageCache& cache,
     const std::vector<FrameDescriptor>& descriptors,
     const std::vector<std::size_t>& held_out_indices,
     OrderedAlphaTrainingContext& workspace,
-    std::string_view stage, bool save_predictions) {
+    std::string_view stage, bool save_predictions,
+    const HeldOutPredictionSink* diagnostic_sink = nullptr) {
     if (held_out_indices.empty()) {
         throw std::invalid_argument(
             "held-out evaluation requires held-out images");
@@ -857,6 +870,8 @@ HeldOutAggregate evaluate_held_out(
         options.output_path / "evaluation";
     std::filesystem::create_directories(evaluation_directory);
     const auto csv_path = evaluation_directory / "metrics.csv";
+    const bool csv_header = stage == "initial" ||
+        !std::filesystem::exists(csv_path) || std::filesystem::file_size(csv_path) == 0U;
     std::ofstream csv(
         csv_path,
         stage == "initial"
@@ -866,7 +881,7 @@ HeldOutAggregate evaluate_held_out(
         throw std::runtime_error(
             "cannot create held-out metrics CSV: " + csv_path.string());
     }
-    if (stage == "initial") {
+    if (csv_header) {
         csv << "stage,held_out_index,frame_index,scene_index,tile_index,image_name,"
                "width,height,pixel_count,mse,psnr,ssim,"
                "active_pixel_fraction\n";
@@ -897,10 +912,12 @@ HeldOutAggregate evaluate_held_out(
         const auto raster_camera =
             make_raster_camera(frame.camera);
         std::vector<float> prediction;
+        const bool diagnostic_prediction = diagnostic_sink != nullptr &&
+            diagnostic_sink->wants_prediction(frame_index);
         const auto quality = workspace.evaluate_quality(
             raster_camera, frame.image->rgb.data(),
             frame.image->rgb.size(),
-            save_predictions ? &prediction : nullptr);
+            (save_predictions || diagnostic_prediction) ? &prediction : nullptr);
         psnr_sum += quality.psnr;
         ssim_sum += quality.ssim;
         const auto pixel_count =
@@ -936,6 +953,10 @@ HeldOutAggregate evaluate_held_out(
             write_target_ppm(
                 target_directory / filename.str(), frame.image->rgb,
                 raster_camera.width, raster_camera.height);
+        }
+        if (diagnostic_sink != nullptr) {
+            diagnostic_sink->consume(held_out_index, frame_index, descriptors[frame_index],
+                frame, raster_camera, prediction);
         }
         if (held_out_index == 0U ||
             held_out_index + 1U == held_out_indices.size() ||
@@ -975,6 +996,161 @@ HeldOutAggregate evaluate_held_out(
         .seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - start).count(),
     };
+}
+
+std::string diagnostic_json_string(std::string_view value) {
+    std::ostringstream out;
+    out << '"';
+    for (const unsigned char c : value) {
+        if (c == '"' || c == '\\') out << '\\' << static_cast<char>(c);
+        else if (c < 32) out << "\\u00" << std::hex << std::setw(2) << std::setfill('0') << unsigned(c) << std::dec;
+        else out << static_cast<char>(c);
+    }
+    out << '"';
+    return out.str();
+}
+
+void evaluate_checkpoint_diagnostic(
+    const Options& options, const CheckpointEvaluationOptions& diagnostic,
+    ImageCache& cache, const std::vector<FrameDescriptor>& descriptors,
+    const DatasetSplit& frame_split, OrderedAlphaTrainingContext& workspace,
+    const TrainingCheckpointProgress& progress, const std::string& dataset_identity,
+    const std::string& configuration_identity) {
+    static_assert(std::endian::native == std::endian::little);
+    static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559);
+    if (progress.completed_iteration != diagnostic.expected_completed_iteration)
+        throw std::invalid_argument("restored checkpoint iteration differs from diagnostic assertion");
+    if (frame_split.held_out.empty() || (diagnostic.expected_held_out_frames &&
+        frame_split.held_out.size() != diagnostic.expected_held_out_frames))
+        throw std::invalid_argument("held-out frame count differs from diagnostic assertion or is empty");
+    for (auto index : diagnostic.export_frame_indices)
+        if (std::find(frame_split.held_out.begin(), frame_split.held_out.end(), index) == frame_split.held_out.end())
+            throw std::invalid_argument("diagnostic export frame is not held out");
+    // No output exists until all native checkpoint and frame assertions pass.
+    // A failing run leaves diagnostic evidence, never a completed trainer manifest.
+    if (!std::filesystem::create_directories(options.output_path))
+        throw std::invalid_argument("diagnostic output directory already exists");
+    std::vector<HeldOutAggregate> aggregates;
+    for (std::uint32_t repeat = 0; repeat < diagnostic.repeats; ++repeat) {
+        Options repeat_options = options;
+        const auto repeat_name = "repeat-" + std::to_string(repeat);
+        repeat_options.output_path /= repeat_name;
+        std::filesystem::create_directories(repeat_options.output_path);
+        std::ofstream identities(repeat_options.output_path / "views.jsonl");
+        identities << std::setprecision(std::numeric_limits<float>::max_digits10);
+        if (!identities) throw std::runtime_error("cannot create diagnostic frame identities");
+        HeldOutPredictionSink sink;
+        sink.wants_prediction = [&diagnostic](std::size_t index) {
+            return diagnostic.export_all_predictions ||
+                std::find(diagnostic.export_frame_indices.begin(), diagnostic.export_frame_indices.end(), index)
+                    != diagnostic.export_frame_indices.end();
+        };
+        sink.consume = [&](std::size_t held_out_index, std::size_t frame_index,
+            const FrameDescriptor& descriptor, const TrainingFrame& frame,
+            const RasterCamera& camera, const std::vector<float>& prediction) {
+            const auto prefix = "frame-" + std::to_string(frame_index);
+            const bool exported = sink.wants_prediction(frame_index);
+            if (exported) {
+                const auto samples = static_cast<std::size_t>(camera.width) * camera.height * 3U;
+                if (prediction.size() != samples ||
+                    !std::all_of(prediction.begin(), prediction.end(), [](float value) { return std::isfinite(value); }))
+                    throw std::runtime_error("diagnostic prediction has invalid size or nonfinite values");
+                std::ofstream floats(repeat_options.output_path / (prefix + ".rgb.f32"), std::ios::binary);
+                floats.write(reinterpret_cast<const char*>(prediction.data()),
+                    static_cast<std::streamsize>(prediction.size() * sizeof(float)));
+                floats.close();
+                if (!floats) throw std::runtime_error("failed writing diagnostic float32 RGB");
+                write_prediction_ppm(repeat_options.output_path / (prefix + ".prediction.ppm"),
+                    prediction, camera.width, camera.height);
+                write_target_ppm(repeat_options.output_path / (prefix + ".target.ppm"),
+                    frame.image->rgb, camera.width, camera.height);
+            }
+            identities << "{\"held_out_index\":" << held_out_index << ",\"frame_index\":" << frame_index
+                << ",\"image_id\":" << descriptor.image->id << ",\"scene_index\":" << descriptor.scene_index
+                << ",\"tile_index\":" << descriptor.tile_index << ",\"image_name\":"
+                << diagnostic_json_string(descriptor.image->name) << ",\"full_width\":" << descriptor.camera->width
+                << ",\"full_height\":" << descriptor.camera->height << ",\"source_x\":" << descriptor.region.source_x
+                << ",\"source_y\":" << descriptor.region.source_y << ",\"source_width\":" << descriptor.region.width
+                << ",\"source_height\":" << descriptor.region.height << ",\"width\":" << camera.width
+                << ",\"height\":" << camera.height << ",\"fx\":" << camera.fx << ",\"fy\":" << camera.fy
+                << ",\"cx\":" << camera.cx << ",\"cy\":" << camera.cy << ",\"rotation\":[";
+            for (std::size_t i = 0; i < camera.rotation.size(); ++i) identities << (i ? "," : "") << camera.rotation[i];
+            identities << "],\"translation\":[";
+            for (std::size_t i = 0; i < camera.translation.size(); ++i) identities << (i ? "," : "") << camera.translation[i];
+            identities << "],\"prediction_rgb_f32\":" << (exported ? diagnostic_json_string(prefix + ".rgb.f32") : "null")
+                << ",\"target_rgb8_ppm\":" << (exported ? diagnostic_json_string(prefix + ".target.ppm") : "null") << "}\n";
+            if (!identities) throw std::runtime_error("failed writing diagnostic frame identity");
+        };
+        aggregates.push_back(evaluate_held_out(repeat_options, cache, descriptors, frame_split.held_out,
+            workspace, "checkpoint_" + std::to_string(progress.completed_iteration), false, &sink));
+        identities.close();
+        if (!identities) throw std::runtime_error("failed finalizing diagnostic frame identities");
+    }
+    std::ofstream manifest(options.output_path / "diagnostic-complete.json");
+    manifest << std::setprecision(std::numeric_limits<double>::max_digits10)
+        << "{\"schema_version\":1,\"diagnostic\":\"checkpoint_read_only\",\"training_steps_executed\":0,"
+        << "\"checkpoint_source\":" << diagnostic_json_string(options.resume_from.string())
+        << ",\"checkpoint_completed_iteration\":" << progress.completed_iteration
+        << ",\"original_iteration_budget\":" << options.iterations << ",\"gaussians\":" << workspace.size()
+        << ",\"active_sh_degree\":" << workspace.active_sh_degree()
+        << ",\"dataset_fingerprint\":" << diagnostic_json_string(dataset_identity)
+        << ",\"configuration_fingerprint\":" << diagnostic_json_string(configuration_identity)
+        << ",\"supplied_binary_sha256\":" << diagnostic_json_string(diagnostic.supplied_binary_sha256)
+        << ",\"binary_sha256_verification\":\"external_required_not_computed_by_native\""
+        << ",\"checkpoint_validation\":\"native_v5_checksum_fingerprints_runtime_state\""
+        << ",\"frame_support\":\"original_initial_gaussians_before_restore\""
+        << ",\"frame_descriptor_count\":" << descriptors.size() << ",\"training_frames\":" << frame_split.training.size()
+        << ",\"held_out_frames\":" << frame_split.held_out.size()
+        << ",\"rgb_float_format\":\"little_endian_float32_HWC_unquantized_native_prediction\""
+        << ",\"target_format\":\"P6_RGB8_PPM_exact_native_target\""
+        << ",\"evaluation_policy\":\"native_evaluate_quality_black_background_active_mask\""
+        << ",\"repetition_scope\":\"same_context_no_reload_no_update\",\"repeats\":[";
+    for (std::size_t repeat = 0; repeat < aggregates.size(); ++repeat) {
+        const auto& result = aggregates[repeat];
+        manifest << (repeat ? "," : "") << "{\"repeat\":" << repeat << ",\"psnr\":" << result.psnr
+            << ",\"ssim\":" << result.ssim << ",\"pixel_weighted_psnr\":" << result.pixel_weighted_psnr
+            << ",\"pixel_weighted_ssim\":" << result.pixel_weighted_ssim << ",\"evaluation_seconds_including_exports\":"
+            << result.seconds << '}';
+    }
+    manifest << "]}\n";
+    manifest.close();
+    if (!manifest) throw std::runtime_error("failed finalizing diagnostic manifest");
+    std::cout << "{\"event\":\"checkpoint_evaluation_complete\",\"training_steps_executed\":0,\"iteration\":"
+        << progress.completed_iteration << ",\"repeats\":" << diagnostic.repeats << ",\"held_out_frames\":"
+        << frame_split.held_out.size() << "}\n" << std::flush;
+}
+
+
+// Times on a resumed run are relative to this process, not the original run.
+void record_evaluation_curve(
+    const Options& options, const HeldOutAggregate& quality,
+    std::string_view stage, std::uint64_t iteration,
+    std::uint64_t session_start_iteration, std::size_t gaussians,
+    double training_seconds) {
+    const auto path = options.output_path / "evaluation" / "curve.csv";
+    const bool header = stage == "initial" || !std::filesystem::exists(path) ||
+        std::filesystem::file_size(path) == 0U;
+    std::ofstream csv(path, stage == "initial" ? std::ios::trunc : std::ios::app);
+    if (header) {
+        csv << "stage,iteration,session_start_iteration,gaussians,training_seconds,"
+               "evaluation_seconds,psnr,ssim,pixel_weighted_psnr,pixel_weighted_ssim\n";
+    }
+    csv << std::setprecision(12) << stage << ',' << iteration << ','
+        << session_start_iteration << ',' << gaussians << ',' << training_seconds
+        << ',' << quality.seconds << ',' << quality.psnr << ',' << quality.ssim
+        << ',' << quality.pixel_weighted_psnr << ',' << quality.pixel_weighted_ssim << '\n';
+    csv.close();
+    if (!csv) throw std::runtime_error("cannot write evaluation curve");
+    std::cout << "{\"event\":\"evaluation_summary\",\"stage\":\"" << stage
+        << "\",\"iteration\":" << iteration
+        << ",\"session_start_iteration\":" << session_start_iteration
+        << ",\"gaussians\":" << gaussians
+        << ",\"training_seconds\":" << training_seconds
+        << ",\"evaluation_seconds\":" << quality.seconds
+        << ",\"psnr\":" << quality.psnr << ",\"ssim\":" << quality.ssim
+        << ",\"pixel_weighted_psnr\":" << quality.pixel_weighted_psnr
+        << ",\"pixel_weighted_ssim\":" << quality.pixel_weighted_ssim
+        << "}\n" << std::flush;
 }
 
 struct TrainingWorkspace {
@@ -1426,9 +1602,15 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     return metrics;
 }
 
-TrainingMetrics train_ordered_mrnf(
+static TrainingMetrics train_ordered_mrnf_impl(
     const Options& options, const Scene& scene,
-    std::vector<Gaussian>& gaussians) {
+    std::vector<Gaussian>& gaussians,
+    const TrainingStepBenchmarkOptions* benchmark,
+    const CheckpointEvaluationOptions* diagnostic = nullptr) {
+    if (diagnostic != nullptr) {
+        if (benchmark != nullptr) throw std::invalid_argument("diagnostic and benchmark modes are exclusive");
+        validate_checkpoint_evaluation_request(options, *diagnostic);
+    }
     if (gaussians.empty() || scene.images.empty()) {
         throw std::invalid_argument(
             "ordered training requires images and initialized Gaussians");
@@ -1457,6 +1639,9 @@ TrainingMetrics train_ordered_mrnf(
         options.test_every, options.test_split,
         options.test_guard_percent);
     const auto frame_split = expand_frame_split(image_split, descriptors);
+    if (options.eval_every != 0U && frame_split.held_out.empty()) {
+        throw std::invalid_argument("periodic evaluation requires supported held-out frames");
+    }
     ImageCache cache(
         descriptors.size(), host_cache_plan.capacity_bytes,
         [&descriptors, &options](std::size_t index) {
@@ -1678,6 +1863,111 @@ TrainingMetrics train_ordered_mrnf(
             << "\",\"gaussians\":" << workspace.size() << "}\n"
             << std::flush;
     }
+    if (diagnostic != nullptr) {
+        evaluate_checkpoint_diagnostic(options, *diagnostic, cache, descriptors, frame_split,
+            workspace, checkpoint_progress, checkpoint_dataset_fingerprint,
+            checkpoint_configuration_fingerprint);
+        return metrics; // No training schedule, update, checkpoint snapshot or model download.
+    }
+    if (benchmark != nullptr) {
+        if (benchmark->views > frame_split.training.size()) {
+            throw std::invalid_argument("benchmark views exceed available training frames");
+        }
+        const auto selected = make_training_schedule(
+            frame_split.training, benchmark->views, options.seed);
+        std::vector<TrainingFrame> frames;
+        std::vector<ImageData> resident_images;
+        resident_images.reserve(selected.size());
+        for (const auto index : selected) {
+            auto frame = frame_from_cache(cache, descriptors, index, options);
+            resident_images.push_back(*frame.image);
+            frame.image = &resident_images.back();
+            frames.push_back(frame);
+        }
+        const auto iteration = checkpoint_progress.completed_iteration + 1U;
+        const auto policy_iteration = std::min(iteration, options.iterations);
+        const auto refine_end = topology_refinement_end_iteration(options.iterations,
+            options.topology_cooldown, options.adaptive_growth_target != 0U);
+        const auto statistics = topology_refinement_statistics_required(iteration, refine_end)
+            ? RefinementStatisticsMode::collect : RefinementStatisticsMode::skip;
+        float mse_blend = 0.0F;
+        if (options.photometric_finish && policy_iteration > options.iterations - options.photometric_finish) {
+            mse_blend = static_cast<float>(policy_iteration - (options.iterations - options.photometric_finish)) /
+                static_cast<float>(options.photometric_finish) *
+                (static_cast<float>(options.photometric_mse_percent) / 100.0F);
+        }
+        const auto objective = training_objective_policy(options, policy_iteration);
+        workspace.set_gpu_stage_telemetry_enabled(true);
+        std::ofstream csv(options.output_path / "step_benchmark.csv");
+        csv << "warmup,repeat,view,frame_index,scene_index,tile_index,image_name,width,height,"
+               "checkpoint_iteration,step,gaussians,active_sh_degree,mse_blend,collect_refinement_statistics,"
+               "restore_seconds,conditioning_seconds,conditioning_renders,wall_ms,loss,projection_ms,record_sort_ms,binning_ms,pair_sort_ms,bucket_ms,"
+               "preprocess_ms,raster_ms,objective_ms,objective_gradient_ms,gradient_reset_ms,"
+               "raster_backward_ms,geometry_backward_ms,backward_ms,scalar_optimizer_ms,sh_optimizer_ms,"
+               "optimizer_post_ms,optimizer_ms,total_ms\n";
+        for (std::uint32_t repeat = 0; repeat < benchmark->warmups + benchmark->repeats; ++repeat) {
+            for (std::size_t view = 0; view < frames.size(); ++view) {
+                const auto restore_start = std::chrono::steady_clock::now();
+                workspace.load_checkpoint(options.resume_from, checkpoint_dataset_fingerprint,
+                    checkpoint_configuration_fingerprint);
+                require_cuda(cudaDeviceSynchronize(), "synchronize benchmark restore");
+                const auto restore_seconds = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - restore_start).count();
+                const auto& frame = frames[view];
+                const auto camera = make_raster_camera(frame.camera);
+                // A multi-GB restore may leave the GPU idle long enough to downclock.
+                // Forward-only renders warm the device without touching optimizer,
+                // topology statistics, RNG, SH activation or Gaussian parameters.
+                const auto conditioning_start = std::chrono::steady_clock::now();
+                std::uint32_t conditioning_renders = 0U;
+                double conditioning_seconds = 0.0;
+                do {
+                    static_cast<void>(workspace.evaluate_quality(camera, frame.image->rgb.data(),
+                        frame.image->rgb.size()));
+                    ++conditioning_renders;
+                    conditioning_seconds = std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - conditioning_start).count();
+                } while (conditioning_seconds < 0.25);
+                require_cuda(cudaDeviceSynchronize(), "synchronize benchmark conditioning");
+                const auto start = std::chrono::steady_clock::now();
+                const float loss = workspace.train_step(camera, frame.image->rgb.data(),
+                    frame.image->rgb.size(), mse_blend, statistics, objective);
+                require_cuda(cudaDeviceSynchronize(), "synchronize benchmark step");
+                const auto wall_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - start).count();
+                const auto telemetry = workspace.latest_gpu_stage_telemetry();
+                if (!telemetry || telemetry->step != iteration) {
+                    throw std::runtime_error("benchmark step telemetry missing or stale");
+                }
+                const auto& t = *telemetry;
+                const auto index = selected[view];
+                csv << std::setprecision(12) << (repeat < benchmark->warmups ? 1 : 0) << ','
+                    << repeat << ',' << view << ',' << index << ',' << descriptors[index].scene_index << ','
+                    << descriptors[index].tile_index << ',' << csv_escape(descriptors[index].image->name) << ','
+                    << camera.width << ',' << camera.height << ',' << checkpoint_progress.completed_iteration << ','
+                    << iteration << ',' << workspace.size() << ',' << workspace.active_sh_degree() << ','
+                    << mse_blend << ',' << (statistics == RefinementStatisticsMode::collect ? 1 : 0) << ','
+                    << restore_seconds << ',' << conditioning_seconds << ',' << conditioning_renders << ','
+                    << wall_ms << ',' << loss << ','
+                    << t.projection_ms << ',' << t.record_sort_ms << ',' << t.binning_ms << ',' << t.pair_sort_ms << ','
+                    << t.bucket_ms << ',' << t.preprocess_ms << ',' << t.raster_ms << ',' << t.objective_ms << ','
+                    << t.objective_gradient_ms << ',' << t.gradient_reset_ms << ',' << t.raster_backward_ms << ','
+                    << t.geometry_backward_ms << ',' << t.backward_ms << ',' << t.scalar_optimizer_ms << ','
+                    << t.sh_optimizer_ms << ',' << t.optimizer_post_ms << ',' << t.optimizer_ms << ','
+                    << t.preprocess_ms + t.raster_ms + t.objective_ms + t.backward_ms + t.optimizer_ms << '\n';
+                csv.flush();
+                if (!csv) throw std::runtime_error("cannot write step benchmark CSV");
+                std::cout << "{\"event\":\"benchmark_sample\",\"warmup\":"
+                    << (repeat < benchmark->warmups ? "true" : "false") << ",\"repeat\":" << repeat
+                    << ",\"view\":" << view << ",\"step\":" << iteration
+                    << ",\"wall_ms\":" << wall_ms << "}\n" << std::flush;
+                emit_gpu_stage_telemetry(telemetry);
+            }
+        }
+        csv.close();
+        if (!csv) throw std::runtime_error("cannot finalize step benchmark CSV");
+        return metrics;
+    }
     const auto schedule = make_training_schedule(
         frame_split.training, options.iterations, options.seed);
     if (options.resume_from.empty()) {
@@ -1701,6 +1991,7 @@ TrainingMetrics train_ordered_mrnf(
             options, cache, descriptors, frame_split.held_out,
             workspace, "initial",
             imported_model && options.save_eval_images != 0U);
+        record_evaluation_curve(options, held_out, "initial", 0U, 0U, workspace.size(), 0.0);
         metrics.initial_held_out_psnr = held_out.psnr;
         metrics.initial_held_out_ssim = held_out.ssim;
         metrics.initial_pixel_weighted_psnr =
@@ -1709,6 +2000,7 @@ TrainingMetrics train_ordered_mrnf(
             held_out.pixel_weighted_ssim;
         metrics.evaluation_seconds += held_out.seconds;
     }
+    const auto session_start_iteration = checkpoint_progress.completed_iteration;
     checkpoint_progress.initial_loss = metrics.initial_loss;
     checkpoint_progress.initial_held_out_psnr =
         metrics.initial_held_out_psnr;
@@ -1724,6 +2016,7 @@ TrainingMetrics train_ordered_mrnf(
             checkpoint_progress.completed_iteration),
         options.prefetch_depth);
 
+    double periodic_evaluation_nonwait_seconds = 0.0;
     const auto training_start = std::chrono::steady_clock::now();
     const double wait_seconds_before_training =
         cache.stats().wait_seconds;
@@ -2008,6 +2301,29 @@ TrainingMetrics train_ordered_mrnf(
                 << "}\n"
                 << std::flush;
         }
+        if (options.eval_every != 0U && iteration >= options.eval_start &&
+            iteration % options.eval_every == 0U &&
+            (iteration < options.iterations || requested_stop)) {
+            require_cuda(cudaDeviceSynchronize(), "synchronize before periodic evaluation");
+            const auto evaluation_start = std::chrono::steady_clock::now();
+            const auto wait_before = cache.stats().wait_seconds;
+            const double elapsed_training = std::max(0.0,
+                std::chrono::duration<double>(evaluation_start - training_start).count() -
+                (wait_before - wait_seconds_before_training) - periodic_evaluation_nonwait_seconds);
+            const auto stage = "iteration_" + std::to_string(iteration);
+            const auto quality = evaluate_held_out(options, cache, descriptors,
+                frame_split.held_out, workspace, stage, false);
+            record_evaluation_curve(options, quality, stage, iteration,
+                session_start_iteration, workspace.size(), elapsed_training);
+            const auto seconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - evaluation_start).count();
+            metrics.periodic_evaluation_seconds += seconds;
+            metrics.evaluation_seconds += seconds;
+            // Cache waits are already subtracted from training time below.
+            periodic_evaluation_nonwait_seconds += std::max(0.0,
+                seconds - (cache.stats().wait_seconds - wait_before));
+            prefetch_schedule_window(cache, schedule, schedule_index + 1U, options.prefetch_depth);
+        }
         if (requested_stop) {
             metrics.completed = false;
             break;
@@ -2047,7 +2363,8 @@ TrainingMetrics train_ordered_mrnf(
         cache.stats().wait_seconds -
         wait_seconds_before_training;
     metrics.training_seconds = std::max(
-        0.0, training_wall_seconds - training_wait_seconds);
+        0.0, training_wall_seconds - training_wait_seconds -
+            periodic_evaluation_nonwait_seconds);
 
     if (!metrics.completed) {
         metrics.final_active_sh_degree =
@@ -2104,6 +2421,8 @@ TrainingMetrics train_ordered_mrnf(
             options, cache, descriptors, frame_split.held_out,
             workspace, "final",
             !imported_model && options.save_eval_images != 0U);
+        record_evaluation_curve(options, held_out, "final", metrics.completed_iterations,
+            session_start_iteration, workspace.size(), metrics.training_seconds);
         metrics.final_held_out_psnr = held_out.psnr;
         metrics.final_held_out_ssim = held_out.ssim;
         metrics.final_pixel_weighted_psnr = held_out.pixel_weighted_psnr;
@@ -2131,6 +2450,25 @@ TrainingMetrics train_ordered_mrnf(
         cache.stats().prefetch_ready;
     workspace.download(gaussians);
     return metrics;
+}
+
+TrainingMetrics train_ordered_mrnf(const Options& options, const Scene& scene,
+    std::vector<Gaussian>& gaussians) {
+    return train_ordered_mrnf_impl(options, scene, gaussians, nullptr);
+}
+
+void evaluate_checkpoint_read_only(const Options& options, const Scene& scene,
+    std::vector<Gaussian>& initial_gaussians, const CheckpointEvaluationOptions& diagnostic) {
+    static_cast<void>(train_ordered_mrnf_impl(options, scene, initial_gaussians, nullptr, &diagnostic));
+}
+
+void benchmark_training_steps(const Options& options, const Scene& scene,
+    std::vector<Gaussian>& initial_gaussians, const TrainingStepBenchmarkOptions& benchmark) {
+    if (options.resume_from.empty() || benchmark.views == 0U || benchmark.views > 100U ||
+        benchmark.repeats == 0U || benchmark.repeats > 100U || benchmark.warmups > 100U) {
+        throw std::invalid_argument("invalid checkpoint step benchmark configuration");
+    }
+    static_cast<void>(train_ordered_mrnf_impl(options, scene, initial_gaussians, &benchmark));
 }
 
 }  // namespace dronegs

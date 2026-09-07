@@ -11,10 +11,18 @@
 #include "dronegs/model.hpp"
 #include "dronegs/ply.hpp"
 #include "dronegs/training.hpp"
+#ifdef DRONEGS_TRAINING_STEP_BENCHMARK
+#include "dronegs/training_benchmark.hpp"
+#endif
 
 int main(int argc, char** argv) {
     using clock = std::chrono::steady_clock;
     if (argc == 2 && std::string_view(argv[1]) == "--help") {
+#ifdef DRONEGS_TRAINING_STEP_BENCHMARK
+        std::cout << "Checkpoint step benchmark: requires --resume-from and an empty output directory.\n"
+                     "Additional options: --benchmark-warmups 0..100 (1), "
+                     "--benchmark-repeats 1..100 (5), --benchmark-views 1..100 (3).\n";
+#endif
         std::cout << dronegs::help_text();
         return 0;
     }
@@ -28,7 +36,17 @@ int main(int argc, char** argv) {
 
     const auto wall_start = clock::now();
     try {
+#ifdef DRONEGS_TRAINING_STEP_BENCHMARK
+        const auto benchmark = dronegs::parse_training_step_benchmark_options(argc, argv);
+#endif
         const auto options = dronegs::parse_options(argc, argv);
+#ifdef DRONEGS_TRAINING_STEP_BENCHMARK
+        if (options.resume_from.empty() || options.stop_after || options.checkpoint_every ||
+            !options.checkpoint_path.empty() || options.eval_every ||
+            (std::filesystem::exists(options.output_path) && !std::filesystem::is_empty(options.output_path))) {
+            throw std::invalid_argument("benchmark requires --resume-from and an empty output directory; checkpoint writes, stop-after and periodic evaluation are disabled");
+        }
+#endif
         std::filesystem::create_directories(options.output_path);
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
@@ -146,6 +164,10 @@ int main(int argc, char** argv) {
             throw std::runtime_error(
                 "initial PLY Gaussian count exceeds --max-cap");
         }
+#ifdef DRONEGS_TRAINING_STEP_BENCHMARK
+        dronegs::benchmark_training_steps(options, scene, gaussians, benchmark);
+        return 0;
+#endif
         const auto training = dronegs::train_ordered_mrnf(
             options, scene, gaussians);
         if (!training.completed) {
@@ -186,6 +208,7 @@ int main(int argc, char** argv) {
         measurements.periodic_checkpoints =
             training.periodic_checkpoints;
         measurements.evaluation_seconds = training.evaluation_seconds;
+        measurements.periodic_evaluation_seconds = training.periodic_evaluation_seconds;
         measurements.initial_loss = training.initial_loss;
         measurements.startup_seconds = training.setup_seconds;
         measurements.final_loss = training.final_loss;

@@ -146,6 +146,9 @@ target_compile_options(dronegs_cuda PRIVATE
 add_executable(dronegs src/main.cpp)
 target_link_libraries(dronegs PRIVATE dronegs_core dronegs_cuda)
 
+add_executable(dronegs_checkpoint_evaluation_probe tools/checkpoint_evaluation_probe.cpp)
+target_link_libraries(dronegs_checkpoint_evaluation_probe PRIVATE dronegs_cuda)
+
 if(DRONEGS_BUILD_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
@@ -196,6 +199,20 @@ if(DRONEGS_BUILD_TESTS)
         dronegs_tile_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     add_test(NAME dronegs_tile_training_tests COMMAND dronegs_tile_training_tests)
 
+    add_executable(dronegs_checkpoint_evaluation_options_tests tests/test_checkpoint_evaluation_options.cpp)
+    target_link_libraries(dronegs_checkpoint_evaluation_options_tests PRIVATE dronegs_core)
+    add_test(NAME dronegs_checkpoint_evaluation_options_tests
+        COMMAND  /tests/run_checkpoint_evaluation_options_test.py
+            $<TARGET_FILE:dronegs_checkpoint_evaluation_options_tests>)
+    add_executable(dronegs_checkpoint_evaluation_gpu_tests tests/test_checkpoint_evaluation_gpu.cpp)
+    target_link_libraries(dronegs_checkpoint_evaluation_gpu_tests PRIVATE dronegs_cuda)
+    add_test(NAME dronegs_checkpoint_evaluation_gpu_tests
+        COMMAND  /tests/run_checkpoint_evaluation_options_test.py
+            $<TARGET_FILE:dronegs_checkpoint_evaluation_gpu_tests>)
+
+    add_test(NAME dronegs_training_benchmark_tool_tests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_training_benchmark_tool.py)
+
     add_test(
         NAME dronegs_lpips_tool_tests
         COMMAND ${Python3_EXECUTABLE}
@@ -203,6 +220,9 @@ if(DRONEGS_BUILD_TESTS)
 endif()
 
 if(DRONEGS_BUILD_BENCHMARKS)
+    add_executable(dronegs_training_step_benchmark src/main.cpp benchmarks/training_step_options.cpp)
+    target_compile_definitions(dronegs_training_step_benchmark PRIVATE DRONEGS_TRAINING_STEP_BENCHMARK=1)
+    target_link_libraries(dronegs_training_step_benchmark PRIVATE dronegs_cuda)
     add_executable(dronegs_topology_percentile_benchmark benchmarks/benchmark_topology_percentiles.cpp)
     target_link_libraries(dronegs_topology_percentile_benchmark PRIVATE dronegs_core)
     add_executable(dronegs_checkpoint_topology_benchmark benchmarks/benchmark_checkpoint_topology.cu)

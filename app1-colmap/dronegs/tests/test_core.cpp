@@ -583,6 +583,24 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         }
         check(rejected, "CLI accepted a retired production choice");
     }
+    check(parsed.eval_every == 0U && parsed.eval_start == 0U, "periodic evaluation must default off");
+    auto evaluation_values = values;
+    evaluation_values.insert(evaluation_values.end(), {"--test-every", "2", "--eval-every", "1", "--eval-start", "1"});
+    auto evaluation_arguments = mutable_arguments(evaluation_values);
+    const auto evaluation = dronegs::parse_options(static_cast<int>(evaluation_arguments.size()), evaluation_arguments.data());
+    check(evaluation.eval_every == 1U && evaluation.eval_start == 1U, "evaluation options mismatch");
+    for (const auto& suffix : std::vector<std::vector<std::string>>{
+            {"--eval-every", "1"}, {"--eval-start", "1"},
+            {"--test-every", "2", "--eval-every", "2"},
+            {"--test-every", "2", "--eval-every", "1", "--eval-start", "2"}}) {
+        auto invalid = values;
+        invalid.insert(invalid.end(), suffix.begin(), suffix.end());
+        auto args = mutable_arguments(invalid);
+        bool rejected = false;
+        try { static_cast<void>(dronegs::parse_options(static_cast<int>(args.size()), args.data())); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        check(rejected, "invalid evaluation options accepted");
+    }
     check(parsed.seed == 42, "CLI seed mismatch");
     check(parsed.sh_degree == 1, "CLI SH degree mismatch");
     check(!parsed.opacity_sh_enabled, "CLI opacity SH must default off");
