@@ -217,12 +217,14 @@ if(DRONEGS_BUILD_TESTS)
     add_executable(dronegs_checkpoint_evaluation_options_tests tests/test_checkpoint_evaluation_options.cpp)
     target_link_libraries(dronegs_checkpoint_evaluation_options_tests PRIVATE dronegs_core)
     add_test(NAME dronegs_checkpoint_evaluation_options_tests
-        COMMAND  /tests/run_checkpoint_evaluation_options_test.py
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_checkpoint_evaluation_options_test.py
             $<TARGET_FILE:dronegs_checkpoint_evaluation_options_tests>)
     add_executable(dronegs_checkpoint_evaluation_gpu_tests tests/test_checkpoint_evaluation_gpu.cpp)
     target_link_libraries(dronegs_checkpoint_evaluation_gpu_tests PRIVATE dronegs_cuda)
     add_test(NAME dronegs_checkpoint_evaluation_gpu_tests
-        COMMAND  /tests/run_checkpoint_evaluation_options_test.py
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_checkpoint_evaluation_options_test.py
             $<TARGET_FILE:dronegs_checkpoint_evaluation_gpu_tests>)
 
     add_test(NAME dronegs_training_benchmark_tool_tests

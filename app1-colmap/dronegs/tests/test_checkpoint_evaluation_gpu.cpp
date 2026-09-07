@@ -11,6 +11,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <jpeglib.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "dronegs/checkpoint_evaluation.hpp"
 #include "dronegs/model.hpp"
 #include "dronegs/training.hpp"
@@ -21,7 +23,10 @@ std::string bytes(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>()};
 }
 void write_image(const std::filesystem::path& path) {
-    auto* file=std::fopen(path.string().c_str(),"wb"); check(file!=nullptr,"cannot create JPEG fixture");
+    const int fd=::open(path.c_str(),O_WRONLY | O_CREAT | O_EXCL,0600);
+    check(fd>=0,"cannot create private JPEG fixture");
+    auto* file=::fdopen(fd,"wb");
+    if(file==nullptr) { ::close(fd); throw std::runtime_error("cannot open JPEG fixture stream"); }
     jpeg_compress_struct c{}; jpeg_error_mgr error{};
     c.err=jpeg_std_error(&error); jpeg_create_compress(&c); jpeg_stdio_dest(&c,file);
     c.image_width=32; c.image_height=32; c.input_components=3; c.in_color_space=JCS_RGB;
