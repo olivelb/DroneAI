@@ -55,6 +55,7 @@
 #include "dronegs/rasterization.hpp"
 #include "dronegs/geometry_diagnostics.hpp"
 #include "dronegs/ordered_training.hpp"
+#include "dronegs/checkpoint_writer.hpp"
 #include "dronegs/topology_percentiles.hpp"
 #include "topology_compaction.cuh"
 #include "topology_snapshot.cuh"
@@ -4237,37 +4238,6 @@ std::uint64_t checkpoint_checksum(
     return hash;
 }
 
-void sync_checkpoint_file(const std::filesystem::path& path) {
-#ifndef _WIN32
-    const int descriptor = ::open(path.c_str(), O_RDONLY);
-    if (descriptor < 0) {
-        throw std::runtime_error(
-            "cannot open checkpoint for fsync: " + path.string());
-    }
-    const int result = ::fsync(descriptor);
-    ::close(descriptor);
-    if (result != 0) {
-        throw std::runtime_error(
-            "cannot fsync checkpoint: " + path.string());
-    }
-#else
-    static_cast<void>(path);
-#endif
-}
-
-void sync_checkpoint_directory(const std::filesystem::path& path) {
-#ifndef _WIN32
-    const int descriptor =
-        ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY);
-    if (descriptor >= 0) {
-        static_cast<void>(::fsync(descriptor));
-        ::close(descriptor);
-    }
-#else
-    static_cast<void>(path);
-#endif
-}
-
 }  // namespace
 
 static AlphaRenderBackwardOutput render_alpha_cuda_impl(
@@ -6654,206 +6624,25 @@ OrderedAlphaTrainingContext::capture_checkpoint(
 
 void TrainingCheckpointSnapshot::write_to(
     const std::filesystem::path& path) const {
-    const auto& snapshot = *impl_;
-    const auto temporary = path.string() + ".tmp";
-    std::ofstream stream(
-        temporary, std::ios::binary | std::ios::trunc);
-    if (!stream) {
-        throw std::runtime_error(
-            "cannot create checkpoint: " + temporary);
-    }
-    const auto write_value = [&stream](const auto& value) {
-        stream.write(
-            reinterpret_cast<const char*>(&value),
-            static_cast<std::streamsize>(sizeof(value)));
-    };
-    const auto write_string =
-        [&stream, &write_value](const std::string& value) {
-            const auto size =
-                static_cast<std::uint64_t>(value.size());
-            write_value(size);
-            stream.write(
-                value.data(),
-                static_cast<std::streamsize>(value.size()));
-        };
-    const auto write_device =
-        [&stream](const auto& allocation, std::size_t count) {
-            using value_type = std::remove_cv_t<
-                std::remove_pointer_t<
-                    decltype(allocation.data())>>;
-            if (count != 0U) {
-                stream.write(
-                    reinterpret_cast<const char*>(allocation.data()),
-                    static_cast<std::streamsize>(
-                        count * sizeof(value_type)));
-            }
-        };
-    const auto write_moment_pairs =
-        [&stream](const std::vector<float2>& moments,
-                  std::size_t count) {
-            if (count > moments.size()) {
-                throw std::logic_error(
-                    "checkpoint moment snapshot is truncated");
-            }
-            if (count == 0U) {
-                return;
-            }
-            constexpr std::size_t chunk_size = 1U << 20U;
-            std::vector<float> chunk(std::min(count, chunk_size));
-            for (std::size_t component = 0U; component < 2U;
-                 ++component) {
-                for (std::size_t offset = 0U; offset < count;
-                     offset += chunk_size) {
-                    const auto size =
-                        std::min(chunk_size, count - offset);
-                    for (std::size_t index = 0U; index < size; ++index) {
-                        const auto pair = moments[offset + index];
-                        chunk[index] = component == 0U ? pair.x : pair.y;
-                    }
-                    stream.write(
-                        reinterpret_cast<const char*>(chunk.data()),
-                        static_cast<std::streamsize>(
-                            size * sizeof(float)));
-                }
-            }
-        };
-    constexpr std::array<char, 16> magic{
-        'D', 'R', 'O', 'N', 'E', 'G', 'S', '-', 'C', 'K', 'P', 'T',
-        '-', 'V', '1', '\0'};
-    stream.write(magic.data(), magic.size());
-    constexpr std::uint32_t format_version = 5U;
-    write_value(format_version);
-    write_string(snapshot.dataset_fingerprint);
-    write_string(snapshot.configuration_fingerprint);
-    write_value(snapshot.progress.completed_iteration);
-    write_value(snapshot.progress.topology_refinements);
-    write_value(snapshot.progress.gaussians_added);
-    write_value(snapshot.progress.gaussians_pruned);
-    write_value(snapshot.progress.gaussian_slots_reused);
-    write_value(snapshot.progress.topology_compactions);
-    write_value(snapshot.progress.initial_loss);
-    const std::uint8_t has_initial_held_out_psnr =
-        snapshot.progress.initial_held_out_psnr.has_value() ? 1U : 0U;
-    const std::uint8_t has_initial_held_out_ssim =
-        snapshot.progress.initial_held_out_ssim.has_value() ? 1U : 0U;
-    write_value(has_initial_held_out_psnr);
-    if (has_initial_held_out_psnr) {
-        write_value(*snapshot.progress.initial_held_out_psnr);
-    }
-    write_value(has_initial_held_out_ssim);
-    if (has_initial_held_out_ssim) {
-        write_value(*snapshot.progress.initial_held_out_ssim);
-    }
-    const std::uint8_t has_initial_pixel_weighted_psnr =
-        snapshot.progress.initial_pixel_weighted_psnr.has_value()
-            ? 1U
-            : 0U;
-    const std::uint8_t has_initial_pixel_weighted_ssim =
-        snapshot.progress.initial_pixel_weighted_ssim.has_value()
-            ? 1U
-            : 0U;
-    write_value(has_initial_pixel_weighted_psnr);
-    if (has_initial_pixel_weighted_psnr) {
-        write_value(*snapshot.progress.initial_pixel_weighted_psnr);
-    }
-    write_value(has_initial_pixel_weighted_ssim);
-    if (has_initial_pixel_weighted_ssim) {
-        write_value(*snapshot.progress.initial_pixel_weighted_ssim);
-    }
-    write_value(snapshot.optimizer_steps);
-    write_value(snapshot.maximum_steps);
-    write_value(snapshot.noise_seed);
-    const auto count = snapshot.gaussian_count;
-    const auto portable_count = static_cast<std::uint64_t>(count);
-    write_value(portable_count);
-    write_value(snapshot.maximum_active_sh_degree);
-    write_value(snapshot.sh_degree_interval);
-    write_value(snapshot.active_sh_degree);
-    const auto profile =
-        static_cast<std::uint32_t>(snapshot.optimizer_profile);
-    write_value(profile);
-    const std::uint8_t portable_fastgs =
-        snapshot.fastgs_compatibility ? 1U : 0U;
-    write_value(portable_fastgs);
-    write_value(snapshot.position_learning_rate_scale);
-    write_value(snapshot.minimum_log_scale);
-    write_value(snapshot.maximum_log_scale);
-    write_value(snapshot.beta_first_power);
-    write_value(snapshot.beta_second_power);
-    write_device(snapshot.gaussians, count);
-    write_device(snapshot.first_dc, count * 3U);
-    write_device(snapshot.second_dc, count * 3U);
-    write_moment_pairs(
-        snapshot.sh_rest_moments,
-        count * maximum_sh_rest_values);
-    write_device(snapshot.first_opacity, count);
-    write_device(snapshot.second_opacity, count);
-    write_moment_pairs(
-        snapshot.opacity_sh_moments,
-        count * maximum_opacity_sh_coefficients);
-    write_device(snapshot.first_xyz, count * 3U);
-    write_device(snapshot.second_xyz, count * 3U);
-    write_device(snapshot.first_log_scale, count * 3U);
-    write_device(snapshot.second_log_scale, count * 3U);
-    write_device(snapshot.first_rotation, count * 4U);
-    write_device(snapshot.second_rotation, count * 4U);
-    write_device(snapshot.refine_weight_max, count);
-    write_device(snapshot.visibility_count, count);
-    write_device(snapshot.edge_weight_sum, count);
-    write_device(snapshot.absgrad_sum, count);
-    write_device(snapshot.absgrad_observation_count, count);
-    stream.flush();
-    if (!stream) {
-        throw std::runtime_error(
-            "failed to write checkpoint: " + temporary);
-    }
-    stream.close();
-    const auto payload_bytes =
-        static_cast<std::uint64_t>(
-            std::filesystem::file_size(temporary));
-    const auto checksum =
-        checkpoint_checksum(temporary, payload_bytes);
-    {
-        std::ofstream trailer(temporary, std::ios::binary | std::ios::app);
-        trailer.write(
-            reinterpret_cast<const char*>(&checksum),
-            static_cast<std::streamsize>(sizeof(checksum)));
-        trailer.flush();
-        if (!trailer) {
-            throw std::runtime_error(
-                "failed to append checkpoint checksum");
-        }
-    }
-    sync_checkpoint_file(temporary);
-    std::error_code error;
-    std::filesystem::rename(temporary, path, error);
-    if (error) {
-        const auto backup = path.string() + ".previous";
-        std::error_code backup_error;
-        std::filesystem::remove(backup, backup_error);
-        backup_error.clear();
-        if (std::filesystem::exists(path)) {
-            std::filesystem::rename(path, backup, backup_error);
-        }
-        if (backup_error) {
-            throw std::runtime_error(
-                "cannot preserve previous checkpoint: " +
-                backup_error.message());
-        }
-        error.clear();
-        std::filesystem::rename(temporary, path, error);
-        if (error && std::filesystem::exists(backup)) {
-            std::error_code restore_error;
-            std::filesystem::rename(backup, path, restore_error);
-        } else {
-            std::filesystem::remove(backup, backup_error);
-        }
-    }
-    if (error) {
-        throw std::runtime_error(
-            "cannot publish checkpoint: " + error.message());
-    }
-    sync_checkpoint_directory(path);
+#if DRONEGS_PROFILE_CHECKPOINT_WRITE_PHASES
+    checkpoint_io::WriteTimings phases;
+    checkpoint_io::write_checkpoint(
+        *impl_, path, checkpoint_io::default_checksum_mode, &phases);
+    std::cout << "{\"event\":\"checkpoint_write_phases\","
+        << "\"streaming_checksum\":" << (phases.checksum_inside_serialization ? "true" : "false")
+        << ",\"checksum_inside_serialization\":" << (phases.checksum_inside_serialization ? "true" : "false")
+        << ",\"payload_bytes\":" << phases.payload_bytes
+        << ",\"serialization_seconds\":" << phases.serialization_seconds
+        << ",\"checksum_seconds\":" << phases.checksum_seconds
+        << ",\"payload_flush_close_seconds\":" << phases.payload_flush_close_seconds
+        << ",\"trailer_seconds\":" << phases.trailer_seconds
+        << ",\"file_sync_seconds\":" << phases.file_sync_seconds
+        << ",\"publication_seconds\":" << phases.publication_seconds
+        << ",\"directory_sync_seconds\":" << phases.directory_sync_seconds
+        << ",\"total_seconds\":" << phases.total_seconds << "}\n" << std::flush;
+#else
+    checkpoint_io::write_checkpoint(*impl_, path);
+#endif
 }
 
 void OrderedAlphaTrainingContext::save_checkpoint(

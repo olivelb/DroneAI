@@ -156,6 +156,8 @@ if(DRONEGS_BUILD_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
+    add_subdirectory(tests/checkpoint_writer)
+
     add_executable(dronegs_core_tests tests/test_core.cpp tests/test_topology_telemetry.cpp tests/test_topology_percentiles.cpp tests/test_refinement_workspace.cpp)
     target_link_libraries(dronegs_core_tests PRIVATE dronegs_core)
     add_test(NAME dronegs_core_tests COMMAND dronegs_core_tests)
