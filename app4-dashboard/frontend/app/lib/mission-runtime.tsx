@@ -18,10 +18,7 @@ import {
 } from "./mission-runtime-state";
 import { replyToStatusPing } from "./status-heartbeat";
 import { parseStatusPayload } from "./mission-api-contracts";
-import type {
-  MissionLog,
-  MissionSummary,
-} from "./types";
+import type { MissionLog, MissionSummary } from "./types";
 import { overallStatusFor } from "./types";
 
 type MissionRuntimeState = {
