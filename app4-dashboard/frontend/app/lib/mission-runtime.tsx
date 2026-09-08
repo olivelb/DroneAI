@@ -16,6 +16,7 @@ import {
   missionSummaryFromDetail,
   summaryLogMessages,
 } from "./mission-runtime-state";
+import { replyToStatusPing } from "./status-heartbeat";
 import { parseStatusPayload } from "./mission-api-contracts";
 import type {
   MissionLog,
@@ -153,11 +154,14 @@ function AuthenticatedMissionRuntime({ children }: { children: React.ReactNode }
     let closed = false;
 
     const connect = () => {
-      ws = new WebSocket(`${getWsBaseUrl()}/ws/status`);
+      const socket = new WebSocket(`${getWsBaseUrl()}/ws/status`);
+      ws = socket;
       ws.onopen = () => setWsConnected(true);
       ws.onmessage = (event) => {
         try {
-          const payload = parseStatusPayload(JSON.parse(event.data));
+          const message: unknown = JSON.parse(event.data);
+          if (replyToStatusPing(message, (reply) => socket.send(reply))) return;
+          const payload = parseStatusPayload(message);
           const existing = missionsRef.current[payload.vol_id];
           if (!existing || existing.stage_runs?.length) {
             if (activeVolIdRef.current === payload.vol_id) void refreshSelectedMission(payload.vol_id);
