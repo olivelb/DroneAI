@@ -57,3 +57,24 @@ not be hidden with an unchecked type assertion.
 The browser E2E fixtures mirror complete server response shapes for the paths
 they exercise. They remain an operator-journey metric, not scientific dataset
 qualification.
+
+
+## Private GSTile persistence
+
+Persistent ranges are scoped by the authenticated organization, subject and role.
+Anonymous views use memory only. Session initialization removes legacy unscoped
+and other-identity databases before publishing the authenticated principal.
+Logout and unauthorized responses close writers and purge GSTile databases;
+BroadcastChannel (or storage events) propagates session changes to other tabs.
+Requests from superseded session loads cannot restore the old principal.
+
+Cleanup failure or missing database enumeration disables persistence for the
+current page. A legacy tab that blocks deletion must be closed for its pending
+IndexedDB deletion to finish; the application does not claim physical erasure
+when the browser refuses it. This is application cache isolation, not encryption
+against scripts already executing on the same origin or access to the OS profile.
+
+Membership checks issue one indexed lookup per requested distinct key, in batches
+of 256, and never enumerate all cache metadata. Local Chromium qualification
+covered 600 stored ranges, identity separation, size mismatches, cancellation,
+legacy cleanup, queued/late writers, and logout deletion across two tabs.
