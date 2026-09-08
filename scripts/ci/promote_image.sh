@@ -59,6 +59,15 @@ docker run --rm \
     image --image-src remote --scanners vuln --severity HIGH,CRITICAL \
     --format json --output "/output/${name}.trivy.json" \
     "$target"
+# Recheck the reviewed native consumers on the exact image being signed.
+if [[ "$name" == "drone-dashboard-api" ]]; then
+    docker run --rm --pull always --network none --read-only \
+        --cap-drop ALL --security-opt no-new-privileges \
+        --user 10001:10001 --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+        --volume "${PWD}/scripts/ci/verify_api_runtime.py:/opt/verify-api-runtime.py:ro" \
+        --entrypoint python "$target" /opt/verify-api-runtime.py \
+        > "${evidence_dir}/${name}.native-runtime.json"
+fi
 python3 -m scripts.ci.verify_unfixed_cves \
     --report "${evidence_dir}/${name}.trivy.json" \
     --image "$name" \
