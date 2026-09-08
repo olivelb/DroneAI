@@ -11,7 +11,7 @@ PROMOTE_IMAGE_SCRIPT = ROOT / "scripts" / "ci" / "promote_image.sh"
 QUALIFICATION_SCRIPT = ROOT / "scripts" / "ci" / "verify_release_qualification.py"
 UNFIXED_CVE_SCRIPT = ROOT / "scripts" / "ci" / "verify_unfixed_cves.py"
 PINNED_PYTHON_BASE = re.compile(
-    r"^FROM python:3\.12-slim@sha256:[0-9a-f]{64}$",
+    r"^FROM python:3\.12-slim@sha256:[0-9a-f]{64}(?: AS native-packages)?$",
 )
 PINNED_NODE_BASE = re.compile(
     r"^FROM node:24-alpine@sha256:[0-9a-f]{64} AS (builder|runner)$",
@@ -123,7 +123,9 @@ def test_python_runtime_bases_and_artifacts_are_immutable() -> None:
     ]
     for path in runtime_dockerfiles:
         dockerfile = path.read_text(encoding="utf-8")
-        assert PINNED_PYTHON_BASE.match(dockerfile.splitlines()[0])
+        from_lines = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
+        assert len(from_lines) == 2
+        assert all(PINNED_PYTHON_BASE.fullmatch(line) for line in from_lines)
         assert "--require-hashes" in dockerfile
 
     colmap_dockerfile = (ROOT / "app1-colmap" / "Dockerfile.base").read_text(

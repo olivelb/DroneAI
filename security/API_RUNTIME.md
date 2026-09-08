@@ -33,3 +33,28 @@ No waiver was created and this change does not qualify production promotion.
 The PR's PostgreSQL/Kafka/S3 composition and supply-chain artifacts provide the
 integration evidence for its exact candidate. Revert the Dockerfile change to
 restore the prior runtime; no application schema or API contract changes here.
+
+## SQLite correction (2026-09-08)
+
+`libsqlite3-0=3.53.4-2` is fetched with APT signature verification from the
+[Debian snapshot of 2026-09-08](https://snapshot.debian.org/archive/debian/20260908T000000Z/).
+Only the download stage sees sid. The final runtime keeps its trixie sources,
+glibc and package database; dpkg installs the exact package and apt checks the
+dependency graph. The amd64 package SHA256 is
+`bbf13c9326764d05e37e6590debdaa6f33af6bd822e3ca1204789d9d1dc23b11`.
+
+Debian identifies this package as fixed for
+[CVE-2026-11822](https://security-tracker.debian.org/tracker/CVE-2026-11822) and
+[CVE-2026-11824](https://security-tracker.debian.org/tracker/CVE-2026-11824).
+The image build now verifies Python's loaded SQLite version, an FTS5 search and
+integrity check, every Rasterio-bundled SQLite's version/FTS5 compile option,
+and an actual GDAL GeoPackage pixel/CRS roundtrip. The promotion script repeats
+these checks as UID 10001 using repository-owned code on the immutable target
+digest before applying any waiver or signing. The old SQLite package fails
+this check. Current local runtime qualification is linux/amd64.
+
+Trivy's trixie advisory can still report both CVEs on the corrected sid package;
+raw counts must not be described as unresolved exploitability or hidden. No
+SQLite waiver is introduced in this phase. Update this snapshot/version when a
+qualified stable fix is available, and rerun the image checks. Revert this
+Dockerfile and verifier change together to restore the prior package policy.
