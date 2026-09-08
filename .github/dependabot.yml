@@ -33,6 +33,9 @@ updates:
       frontend-dependencies:
         patterns:
           - "*"
+        # Engine upgrades require dedicated qualification of the five viewer patches.
+        exclude-patterns:
+          - "playcanvas"
         update-types:
           - minor
           - patch
