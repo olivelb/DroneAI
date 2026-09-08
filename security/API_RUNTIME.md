@@ -58,3 +58,26 @@ raw counts must not be described as unresolved exploitability or hidden. No
 SQLite waiver is introduced in this phase. Update this snapshot/version when a
 qualified stable fix is available, and rerun the image checks. Revert this
 Dockerfile and verifier change together to restore the prior package policy.
+
+## ACL correction and consumers (2026-09-08)
+
+The same signed snapshot now provides `libacl1=2.4.0-1`, which Debian marks
+fixed for [CVE-2026-54369](https://security-tracker.debian.org/tracker/CVE-2026-54369).
+It is installed together with `tar=1.35+dfsg-5`: that package's Debian changelog
+records the fix for [the ACL symbol collision, bug 1141146](https://bugs.debian.org/1141146).
+The amd64 SHA256 values are respectively
+`e9da0e00387e31c1709b70497f1eda91389c962c3940e6d233d4c57f5ea6f635` and
+`c1c24b21c27006e49d691d41c847ad09fbbd6516626a942f69e59c15fbecc81e`.
+
+The image checker now tests fd-based extended ACL writes, directory-relative
+reads, explicit rejection of symlink following, and real ACL preservation
+through `cp`, in-place `sed` and `tar` archive/extract. This checks the loaded
+ABI and consumers, not only package version strings. It runs as the service
+UID, also on the exact digest before promotion. An image with the previous
+ACL package is rejected. No ACL waiver is added in this phase.
+
+The new `_at` APIs enable safer callers; legacy pathname APIs can still follow
+symlinks by design. The package upgrade does not turn arbitrary privileged
+legacy callers into safe code. The API runs as UID 10001 and qualification drops
+all capabilities. Any future privileged ACL consumer needs its own path/fd audit.
+Rollback must restore ACL, tar and the corresponding verifier together.
