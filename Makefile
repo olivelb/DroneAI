@@ -51,6 +51,7 @@ API_TYPED_PATHS := \
 	app4-dashboard/api/observability.py \
 	app4-dashboard/api/security.py \
 	app4-dashboard/api/rate_limit.py \
+	app4-dashboard/api/rate_limit_maintenance.py \
 	app4-dashboard/api/retention.py \
 	app4-dashboard/api/messaging.py \
 	app4-dashboard/api/realtime.py \

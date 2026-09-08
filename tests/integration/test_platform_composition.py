@@ -27,12 +27,14 @@ def test_identity_rate_limit_is_shared_across_real_api_replicas() -> None:
     key_hash = DatabaseTokenBucketRateLimiter._key_hash(identity)
     now = datetime(2026, 8, 12, tzinfo=UTC)
     replica_a = DatabaseTokenBucketRateLimiter(
+        scope="tile",
         session_scope=get_session,
         requests_per_minute=2,
         burst=2,
         clock=lambda: now,
     )
     replica_b = DatabaseTokenBucketRateLimiter(
+        scope="tile",
         session_scope=get_session,
         requests_per_minute=2,
         burst=2,
