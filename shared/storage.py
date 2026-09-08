@@ -9,7 +9,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, cast
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -395,26 +395,27 @@ def download_directory(
     return count
 
 
+def iter_objects(
+    s3_prefix: str, bucket: str | None = None, delimiter: str = ""
+) -> Iterator[str]:
+    """Yield object keys and optional common prefixes without retaining all pages."""
+    client = _get_client()
+    pages = client.get_paginator("list_objects_v2").paginate(
+        Bucket=bucket or S3_BUCKET, Prefix=s3_prefix, Delimiter=delimiter,
+    )
+    for page in pages:
+        if delimiter:
+            for common_prefix in page.get("CommonPrefixes", []):
+                yield cast(str, common_prefix["Prefix"])
+        for obj in page.get("Contents", []):
+            yield cast(str, obj["Key"])
+
+
 def list_objects(
     s3_prefix: str, bucket: str | None = None, delimiter: str = ""
 ) -> list[str]:
-    """List all object keys under a prefix.
-
-    If *delimiter* is set (e.g. ``"/"``), returns only the common prefixes
-    (virtual directory listing).
-    """
-    bucket = bucket or S3_BUCKET
-    client = _get_client()
-    keys: list[str] = []
-    paginator = client.get_paginator("list_objects_v2")
-    pages = paginator.paginate(Bucket=bucket, Prefix=s3_prefix, Delimiter=delimiter)
-    for page in pages:
-        if delimiter:
-            for cp in page.get("CommonPrefixes", []):
-                keys.append(cp["Prefix"])
-        for obj in page.get("Contents", []):
-            keys.append(obj["Key"])
-    return keys
+    """Collect object keys and, when requested, common prefixes."""
+    return list(iter_objects(s3_prefix, bucket, delimiter))
 
 
 def file_exists(s3_key: str, bucket: str | None = None) -> bool:
