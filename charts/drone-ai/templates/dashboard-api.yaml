@@ -1,3 +1,11 @@
+{{- if .Values.stageJobs.sam3.modelDirectory }}
+{{- if not (hasPrefix "/" .Values.stageJobs.sam3.modelDirectory) }}
+{{- fail "stageJobs.sam3.modelDirectory must be an absolute image path" }}
+{{- end }}
+{{- if not (regexMatch "^[0-9a-f]{64}$" .Values.stageJobs.sam3.artifactSha256) }}
+{{- fail "local SAM3 requires stageJobs.sam3.artifactSha256" }}
+{{- end }}
+{{- end }}
 {{- include "colmap.assertWorkDriveConfig" . }}
 {{- if and .Values.stageJobs.detectionFanout.enabled (not .Values.stageJobs.artifactSelectiveRestoreEnabled) }}
 {{- fail "stageJobs.detectionFanout.enabled requires stageJobs.artifactSelectiveRestoreEnabled=true" }}
