@@ -404,13 +404,20 @@ def settings_from_environment() -> StageOrchestratorSettings:
         detection_environment += (
             ("SAM3_MODEL_SHA256", sam3_artifact_sha256),
         )
-    detection_secret_environment = (
+    detection_secret_environment: tuple[SecretEnvironment, ...] = (
         SecretEnvironment(
             "HF_TOKEN",
             os.getenv("DRONEAI_STAGE_HF_TOKEN_SECRET_NAME", "hf-token"),
             os.getenv("DRONEAI_STAGE_HF_TOKEN_SECRET_KEY", "HF_TOKEN"),
         ),
     )
+    sam3_directory = os.getenv("DRONEAI_STAGE_SAM3_MODEL_DIRECTORY", "").strip()
+    if sam3_directory:
+        if not sam3_directory.startswith("/") or not re.fullmatch(r"[0-9a-f]{64}", sam3_artifact_sha256):
+            raise ValueError("Local SAM3 requires an absolute model directory and independent artifact SHA-256")
+        detection_environment += (("SAM3_MODEL_DIRECTORY", sam3_directory),
+                                  ("HF_HUB_OFFLINE", "1"), ("TRANSFORMERS_OFFLINE", "1"))
+        detection_secret_environment = ()
     work_drives = _work_drive_catalog(
         os.getenv("DRONEAI_STAGE_WORK_DRIVES_JSON", "[]"),
         empty_dir_size_limit=os.getenv(

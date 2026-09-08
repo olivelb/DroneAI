@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from shared import storage
 from shared.database import Dataset, DatasetUploadFile, DatasetUploadSession
 
+from .dataset_image_headers import uploaded_image_header_matches
 from .dataset_upload_contracts import (
     IMAGE_SUFFIXES,
     UploadFileCompleteResponse,
@@ -296,6 +297,17 @@ def complete_file_from_intent(
             "Completed object identity or size does not match the upload intent",
             delete_owned_object=owned,
         )
+    try:
+        header_matches = uploaded_image_header_matches(
+            str(file_record.s3_key), str(file_record.filename),
+            int(file_record.size_bytes), str(info["etag"]),
+        )
+    except Exception as error:
+        _persist_transient_recovery_error(session, record, file_record, error)
+        raise
+    if not header_matches:
+        _fail_file_completion(session, record, file_record,
+                              "Uploaded image header does not match its filename extension")
     file_record.status = "completed"
     file_record.etag = str(info["etag"])
     file_record.last_error = None

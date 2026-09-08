@@ -35,6 +35,7 @@ import {
   parseCommandResponse,
   parseDatasetItems,
   parseMissionCatalog,
+  parseMissionCatalogIndex,
   parseMissionDetail,
   parseMissionSummaryResponse,
   parseParameterConfig,
@@ -79,6 +80,13 @@ export const fetchMissionCatalog = (limit = 25, offset = 0, signal?: AbortSignal
     limit: String(limit),
     offset: String(offset),
   }).toString()}`, parseMissionCatalog, { signal });
+export const fetchMissionCatalogIndex = (signal?: AbortSignal) =>
+  api("/missions/revisions", parseMissionCatalogIndex, { signal });
+export const fetchMissionCatalogItems = async (volIds: string[], signal?: AbortSignal) =>
+  (await api("/missions/catalog-items", parseMissionCatalog, {
+    method: "POST", signal, headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ vol_ids: volIds }),
+  })).items;
 export const fetchMissionDetail = (volId: string, signal?: AbortSignal) =>
   api(`/missions/${encodeURIComponent(volId)}`, parseMissionDetail, { signal });
 export const getGaussianViewerDescriptorUrl = (volId: string) =>

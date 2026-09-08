@@ -10,6 +10,7 @@ import hmac
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, cast
 
 import cv2
@@ -43,6 +44,7 @@ class Sam3Backend:
         model_id: str | None = None,
         model_revision: str | None = None,
         model_sha256: str | None = None,
+        model_directory: str | None = None,
         default_prompt: str | None = None,
         mask_threshold: float | None = None,
         logger: logging.Logger | None = None,
@@ -70,6 +72,13 @@ class Sam3Backend:
             "production",
         } and not self.expected_artifact_sha256:
             raise RuntimeError("SAM3_MODEL_SHA256 is required in protected environments")
+        self.model_directory = (
+            model_directory if model_directory is not None else os.getenv("SAM3_MODEL_DIRECTORY", "")
+        ).strip()
+        if self.model_directory and (
+            not Path(self.model_directory).is_absolute() or not self.expected_artifact_sha256
+        ):
+            raise ValueError("Local SAM3 requires an absolute model directory and SAM3_MODEL_SHA256")
         self.default_prompt: str = (
             default_prompt
             or os.getenv(
@@ -97,7 +106,6 @@ class Sam3Backend:
         self.autocast_dtype = torch.bfloat16 if self.device_type == "cuda" else torch.float32
 
     def load_model(self) -> tuple[Any, Any]:
-        from huggingface_hub import hf_hub_download
         from transformers import Sam3Model, Sam3Processor
 
         if self._model is not None and self._processor is not None:
@@ -112,27 +120,26 @@ class Sam3Backend:
             self.model_revision,
             self.device_type,
         )
-        artifact_path = hf_hub_download(
-            repo_id=self.model_id,
-            filename="model.safetensors",
-            revision=self.model_revision,
-        )
+        source = self.model_directory or self.model_id
+        if self.model_directory:
+            artifact_path = str(Path(self.model_directory) / "model.safetensors")
+            loading_options: dict[str, Any] = {"local_files_only": True}
+        else:
+            from huggingface_hub import hf_hub_download
+            artifact_path = hf_hub_download(
+                repo_id=self.model_id, filename="model.safetensors", revision=self.model_revision,
+            )
+            loading_options = {"revision": self.model_revision}
         self._artifact_sha256 = sha256_file(artifact_path)
         if self.expected_artifact_sha256 and not hmac.compare_digest(
             self._artifact_sha256,
             self.expected_artifact_sha256,
         ):
             raise RuntimeError(
-                "Downloaded SAM3 artifact does not match SAM3_MODEL_SHA256"
+                "Configured SAM3 artifact does not match SAM3_MODEL_SHA256"
             )
-        self._model = Sam3Model.from_pretrained(
-            self.model_id,
-            revision=self.model_revision,
-        ).to(self.device_type)
-        self._processor = Sam3Processor.from_pretrained(
-            self.model_id,
-            revision=self.model_revision,
-        )
+        self._model = Sam3Model.from_pretrained(source, **loading_options).to(self.device_type)
+        self._processor = Sam3Processor.from_pretrained(source, **loading_options)
         image_processor = getattr(self._processor, "image_processor", None)
         processor_size = cast(
             JsonObject,

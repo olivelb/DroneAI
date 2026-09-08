@@ -14,6 +14,8 @@ GSTILE_VERSION = 1
 GSTILE_ADAPTIVE_LOD_PROFILE = "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4"
 GSTILE_PACK_HEADER_SIZE = 32
 GSTILE_PACK_RECORD_SIZE = 96
+GSTILE_MAX_PACK_BYTES = 128 * 1024**2
+GSTILE_MAX_MANIFEST_BYTES = 8 * 1024**2
 
 
 def safe_bundle_path(value: Any, field: str) -> str:
@@ -83,6 +85,7 @@ def _validate_packs(
             or isinstance(record_count, bool)
             or not isinstance(record_count, int)
             or record_count < 1
+            or byte_length > GSTILE_MAX_PACK_BYTES
             or byte_length != GSTILE_PACK_HEADER_SIZE + record_count * GSTILE_PACK_RECORD_SIZE
         ):
             raise ValueError("GSTile pack length or record count is invalid")
@@ -381,4 +384,7 @@ def validate_gstile_manifest(payload: Mapping[str, Any]) -> None:
 
 def canonical_gstile_manifest_bytes(payload: Mapping[str, Any]) -> bytes:
     validate_gstile_manifest(payload)
-    return (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
+    encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
+    if len(encoded) > GSTILE_MAX_MANIFEST_BYTES:
+        raise ValueError("GSTile manifest exceeds 8 MiB")
+    return encoded

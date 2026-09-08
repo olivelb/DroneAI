@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.validation import (
@@ -94,3 +94,9 @@ class MissionParams(BaseModel):
     @classmethod
     def validate_drive(cls, value: str) -> str:
         return validate_work_drive(value)
+
+
+class MissionCatalogSelection(BaseModel):
+    vol_ids: list[Annotated[str, Field(min_length=1, max_length=256)]] = Field(
+        min_length=1, max_length=100
+    )
