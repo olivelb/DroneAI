@@ -482,3 +482,35 @@ def test_rendered_api_and_worker_share_custom_rate_limit_settings():
     assert quotas["dashboard-api"] == quotas["dashboard-control-worker"]
     assert quotas["dashboard-control-worker"]["DRONEAI_IDENTITY_PEER_RATE_LIMIT_BURST"] == "400"
     assert quotas["dashboard-control-worker"]["DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS"] == "51"
+
+
+def test_local_sam3_snapshot_is_rendered_for_the_active_controller():
+    import shutil
+    import subprocess
+    import pytest
+    import yaml
+    if shutil.which("helm") is None:
+        pytest.skip("Helm executable is required for the real rendered contract")
+    command = ["helm", "template", "sam3-offline-test", str(CHART),
+               "--set-string", "stageJobs.sam3.modelDirectory=/opt/models/sam3",
+               "--set-string", "stageJobs.sam3.artifactSha256=" + "a" * 64]
+    for standalone in (True, False):
+        rendered = subprocess.check_output([*command, "--set",
+            "dashboardApi.controlWorker.enabled=" + str(standalone).lower()], text=True)
+        environments = {}
+        for document in yaml.safe_load_all(rendered):
+            if not document or document.get("kind") != "Deployment":
+                continue
+            name = document["metadata"]["name"]
+            if name in {"dashboard-api", "dashboard-control-worker"}:
+                environments[name] = {item["name"]: item.get("value") for item in
+                    document["spec"]["template"]["spec"]["containers"][0]["env"]}
+        environment = environments["dashboard-control-worker" if standalone else "dashboard-api"]
+        assert environment["DRONEAI_STAGE_SAM3_MODEL_DIRECTORY"] == "/opt/models/sam3"
+        assert environment["DRONEAI_STAGE_SAM3_ARTIFACT_SHA256"] == "a" * 64
+        if standalone:
+            assert "DRONEAI_STAGE_SAM3_MODEL_DIRECTORY" not in environments["dashboard-api"]
+    for override in ["stageJobs.sam3.modelDirectory=relative", "stageJobs.sam3.artifactSha256="]:
+        result = subprocess.run([*command, "--set-string", override], text=True, capture_output=True)
+        assert result.returncode != 0
+        assert "sam3" in result.stderr.lower()

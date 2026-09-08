@@ -48,6 +48,8 @@ dashboardApi.controlWorker.enabled is true.
   value: {{ .Values.hfToken.existingSecret | quote }}
 - name: DRONEAI_STAGE_HF_TOKEN_SECRET_KEY
   value: {{ .Values.hfToken.secretKey | quote }}
+- name: DRONEAI_STAGE_SAM3_MODEL_DIRECTORY
+  value: {{ .Values.stageJobs.sam3.modelDirectory | quote }}
 - name: DRONEAI_STAGE_SAM3_MODEL_ID
   value: {{ .Values.stageJobs.sam3.repository | quote }}
 - name: DRONEAI_STAGE_SAM3_MODEL_REVISION

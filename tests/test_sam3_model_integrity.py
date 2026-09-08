@@ -71,3 +71,49 @@ def test_downloaded_artifact_is_verified_before_deserialization(monkeypatch, tmp
     model, processor = verified.load_model()
     assert isinstance(model, FakeModel)
     assert isinstance(processor, FakeProcessor)
+
+
+@pytest.mark.parametrize("directory,sha", [("relative", "a" * 64), ("/opt/models/sam3", "")])
+def test_local_snapshot_requires_absolute_path_and_independent_hash(directory, sha):
+    with pytest.raises(ValueError, match="Local SAM3 requires"):
+        Sam3Backend(model_directory=directory, model_sha256=sha)
+
+
+def test_local_snapshot_never_downloads_and_verifies_before_loading(monkeypatch, tmp_path):
+    artifact = tmp_path / "model.safetensors"
+    artifact.write_bytes(b"synthetic trusted offline weights")
+    expected = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    calls = []
+    class FakeModel:
+        @classmethod
+        def from_pretrained(cls, source, **kwargs):
+            calls.append(("model", source, kwargs))
+            return cls()
+        def to(self, _device):
+            return self
+    class FakeProcessor:
+        image_processor = SimpleNamespace(size={"height": 1008, "width": 1008})
+        @classmethod
+        def from_pretrained(cls, source, **kwargs):
+            calls.append(("processor", source, kwargs))
+            return cls()
+    def no_download(**kwargs):
+        pytest.fail("offline loader attempted a Hugging Face download")
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(hf_hub_download=no_download))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(Sam3Model=FakeModel, Sam3Processor=FakeProcessor))
+    backend = Sam3Backend(model_directory=str(tmp_path), model_sha256="0" * 64)
+    backend.device_type = "cpu"
+    with pytest.raises(RuntimeError, match="does not match"):
+        backend.load_model()
+    assert calls == []
+    backend = Sam3Backend(model_directory=str(tmp_path), model_sha256=expected)
+    backend.device_type = "cpu"
+    backend.load_model()
+    assert calls == [("model", str(tmp_path), {"local_files_only": True}),
+                     ("processor", str(tmp_path), {"local_files_only": True})]
+    artifact.unlink()
+    missing = Sam3Backend(model_directory=str(tmp_path), model_sha256=expected)
+    missing.device_type = "cpu"
+    with pytest.raises(FileNotFoundError):
+        missing.load_model()
+    assert len(calls) == 2
