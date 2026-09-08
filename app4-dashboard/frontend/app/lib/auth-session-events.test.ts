@@ -7,7 +7,7 @@ describe("session notifications", () => {
     const channel = { postMessage: vi.fn(), close: vi.fn() };
     vi.stubGlobal("BroadcastChannel", class { constructor() { return channel; } });
     broadcastSessionChange("logout");
-    expect(channel.postMessage).toHaveBeenCalledWith("logout");
+    expect(channel.postMessage).toHaveBeenCalledWith({ change: "logout", source: expect.any(String) });
     expect(channel.close).toHaveBeenCalledOnce();
   });
   it("validates incoming events and closes the subscription", () => {
@@ -15,10 +15,19 @@ describe("session notifications", () => {
     vi.stubGlobal("BroadcastChannel", class { constructor() { return channel; } });
     const listener = vi.fn();
     const unsubscribe = subscribeSessionChanges(listener);
-    for (const data of [null, {}, "invalid", "logout", "login"]) channel.onmessage({ data });
+    for (const data of [null, {}, "invalid", {change: "logout", source: "other"}, {change: "login", source: "other"}]) channel.onmessage({ data });
     expect(listener.mock.calls).toEqual([["logout"], ["login"]]);
     unsubscribe();
     expect(channel.close).toHaveBeenCalledOnce();
+  });
+  it("ignores notifications from its own page", () => {
+    const channel = { onmessage: (event: { data: unknown }) => { void event; }, postMessage: vi.fn(), close: vi.fn() };
+    vi.stubGlobal("BroadcastChannel", class { constructor() { return channel; } });
+    const listener = vi.fn();
+    subscribeSessionChanges(listener);
+    broadcastSessionChange("login");
+    channel.onmessage({ data: channel.postMessage.mock.calls[0][0] });
+    expect(listener).not.toHaveBeenCalled();
   });
   it("validates the storage fallback and removes its listener", () => {
     vi.stubGlobal("BroadcastChannel", undefined);
