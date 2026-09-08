@@ -1,10 +1,11 @@
 # API runtime supply-chain audit (2026-09-08)
 
 The API image keeps Python 3.12 and its pinned Debian base. It removes unused
-`bsdutils`, `login`, `mount`, `util-linux`, and `perl-base` through apt, followed
+`bsdutils`, `login`, `mount`, `util-linux`, `perl-base`, `gzip`, and `ncurses-bin` through apt, followed
 by autoremove. These packages are Essential for a general-purpose Debian system;
 the explicit removal is limited to this immutable service image, never a host.
-Installed-package metadata remains intact for Trivy and SBOM tooling.
+Installed-package metadata remains intact for Trivy and SBOM tooling. The build
+checks that the removed gzip and infocmp executables are absent.
 
 OpenSSL CLI remains required by the CA-certificate package. The legacy provider
 is a dependency of `libssl3t64`; removing it directly breaks the dependency graph.
@@ -18,11 +19,13 @@ Python runtime libraries such as UUID and SQLite are preserved.
 - The CI image smoke test now imports every API module and checks TLS trust.
 - Trivy 0.73.0 and CycloneDX SBOM generated from the actual final image.
 - Reference CI run 34108173960: **51 HIGH + 3 CRITICAL**, all unfixed.
-- Reduced runtime scan: **14 HIGH + 0 CRITICAL**, all unfixed.
+- First reduced runtime scan: **14 HIGH + 0 CRITICAL**, all unfixed.
+- Removing gzip and ncurses-bin: **12 HIGH + 0 CRITICAL**, all unfixed.
+- Actual Uvicorn `/live` and `/openapi.json` passed in a non-root read-only
+  container with no external network; Rasterio imports and TLS trust passed.
 
-Residual findings by package: libuuid1 (4), libsqlite3-0 (2), gzip (1), libacl1
-(1), libncursesw6 (1), libsystemd0 (1), libtinfo6 (1), libudev1 (1), ncurses-base
-(1), ncurses-bin (1). Counts are a dated scanner result, not an exploitability
+Residual findings by package: libuuid1 (4), libsqlite3-0 (2), libacl1 (1),
+libncursesw6 (1), libsystemd0 (1), libtinfo6 (1), libudev1 (1), ncurses-base (1). Counts are a dated scanner result, not an exploitability
 assessment. The unchanged promotion policy still rejects these findings unless
 they are fixed, removed, or individually justified in the waiver registry.
 No waiver was created and this change does not qualify production promotion.

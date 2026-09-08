@@ -11,8 +11,10 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         libexpat1 libssl3t64 \
-    && apt-get purge --yes --allow-remove-essential bsdutils login mount util-linux perl-base \
+    && apt-get purge --yes --allow-remove-essential bsdutils login mount util-linux perl-base gzip ncurses-bin \
     && apt-get autoremove --yes \
+    && test ! -e /usr/bin/gzip \
+    && test ! -e /usr/bin/infocmp \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements/api.txt /tmp/requirements.txt
