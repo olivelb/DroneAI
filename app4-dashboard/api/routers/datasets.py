@@ -28,6 +28,7 @@ from ..dataset_access import (
     get_owned_dataset,
     normalize_storage_path,
 )
+from ..dataset_browse import BrowseItem, browse_items_from_keys, catalog_browse_keys
 from ..image_preview import PreviewTooLargeError, render_preview
 from ..security import (
     Principal,
@@ -41,15 +42,7 @@ router = APIRouter(
     tags=["datasets"],
     dependencies=[Depends(bind_tenant_context)],
 )
-IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 MAX_INLINE_PREVIEW_BYTES = 64 * 1024 * 1024
-
-
-class BrowseItem(TypedDict):
-    name: str
-    path: str
-    is_dir: bool
-    image_count: int
 
 
 class DatasetItem(TypedDict):
@@ -67,10 +60,6 @@ class DatasetDeleteResponse(TypedDict):
 def sanitize_dataset_name(value: str, *, replacement: str = "") -> str:
     pattern = r"[^a-zA-Z0-9_\-.]" if not replacement else r"[^a-zA-Z0-9_-]"
     return re.sub(pattern, replacement, value.strip())
-
-
-def image_count(keys: list[str]) -> int:
-    return sum(1 for key in keys if key.lower().endswith(IMAGE_SUFFIXES))
 
 
 @router.get("/browse")
@@ -123,31 +112,9 @@ def browse_path(
                 requested_owner=owner_subject,
                 action="browse_storage",
             )
-        storage_prefix = f"{authorized_prefix}/"
-        items: list[BrowseItem] = []
-        for key in storage.list_objects(storage_prefix, delimiter="/"):
-            if key.endswith("/") and key != storage_prefix:
-                items.append(
-                    {
-                        "name": key.rstrip("/").split("/")[-1],
-                        "path": key.rstrip("/"),
-                        "is_dir": True,
-                        "image_count": image_count(storage.list_objects(key)),
-                    }
-                )
-            elif not key.endswith("/"):
-                items.append(
-                    {
-                        "name": key.split("/")[-1],
-                        "path": key,
-                        "is_dir": False,
-                        "image_count": 0,
-                    }
-                )
-        return sorted(
-            items,
-            key=lambda item: (not item["is_dir"], item["name"]),
-        )
+            keys = catalog_browse_keys(session, authorized_prefix, principal, owner_subject)
+        return browse_items_from_keys(authorized_prefix,
+            keys if keys is not None else storage.iter_objects(f"{authorized_prefix}/"))
     except HTTPException:
         raise
     except Exception as error:
