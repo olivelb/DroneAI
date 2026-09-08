@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PLAYCANVAS_VERSION = "2.21.4";
+const PLAYCANVAS_VERSION = "2.22.0";
 const ORIGINAL_JACOBIAN = "let J2 = -J1 / vz * v.xy;";
 const PATCH_MARKER = "let projectedLimit = vec2f(";
 const FASTGS_JACOBIAN = `let projectedLimit = vec2f(

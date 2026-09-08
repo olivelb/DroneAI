@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PLAYCANVAS_VERSION = "2.21.4";
+const PLAYCANVAS_VERSION = "2.22.0";
 const VARIANTS = ["playcanvas"];
 
 const READ_ORIGINAL = `var<private> cachedTransformA: vec4u;

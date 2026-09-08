@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PLAYCANVAS_VERSION = "2.21.4";
+const PLAYCANVAS_VERSION = "2.22.0";
 const SHADER_MARKER = "DroneAI shared work-buffer view direction";
 const PASS_MARKER = "DroneAI stable work-buffer pass names";
 
