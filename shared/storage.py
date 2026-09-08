@@ -24,6 +24,7 @@ from shared.config import (
     S3_SECRET_KEY,
 )
 from shared.observability import metrics_enabled, observe_s3_failure
+from shared.storage_reads import read_control_object, read_object_prefix
 from shared import storage_immutable as immutable
 from shared.storage_immutable import (
     ContentAddressedUpload,
@@ -458,30 +459,19 @@ def get_object_info(
 
 
 def get_object_bytes(
-    s3_key: str,
-    bucket: str | None = None,
-    *,
-    max_bytes: int = 16 * 1024 * 1024,
+    s3_key: str, bucket: str | None = None, *, max_bytes: int = 16 * 1024 * 1024,
 ) -> bytes:
     """Read one bounded control object and reject unexpectedly large payloads."""
+    return read_control_object(get_object_stream, s3_key, bucket, max_bytes=max_bytes)
 
-    if max_bytes < 1:
-        raise ValueError("max_bytes must be positive")
-    stream, size, _content_type = get_object_stream(s3_key, bucket)
-    try:
-        if size > max_bytes:
-            raise ValueError(
-                f"S3 control object exceeds {max_bytes} bytes: {s3_key}"
-            )
-        payload = stream.read(max_bytes + 1)
-    finally:
-        stream.close()
-    if len(payload) != size:
-        raise OSError(
-            f"S3 object size changed while reading {s3_key}: "
-            f"read={len(payload)}, expected={size}"
-        )
-    return bytes(payload)
+
+def get_object_prefix(
+    s3_key: str, *, expected_size: int, etag: str, max_bytes: int = 16,
+    bucket: str | None = None,
+) -> bytes:
+    """Read a bounded prefix of the object previously verified by HEAD."""
+    return read_object_prefix(_get_client(), s3_key, bucket or S3_BUCKET,
+                              expected_size=expected_size, etag=etag, max_bytes=max_bytes)
 
 
 def put_verified_bytes(
