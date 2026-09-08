@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PLAYCANVAS_VERSION = "2.21.4";
+const PLAYCANVAS_VERSION = "2.22.0";
 const JS_MARKER = "DroneAI stable GSplat container intervals";
 const JS_ANCHOR = /\n([ \t]+)hide\(\) \{/g;
 const JS_METHOD = `

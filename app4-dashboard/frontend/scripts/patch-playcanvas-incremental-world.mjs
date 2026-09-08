@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PLAYCANVAS_VERSION = "2.21.4";
+const PLAYCANVAS_VERSION = "2.22.0";
 const FULL_REBUILD_PATTERN =
   /^[ \t]*if \(this\._placementSetChanged\) \{\r?\n[ \t]*newState\.fullRebuild = true;\r?\n[ \t]*\}/gm;
 const INCREMENTAL_MARKER =

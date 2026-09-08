@@ -1,0 +1,760 @@
+{
+  "date": "2026-09-08",
+  "package": "playcanvas",
+  "baseline": "2.21.4",
+  "candidate": "2.22.0",
+  "initial_strict_comparison": {
+    "limits": {
+      "mean_abs_8bit": 0.25,
+      "p99_abs_8bit": 1,
+      "max_abs_8bit": 32
+    },
+    "roi": "[160:height-16,16:width-16], excludes HUD and rounded border",
+    "results": [
+      {
+        "view": "initial",
+        "pixels": 626990,
+        "mean_abs_8bit": 0.05609393025938744,
+        "p99_abs_8bit": 1.0,
+        "max_abs_8bit": 75,
+        "reference_rgb_range": 254,
+        "candidate_rgb_range": 254,
+        "exact": false,
+        "pass": false
+      },
+      {
+        "view": "pan",
+        "pixels": 626990,
+        "mean_abs_8bit": 0.05827684652067816,
+        "p99_abs_8bit": 1.0,
+        "max_abs_8bit": 71,
+        "reference_rgb_range": 252,
+        "candidate_rgb_range": 252,
+        "exact": false,
+        "pass": false
+      },
+      {
+        "view": "zoom",
+        "pixels": 626990,
+        "mean_abs_8bit": 0.1203533283359118,
+        "p99_abs_8bit": 3.0,
+        "max_abs_8bit": 64,
+        "reference_rgb_range": 254,
+        "candidate_rgb_range": 254,
+        "exact": false,
+        "pass": false
+      },
+      {
+        "view": "edge35",
+        "pixels": 626990,
+        "mean_abs_8bit": 0.047964082361760155,
+        "p99_abs_8bit": 1.0,
+        "max_abs_8bit": 82,
+        "reference_rgb_range": 255,
+        "candidate_rgb_range": 255,
+        "exact": false,
+        "pass": false
+      },
+      {
+        "view": "fov",
+        "pixels": 626990,
+        "mean_abs_8bit": 0.10399208918802533,
+        "p99_abs_8bit": 2.0,
+        "max_abs_8bit": 77,
+        "reference_rgb_range": 252,
+        "candidate_rgb_range": 252,
+        "exact": false,
+        "pass": false
+      }
+    ],
+    "pass": false
+  },
+  "reload_controls": [
+    {
+      "pair": "2.21/2.21-repeat",
+      "view": "initial",
+      "mean": 0.05581481894979718,
+      "p99": 1.0,
+      "max": 72,
+      "pixels_over_32": 28
+    },
+    {
+      "pair": "2.21/2.21-repeat",
+      "view": "pan",
+      "mean": 0.05612795525712797,
+      "p99": 1.0,
+      "max": 71,
+      "pixels_over_32": 23
+    },
+    {
+      "pair": "2.21/2.21-repeat",
+      "view": "zoom",
+      "mean": 0.12974529099347676,
+      "p99": 3.0,
+      "max": 73,
+      "pixels_over_32": 68
+    },
+    {
+      "pair": "2.21/2.21-repeat",
+      "view": "edge35",
+      "mean": 0.056805265368400346,
+      "p99": 1.0,
+      "max": 79,
+      "pixels_over_32": 61
+    },
+    {
+      "pair": "2.21/2.21-repeat",
+      "view": "fov",
+      "mean": 0.11122612269201529,
+      "p99": 3.0,
+      "max": 77,
+      "pixels_over_32": 62
+    },
+    {
+      "pair": "2.22/2.22-repeat",
+      "view": "initial",
+      "mean": 0.05563884591460789,
+      "p99": 1.0,
+      "max": 73,
+      "pixels_over_32": 36
+    },
+    {
+      "pair": "2.22/2.22-repeat",
+      "view": "pan",
+      "mean": 0.059739921423520845,
+      "p99": 1.0,
+      "max": 71,
+      "pixels_over_32": 26
+    },
+    {
+      "pair": "2.22/2.22-repeat",
+      "view": "zoom",
+      "mean": 0.12939919296958485,
+      "p99": 3.0,
+      "max": 73,
+      "pixels_over_32": 72
+    },
+    {
+      "pair": "2.22/2.22-repeat",
+      "view": "edge35",
+      "mean": 0.0515170364226968,
+      "p99": 1.0,
+      "max": 79,
+      "pixels_over_32": 50
+    },
+    {
+      "pair": "2.22/2.22-repeat",
+      "view": "fov",
+      "mean": 0.10327331111075669,
+      "p99": 2.0,
+      "max": 60,
+      "pixels_over_32": 57
+    },
+    {
+      "pair": "2.21-repeat/2.22-repeat",
+      "view": "initial",
+      "mean": 0.055474568972391905,
+      "p99": 1.0,
+      "max": 75,
+      "pixels_over_32": 33
+    },
+    {
+      "pair": "2.21-repeat/2.22-repeat",
+      "view": "pan",
+      "mean": 0.061890939249429816,
+      "p99": 1.0,
+      "max": 71,
+      "pixels_over_32": 38
+    },
+    {
+      "pair": "2.21-repeat/2.22-repeat",
+      "view": "zoom",
+      "mean": 0.10841108576957634,
+      "p99": 3.0,
+      "max": 51,
+      "pixels_over_32": 35
+    },
+    {
+      "pair": "2.21-repeat/2.22-repeat",
+      "view": "edge35",
+      "mean": 0.053588308160151414,
+      "p99": 1.0,
+      "max": 82,
+      "pixels_over_32": 43
+    },
+    {
+      "pair": "2.21-repeat/2.22-repeat",
+      "view": "fov",
+      "mean": 0.10616596755929121,
+      "p99": 3.0,
+      "max": 60,
+      "pixels_over_32": 49
+    }
+  ],
+  "prospective_main_thread": {
+    "protocol": {
+      "roi": "Exclude top 160px HUD and 16px borders",
+      "cases": [
+        "real V4 main-thread assembly, five views",
+        "SH3 directional-opacity synthetic fixture, view motion"
+      ],
+      "exclusions": [
+        "No speedup claim",
+        "No full scene or multi-hardware quality claim"
+      ],
+      "basis": "Initial strict pixel threshold also rejects baseline self-reloads; frozen frames are exact. Fresh validation uses a bound based on observed baseline variability.",
+      "limits": {
+        "mean_abs_8bit": 0.25,
+        "max_abs_8bit": 100,
+        "fraction_pixels_over_32": 0.0002,
+        "p99_abs_8bit": 4
+      },
+      "date": "2026-09-08"
+    },
+    "results": [
+      {
+        "view": "initial",
+        "mean": 0.05628585251226761,
+        "p99": 1.0,
+        "max": 75,
+        "fraction_pixels_over_32": 4.465780953444234e-05,
+        "nonblank": true,
+        "pass": true
+      },
+      {
+        "view": "pan",
+        "mean": 0.059246558956283196,
+        "p99": 1.0,
+        "max": 69,
+        "fraction_pixels_over_32": 3.827812245809343e-05,
+        "nonblank": true,
+        "pass": true
+      },
+      {
+        "view": "zoom",
+        "mean": 0.10848817365508222,
+        "p99": 2.0,
+        "max": 51,
+        "fraction_pixels_over_32": 5.741718368714015e-05,
+        "nonblank": true,
+        "pass": true
+      },
+      {
+        "view": "edge35",
+        "mean": 0.04944895452878036,
+        "p99": 1.0,
+        "max": 74,
+        "fraction_pixels_over_32": 7.815116668527408e-05,
+        "nonblank": true,
+        "pass": true
+      },
+      {
+        "view": "fov",
+        "mean": 0.11270302025019006,
+        "p99": 3.0,
+        "max": 77,
+        "fraction_pixels_over_32": 0.00011323944560519306,
+        "nonblank": true,
+        "pass": true
+      }
+    ],
+    "pass": true
+  },
+  "prospective_directional": {
+    "protocol": {
+      "roi": "Exclude top 160px HUD and 16px borders",
+      "cases": [
+        "real V4 main-thread assembly, five views",
+        "SH3 directional-opacity synthetic fixture, view motion"
+      ],
+      "exclusions": [
+        "No speedup claim",
+        "No full scene or multi-hardware quality claim"
+      ],
+      "basis": "Initial strict pixel threshold also rejects baseline self-reloads; frozen frames are exact. Fresh validation uses a bound based on observed baseline variability.",
+      "limits": {
+        "mean_abs_8bit": 0.25,
+        "max_abs_8bit": 100,
+        "fraction_pixels_over_32": 0.0002,
+        "p99_abs_8bit": 4
+      },
+      "date": "2026-09-08"
+    },
+    "results": [
+      {
+        "view": "initial",
+        "mean": 0.002129220561731447,
+        "p99": 0.0,
+        "max": 5,
+        "fraction_pixels_over_32": 0.0,
+        "nonblank": true,
+        "pass": true
+      },
+      {
+        "view": "pan",
+        "mean": 0.0015034795876595587,
+        "p99": 0.0,
+        "max": 6,
+        "fraction_pixels_over_32": 0.0,
+        "nonblank": true,
+        "pass": true
+      },
+      {
+        "view": "orbit",
+        "mean": 0.00016055545808811412,
+        "p99": 0.0,
+        "max": 1,
+        "fraction_pixels_over_32": 0.0,
+        "nonblank": true,
+        "pass": true
+      },
+      {
+        "view": "zoom",
+        "mean": 9.569530614523358e-06,
+        "p99": 0.0,
+        "max": 1,
+        "fraction_pixels_over_32": 0.0,
+        "nonblank": true,
+        "pass": true
+      },
+      {
+        "view": "edge35",
+        "mean": 7.283476078831666e-05,
+        "p99": 0.0,
+        "max": 1,
+        "fraction_pixels_over_32": 0.0,
+        "nonblank": true,
+        "pass": true
+      },
+      {
+        "view": "fov",
+        "mean": 2.4455467126004136e-05,
+        "p99": 0.0,
+        "max": 1,
+        "fraction_pixels_over_32": 0.0,
+        "nonblank": true,
+        "pass": true
+      }
+    ],
+    "pass": true
+  },
+  "frozen_frame_comparison": {
+    "mean": 0,
+    "max": 0,
+    "nonzero_channels": 0
+  },
+  "runs": [
+    {
+      "label": "2.21",
+      "adapter": {
+        "vendor": "nvidia",
+        "architecture": "lovelace",
+        "fallback": false,
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36"
+      },
+      "views": [
+        {
+          "view": "initial",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "84093baf212c364e7d49677444bd5453de6b46713600d5f92409f079e92a48cc"
+        },
+        {
+          "view": "pan",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "75bc9bde7f508c05a205ea9795f20862511cd090c43fa7c2e3f7feea2ce19593"
+        },
+        {
+          "view": "zoom",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "7b1b21714dd4f4dd50a3904a678572b06924c2d8c07b685783c06be16010d1c4"
+        },
+        {
+          "view": "edge35",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "383507d807a3f5e4adea7f137a1e6170795cc824c7ad8524f63b07140b6a50ca"
+        },
+        {
+          "view": "fov",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 50.75,
+          "png_sha256": "56c3af9897eddf9ea5891f1c5446dba187383bccc465dbea2ddcb6e8b5ed1ebd"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "2.22",
+      "adapter": {
+        "vendor": "nvidia",
+        "architecture": "lovelace",
+        "fallback": false,
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36"
+      },
+      "views": [
+        {
+          "view": "initial",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "a99203d1a79946df08eaed7691349379b7557b42dd740b0fc8b7ac7bec3d0ed4"
+        },
+        {
+          "view": "pan",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "86f42d7c82f08b8ca421586a1a04b3b0079d0a48d941f03537fa5ceb1de707a9"
+        },
+        {
+          "view": "zoom",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "9c36c73e8b16e13fa8c61a0f5cf54cf0493d281bd9c2170b62b5c66f283e85de"
+        },
+        {
+          "view": "edge35",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "d51670c322284d0c9c257d2a8f79595fe881d59214949b7af6cf9ecb71b0fc86"
+        },
+        {
+          "view": "fov",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 50.75,
+          "png_sha256": "579786356228dfa70101ba7d3dc78f1e3fb3945ba8504bdd6abd9f1275361657"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "2.21-repeat",
+      "adapter": {
+        "vendor": "nvidia",
+        "architecture": "lovelace",
+        "fallback": false,
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36"
+      },
+      "views": [
+        {
+          "view": "initial",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "4ebc0b15b98debd69a005a41f80e4e75377b368829a87ba4174ae9921d6313bb"
+        },
+        {
+          "view": "pan",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "5cf5b399710916d5b4402b2748a91d7ef18517d7c2f3c8758889f0ad38cdcbef"
+        },
+        {
+          "view": "zoom",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "8503f402f7e36a90f2725342aa4b6d4ebb91a0347d7915f3a90c92e4a0e17ac1"
+        },
+        {
+          "view": "edge35",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "a6b1fd681d9c68e7b3d95a5c4a4c939516923b97da0560a818f42b5ff6588d47"
+        },
+        {
+          "view": "fov",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 50.75,
+          "png_sha256": "04fdb8407f349236546694612987ceeb234ec897a8ddd4ab96d1ead65d18c45a"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "2.22-repeat",
+      "adapter": {
+        "vendor": "nvidia",
+        "architecture": "lovelace",
+        "fallback": false,
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36"
+      },
+      "views": [
+        {
+          "view": "initial",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "312e638beaa019e5f043b2170ed068acafecea3a3be6bc630fef66f19e04f2a8"
+        },
+        {
+          "view": "pan",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "2ccef1ba1bb143c31e1ecef7f68504959c58ff552127c40d90bbe5a38288ef93"
+        },
+        {
+          "view": "zoom",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "9e784eac7115e38b4b15d49b632fac84150ca3951a4defaa49b27af69484291f"
+        },
+        {
+          "view": "edge35",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "a034a5a9731757b04a297c3c244870346b1ca163af775f796daac6a7eda5a7a5"
+        },
+        {
+          "view": "fov",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 50.75,
+          "png_sha256": "efd43f2ac6ff52cd4a7f56f4bf00b454ee205d6057eb4ccfa5926a1a96527935"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "2.21-main-thread",
+      "adapter": {
+        "vendor": "nvidia",
+        "architecture": "lovelace",
+        "fallback": false,
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36"
+      },
+      "views": [
+        {
+          "view": "initial",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "76d03fe89e5f2793f82bc5ba56d71d44c8ad535dcb20705b42b5f96622aab238"
+        },
+        {
+          "view": "pan",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "8b7685022f086953084e8e004bf49687de9dd22e2f0fdd62b0302f0b79572ba5"
+        },
+        {
+          "view": "zoom",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "d9213499c2f21ea369c2c309f6c26c606329383e4eed91ae8f2a91063b61b37f"
+        },
+        {
+          "view": "edge35",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "6566f9c463b958360a4603bdf1766e2a308f7e8b071469039736fb8fd2c784f4"
+        },
+        {
+          "view": "fov",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 50.75,
+          "png_sha256": "6cb9e8aa2224d85ded7630b343310e70200b6d0cd539a9285bca9eae3c6d21e5"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "2.22-main-thread",
+      "adapter": {
+        "vendor": "nvidia",
+        "architecture": "lovelace",
+        "fallback": false,
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36"
+      },
+      "views": [
+        {
+          "view": "initial",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "4d088ee7947cfc5ad67b795d6bce215388e006a586ec9359c0a2a823462a738d"
+        },
+        {
+          "view": "pan",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "c8729d068732a1a24e8276d4c59fa54c48ecf4105b72bb36c6acc91d7a70090c"
+        },
+        {
+          "view": "zoom",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "44b60ecd3c29c98b2a29f59e6ee9b4b5dfec57da95c09c4b6e609101e1d6b799"
+        },
+        {
+          "view": "edge35",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 42.0,
+          "png_sha256": "a23afa882e22a5bc9091d2dba17fe95dc8db0fdebf083b410ade6831d62cd03d"
+        },
+        {
+          "view": "fov",
+          "resident_gaussians": 262144,
+          "selected_nodes": 16,
+          "fov": 50.75,
+          "png_sha256": "b420b4a2cf652d0318884953d15bd42dc78c3f07e1124fcedcfeb4784ac38cc8"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "2.21-directional",
+      "adapter": {
+        "vendor": "nvidia",
+        "architecture": "lovelace",
+        "fallback": false,
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36"
+      },
+      "views": [
+        {
+          "view": "initial",
+          "resident_gaussians": 16384,
+          "selected_nodes": 4,
+          "fov": 42.0,
+          "png_sha256": "e610da559f1a97d63ad6912a21e45680efccb23ddf54878a6e6062b996050b0d"
+        },
+        {
+          "view": "pan",
+          "resident_gaussians": 16384,
+          "selected_nodes": 4,
+          "fov": 42.0,
+          "png_sha256": "49c33f30d3d19ef2bd845fcd1aacd5793dd2fc0f28f52ddf7e4dc24dde2c9abb"
+        },
+        {
+          "view": "orbit",
+          "resident_gaussians": 16384,
+          "selected_nodes": 4,
+          "fov": 42.0,
+          "png_sha256": "d1fffb77b0deb5027b484aae78942f316ad1c487d13d96ed911522308de46cc0"
+        },
+        {
+          "view": "zoom",
+          "resident_gaussians": 16384,
+          "selected_nodes": 4,
+          "fov": 42.0,
+          "png_sha256": "8a9f6e13d356d8ea95b86f14f8ca6759cc5e7b49b6ae6996cafc4ecc42e6b65a"
+        },
+        {
+          "view": "edge35",
+          "resident_gaussians": 16384,
+          "selected_nodes": 4,
+          "fov": 42.0,
+          "png_sha256": "eb95294fa9ba87df927e2898e5fd053a07ba48079b4d60461d6ef9bb3a9bc208"
+        },
+        {
+          "view": "fov",
+          "resident_gaussians": 16384,
+          "selected_nodes": 4,
+          "fov": 50.75,
+          "png_sha256": "9a808a50454ee1ac19576df8bcabbe16d83dbaf581e212eb0b41cf5fa89dc748"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "2.22-directional",
+      "adapter": {
+        "vendor": "nvidia",
+        "architecture": "lovelace",
+        "fallback": false,
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36"
+      },
+      "views": [
+        {
+          "view": "initial",
+          "resident_gaussians": 16384,
+          "selected_nodes": 4,
+          "fov": 42.0,
+          "png_sha256": "e95e13d03f2dc3eed8c7f469e442b0f90bb5a9b37594b55627cbcd1720862984"
+        },
+        {
+          "view": "pan",
+          "resident_gaussians": 16384,
+          "selected_nodes": 4,
+          "fov": 42.0,
+          "png_sha256": "de482765b5464666875dd91ded63d17bd630bb1be080c803cf9c22be141d3c18"
+        },
+        {
+          "view": "orbit",
+          "resident_gaussians": 16384,
+          "selected_nodes": 4,
+          "fov": 42.0,
+          "png_sha256": "9397c01f6e148d4af8cc16c1d306527fae4bedf7061f77d7f1f2350fc82f0505"
+        },
+        {
+          "view": "zoom",
+          "resident_gaussians": 16384,
+          "selected_nodes": 4,
+          "fov": 42.0,
+          "png_sha256": "f97b775740a3b37dd48adc16aa0b5752bcbc9510af418efba9420c618de888c2"
+        },
+        {
+          "view": "edge35",
+          "resident_gaussians": 16384,
+          "selected_nodes": 4,
+          "fov": 42.0,
+          "png_sha256": "bc11bfaf1f8400c7b24f6f953f7f39a44618156a887dd5efa47d6524af36c8ed"
+        },
+        {
+          "view": "fov",
+          "resident_gaussians": 16384,
+          "selected_nodes": 4,
+          "fov": 50.75,
+          "png_sha256": "55a17383f960c8425b954f46d9114921a327ade114ab176759af93f82a0cc7da"
+        }
+      ],
+      "errors": []
+    }
+  ],
+  "provenance": {
+    "2.21": {
+      "sha256": "ba69760003c478c35a88d5340bd83306e490d16dde73d7e816b19c9cfb721312",
+      "files": 4832
+    },
+    "2.22": {
+      "sha256": "0c6b0d2944ff6df87672f86f946cba9567c412ea5485450e86f30b3f95bad36f",
+      "files": 4924
+    }
+  },
+  "patches": {
+    "patch-playcanvas-workbuffer-view-direction.mjs": "9ee523b7d103e87be895f98eef4f3ed178333f298f6c466e55bac554e5dbf5e8",
+    "patch-playcanvas-container-intervals.mjs": "4cd0c553a4f769d6bff2b16041b291883c330007cb8d8adf2be5ba43b709db1d",
+    "patch-playcanvas-incremental-world.mjs": "a934ed3b179bef361d8c046aac04e3ed95e0d85b3184deecb11a10e2e971d1aa",
+    "patch-playcanvas-fastgs.mjs": "83f481547aa3450fb806b1ff806c57cedc438f42248bcb1ef4d3fb822ec2103b",
+    "patch-playcanvas-full-transform.mjs": "b36ccfb106363792bd94eb157ff3515ea3087e27da6fc610128a5b15be7d7240"
+  },
+  "limitations": [
+    "Bounded Windows NVIDIA WebGPU qualification, not full-scene or multi-hardware validation",
+    "No pixel-exact equality across reloads; baseline exhibits comparable variation",
+    "No performance or model-quality gain claimed"
+  ]
+}
