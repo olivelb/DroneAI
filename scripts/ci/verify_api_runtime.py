@@ -9,6 +9,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -135,9 +136,34 @@ def verify_acl() -> dict:
     return {"packages": expected, "fd_and_nofollow": True, "cp_sed_tar_roundtrip": True}
 
 
+
+def verify_absent_components() -> dict:
+    packages = ("gzip", "ncurses-bin", "systemd-homed", "systemd", "mount", "util-linux", "libmount1")
+    for package in packages:
+        result = subprocess.run(
+            ["dpkg-query", "--show", "--showformat=${db:Status-Status}", package],
+            capture_output=True, text=True, check=False,
+        )
+        require(result.returncode in (0, 1), f"Cannot inspect package {package}: {result.stderr}")
+        require(result.stdout.strip() != "installed", f"Vulnerable component returned: {package}")
+    executables = ("gzip", "infocmp", "systemd-homed", "homectl", "mount", "umount", "nsenter")
+    directories = ("/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin",
+                   "/usr/local/sbin", "/lib/systemd", "/usr/lib/systemd")
+    for executable in executables:
+        require(shutil.which(executable) is None, f"Vulnerable executable in PATH: {executable}")
+        for directory in directories:
+            path = Path(directory) / executable
+            require(not path.exists() and not path.is_symlink(), f"Vulnerable executable returned: {path}")
+    # Mount-hook defects live in libmount, not UUID. Check the library too,
+    # including unpackaged copies in normal dynamic-loader directories.
+    for directory in ("/lib", "/usr/lib", "/usr/local/lib"):
+        require(not list(Path(directory).glob("**/libmount.so*")), "libmount returned to the runtime")
+    return {"absent_packages": packages, "absent_executables": executables, "libmount_absent": True}
+
+
 def main() -> None:
     require(os.getuid() == 10001, "Qualification must run as service UID 10001")
-    print(json.dumps({"sqlite": verify_sqlite(), "acl": verify_acl()}, sort_keys=True))
+    print(json.dumps({"components": verify_absent_components(), "sqlite": verify_sqlite(), "acl": verify_acl()}, sort_keys=True))
 
 
 if __name__ == "__main__":
