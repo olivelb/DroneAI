@@ -14,6 +14,7 @@ import { GSTILE_PACK_HEADER_BYTES, GSTILE_RECORD_BYTES } from "./pack";
 
 export const GSTILE_SCHEMA = "droneai-gstile";
 export const GSTILE_VERSION = 1;
+export const GSTILE_MAX_PACK_BYTES = 128 * 1024 * 1024;
 export const GSTILE_ADAPTIVE_LOD_PROFILE =
   "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4";
 
@@ -307,6 +308,7 @@ export const decodeGsTileManifest = (value: unknown): GsTileManifest => {
       !Number.isSafeInteger(pack.byteLength) ||
       !Number.isSafeInteger(pack.recordCount) ||
       pack.recordCount < 1 ||
+      pack.byteLength > GSTILE_MAX_PACK_BYTES ||
       pack.byteOffset !== GSTILE_PACK_HEADER_BYTES ||
       pack.byteLength !==
         GSTILE_PACK_HEADER_BYTES + pack.recordCount * GSTILE_RECORD_BYTES ||

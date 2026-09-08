@@ -39,6 +39,8 @@ target_include_directories(GSTileViewer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/gen
 target_link_libraries(GSTileViewer PRIVATE gstile_core d3d11 dxgi comctl32 shell32 ole32 windowscodecs)
 add_executable(gstile_tests tests/tests.cpp)
 target_link_libraries(gstile_tests PRIVATE gstile_core)
+target_compile_definitions(gstile_tests PRIVATE
+  GSTILE_CORPUS_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/gstile/manifest-contracts")
 foreach(target gstile_core GSTileViewer gstile_tests)
   target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endforeach()

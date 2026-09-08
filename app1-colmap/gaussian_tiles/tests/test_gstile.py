@@ -470,6 +470,9 @@ def test_manifest_rejects_overlapping_aggregate_tile_ranges(tmp_path: Path) -> N
 
 
 def test_pack_target_rejects_out_of_contract_sizes() -> None:
+    GsTileBuildOptions(pack_target_bytes=128 * 1024**2).validate()
+    with pytest.raises(ValueError, match="pack_target_bytes"):
+        GsTileBuildOptions(pack_target_bytes=128 * 1024**2 + 1).validate()
     with pytest.raises(ValueError, match="pack_target_bytes"):
         GsTileBuildOptions(pack_target_bytes=127).validate()
     with pytest.raises(ValueError, match="pack_target_bytes"):
