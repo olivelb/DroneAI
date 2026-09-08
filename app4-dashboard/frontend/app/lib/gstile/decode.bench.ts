@@ -81,82 +81,82 @@ const legacyGsTileToPlyProperties = (tile: DecodedGsTile) => {
 
 test("GSTile Q96 decode", { timeout: 60_000 }, async ({ bench }) => {
   await bench.compare(
-  bench("allocate, decode and copy into a final cut", () => {
-    const decoded = decodeSha256VerifiedGsTilePackTile(
-      content,
-      headerBytes,
-      recordCount * recordBytes,
-      recordCount,
-      quantization,
-    );
-    copyDecodedGsTile(destination, 0, decoded);
-  }),
+    bench("allocate, decode and copy into a final cut", () => {
+      const decoded = decodeSha256VerifiedGsTilePackTile(
+        content,
+        headerBytes,
+        recordCount * recordBytes,
+        recordCount,
+        quantization,
+      );
+      copyDecodedGsTile(destination, 0, decoded);
+    }),
 
-  bench("decode directly into a final cut", () => {
-    decodeSha256VerifiedGsTilePackTileInto(
-      content,
-      headerBytes,
-      recordCount * recordBytes,
-      recordCount,
-      quantization,
-      destination,
-      0,
-    );
-  }),
+    bench("decode directly into a final cut", () => {
+      decodeSha256VerifiedGsTilePackTileInto(
+        content,
+        headerBytes,
+        recordCount * recordBytes,
+        recordCount,
+        quantization,
+        destination,
+        0,
+      );
+    }),
   );
 });
 
 test("GSTile merged PlayCanvas column conversion", { timeout: 60_000 }, async ({ bench }) => {
   await bench.compare(
-  bench("legacy repeated strided scans", () => {
-    legacyGsTileToPlyProperties(destination);
-  }),
+    bench("legacy repeated strided scans", () => {
+      legacyGsTileToPlyProperties(destination);
+    }),
 
-  bench("single sequential scan per decoded field", () => {
-    gsTileToPlyProperties(destination);
-  }),
+    bench("single sequential scan per decoded field", () => {
+      gsTileToPlyProperties(destination);
+    }),
   );
 });
 
 test("GSTile merged PlayCanvas final CPU pipeline", { timeout: 60_000 }, async ({ bench }) => {
   await bench.compare(
-  bench("row-major decode followed by final column allocations", () => {
-    decodeSha256VerifiedGsTilePackTileInto(
-      content,
-      headerBytes,
-      recordCount * recordBytes,
-      recordCount,
-      quantization,
-      destination,
-      0,
-    );
-    gsTileToPlyProperties(destination);
-    gsTileOpacityStreams(destination);
-  }),
+    bench("row-major decode followed by final column allocations", () => {
+      decodeSha256VerifiedGsTilePackTileInto(
+        content,
+        headerBytes,
+        recordCount * recordBytes,
+        recordCount,
+        quantization,
+        destination,
+        0,
+      );
+      gsTileToPlyProperties(destination);
+      gsTileOpacityStreams(destination);
+    }),
 
-  bench("decode directly into final PlayCanvas columns", () => {
-    decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
-      content,
-      headerBytes,
-      recordCount * recordBytes,
-      recordCount,
-      quantization,
-      columnDestination,
-      0,
-    );
-  }),
+    bench("decode directly into final PlayCanvas columns", () => {
+      decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
+        content,
+        headerBytes,
+        recordCount * recordBytes,
+        recordCount,
+        quantization,
+        columnDestination,
+        0,
+      );
+    }),
 
-  bench("decode and pack directly into final PlayCanvas resource streams", () => {
-    decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
-      content,
-      headerBytes,
-      recordCount * recordBytes,
-      recordCount,
-      quantization,
-      packedColumnDestination,
-      0,
-    );
-  }),
+    bench("decode and pack directly into final PlayCanvas resource streams", () => {
+      decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
+        content,
+        headerBytes,
+        recordCount * recordBytes,
+        recordCount,
+        quantization,
+        packedColumnDestination,
+        0,
+      );
+    }),
   );
 });
 
@@ -197,79 +197,79 @@ const transformB = new Uint16Array(recordCount * 4);
 
 test("GSTile native transform packing", { timeout: 60_000 }, async ({ bench }) => {
   await bench.compare(
-  bench("PlayCanvas float-to-half conversion fallback", () => {
-    packGsTileNativeTransforms(
-      {
-        position: [
-          new Float32Array(0),
-          new Float32Array(0),
-          new Float32Array(0),
-        ],
-        centerStream: transformCenterStream,
-        logScale: transformLogScale,
-        rotation: transformRotation,
-      },
-      transformA,
-      transformB,
-      FloatPacking.float2Half,
-      null,
-    );
-  }),
+    bench("PlayCanvas float-to-half conversion fallback", () => {
+      packGsTileNativeTransforms(
+        {
+          position: [
+            new Float32Array(0),
+            new Float32Array(0),
+            new Float32Array(0),
+          ],
+          centerStream: transformCenterStream,
+          logScale: transformLogScale,
+          rotation: transformRotation,
+        },
+        transformA,
+        transformB,
+        FloatPacking.float2Half,
+        null,
+      );
+    }),
 
-  bench("native Float16Array conversion", () => {
-    packGsTileNativeTransforms(
-      {
-        position: [
-          new Float32Array(0),
-          new Float32Array(0),
-          new Float32Array(0),
-        ],
-        centerStream: transformCenterStream,
-        logScale: transformLogScale,
-        rotation: transformRotation,
-      },
-      transformA,
-      transformB,
-      FloatPacking.float2Half,
-    );
-  }),
+    bench("native Float16Array conversion", () => {
+      packGsTileNativeTransforms(
+        {
+          position: [
+            new Float32Array(0),
+            new Float32Array(0),
+            new Float32Array(0),
+          ],
+          centerStream: transformCenterStream,
+          logScale: transformLogScale,
+          rotation: transformRotation,
+        },
+        transformA,
+        transformB,
+        FloatPacking.float2Half,
+      );
+    }),
 
-  bench("native conversion with normalized Q96 rotations", () => {
-    packGsTileNativeTransforms(
-      {
-        position: [
-          new Float32Array(0),
-          new Float32Array(0),
-          new Float32Array(0),
-        ],
-        centerStream: transformCenterStream,
-        logScale: transformLogScale,
-        rotation: normalizedTransformRotation,
-      },
-      transformA,
-      transformB,
-      FloatPacking.float2Half,
-    );
-  }),
+    bench("native conversion with normalized Q96 rotations", () => {
+      packGsTileNativeTransforms(
+        {
+          position: [
+            new Float32Array(0),
+            new Float32Array(0),
+            new Float32Array(0),
+          ],
+          centerStream: transformCenterStream,
+          logScale: transformLogScale,
+          rotation: normalizedTransformRotation,
+        },
+        transformA,
+        transformB,
+        FloatPacking.float2Half,
+      );
+    }),
 
-  bench("trusted normalized Q96 rotations", () => {
-    packGsTileNativeTransforms(
-      {
-        position: [
-          new Float32Array(0),
-          new Float32Array(0),
-          new Float32Array(0),
-        ],
-        centerStream: transformCenterStream,
-        logScale: transformLogScale,
-        rotation: normalizedTransformRotation,
-      },
-      transformA,
-      transformB,
-      FloatPacking.float2Half,
-      globalThis.Float16Array,
-      { rotationIsNormalized: true },
-    );
-  }),
+    bench("trusted normalized Q96 rotations", () => {
+      packGsTileNativeTransforms(
+        {
+          position: [
+            new Float32Array(0),
+            new Float32Array(0),
+            new Float32Array(0),
+          ],
+          centerStream: transformCenterStream,
+          logScale: transformLogScale,
+          rotation: normalizedTransformRotation,
+        },
+        transformA,
+        transformB,
+        FloatPacking.float2Half,
+        globalThis.Float16Array,
+        { rotationIsNormalized: true },
+      );
+    }),
   );
 });
