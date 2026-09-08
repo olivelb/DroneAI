@@ -170,6 +170,18 @@ export const parseMissionSummaryResponse = decoder<{
   }),
 );
 
+export type MissionCatalogIndex = {
+  versions: Record<string, string>;
+  observed_at: number;
+  stale_after_seconds: number;
+};
+export const parseMissionCatalogIndex = decoder<MissionCatalogIndex>(
+  "mission catalog revisions", objectWith({
+    versions: recordOf(nonEmptyString), observed_at: numberValue,
+    stale_after_seconds: numberValue,
+  }),
+);
+
 export const parseMissionCatalog = decoder<MissionCatalogResponse>(
   "mission catalog",
   objectWith({

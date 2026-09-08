@@ -77,6 +77,7 @@ export const summaryLogMessages = (mission: MissionSummary): string[] =>
 
 export const catalogueWithSelectedDetail = (
   items: MissionCatalogItem[], previous: Record<string, MissionSummary>, selected: string | null,
+  retainMissingSelection = true,
 ): Record<string, MissionSummary> => {
   const map = Object.fromEntries(items.map((item) => {
     const summary = missionSummaryFromCatalog(item);
@@ -86,6 +87,6 @@ export const catalogueWithSelectedDetail = (
       stage_runs: detail.stage_runs, parameters: detail.parameters, products: detail.products,
     } : summary];
   }));
-  if (selected && !map[selected] && previous[selected]) map[selected] = previous[selected];
+  if (retainMissingSelection && selected && !map[selected] && previous[selected]) map[selected] = previous[selected];
   return map;
 };
