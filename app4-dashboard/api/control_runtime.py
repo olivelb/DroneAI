@@ -12,6 +12,7 @@ from shared.deployment_mode import bounded_stage_jobs_enabled
 from shared.inbox_outbox import run_outbox_dispatcher
 
 from . import dataset_uploads
+from .rate_limit_maintenance import run_rate_limit_maintenance
 from .retention import run_retention_cleanup
 from .messaging import publish_outbox_event
 from .stage_orchestrator import start_stage_orchestrator
@@ -75,10 +76,17 @@ def start_control_loops(
         daemon=True,
         name="organization-retention",
     )
+    rate_limit_thread = threading.Thread(
+        target=run_rate_limit_maintenance,
+        args=(event,),
+        daemon=True,
+        name="rate-limit-maintenance",
+    )
+    rate_limit_thread.start()
     outbox_thread.start()
     upload_cleanup_thread.start()
     retention_thread.start()
-    threads = [outbox_thread, upload_cleanup_thread, retention_thread]
+    threads = [outbox_thread, upload_cleanup_thread, retention_thread, rate_limit_thread]
     stage_thread = start_stage_orchestrator(event)
     if stage_thread is not None:
         threads.append(stage_thread)

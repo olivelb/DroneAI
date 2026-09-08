@@ -164,7 +164,8 @@ jobs:
           python scripts/ci/verify_rls_migration.py verify
           python -m pytest -q -m integration \
             tests/integration/test_identity_postgres.py \
-            tests/integration/test_tenant_rls_postgres.py
+            tests/integration/test_tenant_rls_postgres.py \
+            tests/integration/test_rate_limit_postgres.py
           alembic downgrade base
           alembic upgrade head
       - name: Exercise PostgreSQL scheduler transaction boundary

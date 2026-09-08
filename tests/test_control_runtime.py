@@ -33,7 +33,7 @@ def test_control_supervisor_starts_and_stops_every_loop(monkeypatch):
     def wait_for_stop(name, stop_event):
         with observed_lock:
             observed.append(name)
-            if len(observed) == 4:
+            if len(observed) == 5:
                 all_started.set()
         stop_event.wait()
 
@@ -45,6 +45,9 @@ def test_control_supervisor_starts_and_stops_every_loop(monkeypatch):
 
     def retention(stop_event):
         wait_for_stop("retention", stop_event)
+
+    def rate_limits(stop_event):
+        wait_for_stop("rate_limits", stop_event)
 
     def stage_starter(stop_event):
         thread = threading.Thread(
@@ -59,6 +62,7 @@ def test_control_supervisor_starts_and_stops_every_loop(monkeypatch):
     monkeypatch.setattr(control_runtime, "run_outbox_dispatcher", outbox)
     monkeypatch.setattr(control_runtime.dataset_uploads, "run_upload_cleanup", uploads)
     monkeypatch.setattr(control_runtime, "run_retention_cleanup", retention)
+    monkeypatch.setattr(control_runtime, "run_rate_limit_maintenance", rate_limits)
     monkeypatch.setattr(control_runtime, "start_stage_orchestrator", stage_starter)
 
     supervisor = control_runtime.start_control_loops()
@@ -67,10 +71,11 @@ def test_control_supervisor_starts_and_stops_every_loop(monkeypatch):
             "outbox-dispatcher",
             "dataset-upload-reconciler",
             "organization-retention",
+            "rate-limit-maintenance",
             "stage-orchestrator-test",
         }
         assert all_started.wait(1)
-        assert set(observed) == {"outbox", "uploads", "retention", "stage"}
+        assert set(observed) == {"outbox", "uploads", "retention", "stage", "rate_limits"}
         supervisor.raise_if_unhealthy()
     finally:
         supervisor.stop()

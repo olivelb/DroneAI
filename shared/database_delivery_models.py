@@ -154,9 +154,12 @@ class APIRateLimitBucket(Base):
 
     __tablename__ = "api_rate_limit_buckets"
 
+    __table_args__ = (Index("ix_api_rate_limit_buckets_scope_updated", "scope", "updated_at"),)
+
+    scope = Column(String(64), primary_key=True, default="legacy")
     key_hash = Column(String(64), primary_key=True)
     tokens = Column(Float, nullable=False)
-    updated_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
 
 
 # ---------------------------------------------------------------------------
