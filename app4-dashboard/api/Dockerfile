@@ -8,7 +8,7 @@ RUN printf '%s\n' \
       > /tmp/native.list \
     && apt-get -o Dir::Etc::sourcelist=/tmp/native.list -o Dir::Etc::sourceparts=- update \
     && apt-get -o Dir::Etc::sourcelist=/tmp/native.list -o Dir::Etc::sourceparts=- \
-      download libsqlite3-0=3.53.4-2
+      download libsqlite3-0=3.53.4-2 libacl1=2.4.0-1 tar=1.35+dfsg-5
 
 FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 

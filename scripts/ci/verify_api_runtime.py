@@ -68,9 +68,76 @@ def verify_sqlite() -> dict:
             "rasterio": bundled, "fts5_roundtrip": True, "geopackage_roundtrip": True}
 
 
+
+def verify_acl() -> dict:
+    expected = {"libacl1": "2.4.0-1", "tar": "1.35+dfsg-5"}
+    for package, version in expected.items():
+        installed = subprocess.check_output(
+            ["dpkg-query", "--show", "--showformat=${Version}", package], text=True
+        )
+        require(installed == version, f"Unqualified {package}: {installed}")
+    library = ctypes.CDLL("libacl.so.1", use_errno=True)
+    library.acl_from_text.argtypes = [ctypes.c_char_p]
+    library.acl_from_text.restype = ctypes.c_void_p
+    library.acl_free.argtypes = [ctypes.c_void_p]
+    library.acl_free.restype = ctypes.c_int
+    library.acl_get_file_at.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+    library.acl_get_file_at.restype = ctypes.c_void_p
+    library.acl_set_file_at.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                                      ctypes.c_int, ctypes.c_void_p]
+    library.acl_set_file_at.restype = ctypes.c_int
+    # Linux constants from fcntl.h and the signed ACL 2.4.0 source headers.
+    access, nofollow, empty_path = 0x8000, 0x100, 0x1000
+    acl = library.acl_from_text(b"user::rw-,user:10002:r--,group::r--,mask::r--,other::---")
+    require(bool(acl), "Cannot construct extended ACL")
+    try:
+        with tempfile.TemporaryDirectory(prefix="api-acl-") as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.write_text("original")
+            with source.open("rb") as held:
+                result = library.acl_set_file_at(held.fileno(), b"", empty_path, access, acl)
+                require(result == 0, f"ACL fd write failed: errno {ctypes.get_errno()}")
+            expected_xattr = os.getxattr(source, "system.posix_acl_access")
+            directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                read_acl = library.acl_get_file_at(directory_fd, b"source", nofollow, access)
+                require(bool(read_acl), "ACL directory-relative read failed")
+                library.acl_free(read_acl)
+                (root / "link").symlink_to("source")
+                read_link = library.acl_get_file_at(directory_fd, b"link", nofollow, access)
+                if read_link:
+                    library.acl_free(read_link)
+                require(not read_link, "ACL nofollow unexpectedly read the symlink target")
+                result = library.acl_set_file_at(directory_fd, b"link", nofollow, access, acl)
+                require(result == -1, "ACL nofollow unexpectedly wrote the symlink target")
+                require(os.getxattr(source, "system.posix_acl_access") == expected_xattr,
+                        "Symlink target ACL changed")
+            finally:
+                os.close(directory_fd)
+            # Existing consumers must retain ACLs with the new library. tar is
+            # upgraded together because Debian #1141146 fixes its symbol clash.
+            subprocess.run(["cp", "--preserve=all", "source", "copy"], cwd=root, check=True)
+            subprocess.run(["sed", "-i", "s/original/edited/", "copy"], cwd=root, check=True)
+            require((root / "copy").read_text() == "edited", "sed roundtrip failed")
+            require(os.getxattr(root / "copy", "system.posix_acl_access") == expected_xattr,
+                    "cp/sed lost extended ACL")
+            subprocess.run(["tar", "--acls", "-cf", "archive.tar", "source"], cwd=root, check=True)
+            (root / "extracted").mkdir()
+            subprocess.run(["tar", "--acls", "-xf", "archive.tar", "-C", "extracted"],
+                           cwd=root, check=True)
+            extracted = root / "extracted/source"
+            require(extracted.read_text() == "original", "tar content roundtrip failed")
+            require(os.getxattr(extracted, "system.posix_acl_access") == expected_xattr,
+                    "tar lost extended ACL")
+    finally:
+        library.acl_free(acl)
+    return {"packages": expected, "fd_and_nofollow": True, "cp_sed_tar_roundtrip": True}
+
+
 def main() -> None:
     require(os.getuid() == 10001, "Qualification must run as service UID 10001")
-    print(json.dumps({"sqlite": verify_sqlite()}, sort_keys=True))
+    print(json.dumps({"sqlite": verify_sqlite(), "acl": verify_acl()}, sort_keys=True))
 
 
 if __name__ == "__main__":
