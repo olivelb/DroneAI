@@ -164,7 +164,8 @@ jobs:
           python scripts/ci/verify_rls_migration.py verify
           python -m pytest -q -m integration \
             tests/integration/test_identity_postgres.py \
-            tests/integration/test_tenant_rls_postgres.py
+            tests/integration/test_tenant_rls_postgres.py \
+            tests/integration/test_rate_limit_postgres.py
           alembic downgrade base
           alembic upgrade head
       - name: Exercise PostgreSQL scheduler transaction boundary
@@ -389,8 +390,12 @@ jobs:
             artifact: dashboard-api
             dockerfile: app4-dashboard/api/Dockerfile
             command: >-
-              import importlib, os;
+              import importlib, os, pkgutil, ssl;
               assert os.getuid() == 10001;
+              package = importlib.import_module('app4-dashboard.api');
+              [importlib.import_module(module.name) for module in
+               pkgutil.walk_packages(package.__path__, package.__name__ + '.')];
+              assert ssl.create_default_context().get_ca_certs();
               app = importlib.import_module('app4-dashboard.api.main').app;
               assert len(app.openapi()['paths']) >= 25
           - image: drone-ia:ci

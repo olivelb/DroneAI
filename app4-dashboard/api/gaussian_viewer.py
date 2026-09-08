@@ -12,10 +12,10 @@ from fastapi import HTTPException, status
 
 from shared import storage
 from shared.database import MissionArtifact
-from shared.gstile_manifest import safe_bundle_path, validate_gstile_manifest
+from shared.gstile_manifest import GSTILE_MAX_MANIFEST_BYTES, safe_bundle_path, validate_gstile_manifest
 from shared.stage_workspace import resolve_workspace_files
 
-MAX_VIEWER_MANIFEST_BYTES = 8 * 1024 * 1024
+MAX_VIEWER_MANIFEST_BYTES = GSTILE_MAX_MANIFEST_BYTES
 VIEWER_URL_TTL_SECONDS = 900
 
 

@@ -308,7 +308,10 @@ def test_frontend_mission_runtime_owns_server_state_and_realtime_io():
 
     assert _line_count(runtime) < 240
     assert _line_count(runtime_state) < 110
-    assert "fetchMissionCatalog" in runtime_source
+    assert "new MissionCatalogSynchronizer" in runtime_source
+    sync_source = _source("app4-dashboard/frontend/app/lib/mission-catalog-sync.ts")
+    assert "fetchMissionCatalogIndex" in sync_source
+    assert "fetchMissionCatalogItems" in sync_source
     assert "fetchMissionDetail" in runtime_source
     assert "new WebSocket" in runtime_source
     assert "autoSelectMission" in runtime_source

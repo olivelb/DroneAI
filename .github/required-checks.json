@@ -1,0 +1,7 @@
+[
+  "CI gate",
+  "CUDA validation gate",
+  "CodeQL gate",
+  "GPU qualification gate",
+  "Native viewer gate"
+]

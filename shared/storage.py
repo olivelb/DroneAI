@@ -9,7 +9,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, cast
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -24,6 +24,7 @@ from shared.config import (
     S3_SECRET_KEY,
 )
 from shared.observability import metrics_enabled, observe_s3_failure
+from shared.storage_reads import read_control_object, read_object_prefix
 from shared import storage_immutable as immutable
 from shared.storage_immutable import (
     ContentAddressedUpload,
@@ -395,26 +396,27 @@ def download_directory(
     return count
 
 
+def iter_objects(
+    s3_prefix: str, bucket: str | None = None, delimiter: str = ""
+) -> Iterator[str]:
+    """Yield object keys and optional common prefixes without retaining all pages."""
+    client = _get_client()
+    pages = client.get_paginator("list_objects_v2").paginate(
+        Bucket=bucket or S3_BUCKET, Prefix=s3_prefix, Delimiter=delimiter,
+    )
+    for page in pages:
+        if delimiter:
+            for common_prefix in page.get("CommonPrefixes", []):
+                yield cast(str, common_prefix["Prefix"])
+        for obj in page.get("Contents", []):
+            yield cast(str, obj["Key"])
+
+
 def list_objects(
     s3_prefix: str, bucket: str | None = None, delimiter: str = ""
 ) -> list[str]:
-    """List all object keys under a prefix.
-
-    If *delimiter* is set (e.g. ``"/"``), returns only the common prefixes
-    (virtual directory listing).
-    """
-    bucket = bucket or S3_BUCKET
-    client = _get_client()
-    keys: list[str] = []
-    paginator = client.get_paginator("list_objects_v2")
-    pages = paginator.paginate(Bucket=bucket, Prefix=s3_prefix, Delimiter=delimiter)
-    for page in pages:
-        if delimiter:
-            for cp in page.get("CommonPrefixes", []):
-                keys.append(cp["Prefix"])
-        for obj in page.get("Contents", []):
-            keys.append(obj["Key"])
-    return keys
+    """Collect object keys and, when requested, common prefixes."""
+    return list(iter_objects(s3_prefix, bucket, delimiter))
 
 
 def file_exists(s3_key: str, bucket: str | None = None) -> bool:
@@ -457,30 +459,19 @@ def get_object_info(
 
 
 def get_object_bytes(
-    s3_key: str,
-    bucket: str | None = None,
-    *,
-    max_bytes: int = 16 * 1024 * 1024,
+    s3_key: str, bucket: str | None = None, *, max_bytes: int = 16 * 1024 * 1024,
 ) -> bytes:
     """Read one bounded control object and reject unexpectedly large payloads."""
+    return read_control_object(get_object_stream, s3_key, bucket, max_bytes=max_bytes)
 
-    if max_bytes < 1:
-        raise ValueError("max_bytes must be positive")
-    stream, size, _content_type = get_object_stream(s3_key, bucket)
-    try:
-        if size > max_bytes:
-            raise ValueError(
-                f"S3 control object exceeds {max_bytes} bytes: {s3_key}"
-            )
-        payload = stream.read(max_bytes + 1)
-    finally:
-        stream.close()
-    if len(payload) != size:
-        raise OSError(
-            f"S3 object size changed while reading {s3_key}: "
-            f"read={len(payload)}, expected={size}"
-        )
-    return bytes(payload)
+
+def get_object_prefix(
+    s3_key: str, *, expected_size: int, etag: str, max_bytes: int = 16,
+    bucket: str | None = None,
+) -> bytes:
+    """Read a bounded prefix of the object previously verified by HEAD."""
+    return read_object_prefix(_get_client(), s3_key, bucket or S3_BUCKET,
+                              expected_size=expected_size, etag=etag, max_bytes=max_bytes)
 
 
 def put_verified_bytes(

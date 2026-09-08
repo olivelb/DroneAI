@@ -1,5 +1,43 @@
 const DATABASE_NAME = "droneai-gstile-cache";
 const DATABASE_VERSION = 1;
+const openCaches = new Set<IndexedDbGsTilePersistentCache>();
+const knownDatabases = new Set<string>([DATABASE_NAME]);
+let persistenceEnabled = true;
+let purgeTail = Promise.resolve();
+const scopedDatabaseName = (identity: string) => `${DATABASE_NAME}:${encodeURIComponent(identity)}`;
+
+export const gsTileCacheIdentity = (
+  principal: { organization_id: string; subject: string; role: string } | null,
+): string | null => principal
+  ? JSON.stringify([principal.organization_id, principal.subject, principal.role]) : null;
+
+/** Close writers first, then delete legacy and non-current identity databases. */
+export function purgeGsTilePersistentCaches(keepIdentity: string | null = null): Promise<void> {
+  const purge = purgeTail.then(() => purgeCaches(keepIdentity));
+  purgeTail = purge.catch(() => undefined);
+  return purge;
+}
+
+async function purgeCaches(keepIdentity: string | null): Promise<void> {
+  const keep = keepIdentity === null ? null : scopedDatabaseName(keepIdentity);
+  await Promise.all([...openCaches].filter(cache => cache.databaseName !== keep).map(cache => cache.close()));
+  if (typeof indexedDB === "undefined") return;
+  try {
+    if (!indexedDB.databases) persistenceEnabled = false;
+    const databases = indexedDB.databases ? await indexedDB.databases() : [];
+    const names = new Set([...knownDatabases, ...databases.flatMap(database => database.name ? [database.name] : [])]);
+    await Promise.all([...names].filter(name => name !== keep &&
+      (name === DATABASE_NAME || name.startsWith(`${DATABASE_NAME}:`))).map(name => new Promise<void>((resolve, reject) => {
+        const request = indexedDB.deleteDatabase(name);
+        request.onsuccess = () => { knownDatabases.delete(name); resolve(); };
+        request.onerror = () => reject(request.error);
+        request.onblocked = () => reject(new Error("Another tab blocked GSTile cache deletion"));
+      })));
+  } catch (error) {
+    persistenceEnabled = false;
+    console.warn("GSTile persistence disabled because cache cleanup failed", error);
+  }
+}
 const RANGE_STORE = "ranges";
 const ACCESS_STORE = "access";
 const META_STORE = "metadata";
@@ -32,6 +70,7 @@ export interface GsTilePersistentCache {
   ): Promise<ArrayBuffer | null>;
   write(key: string, content: ArrayBuffer): Promise<void>;
   delete(key: string): Promise<void>;
+  close?(): Promise<void>;
   hasMany?(
     entries: readonly { key: string; expectedByteLength: number }[],
     signal?: AbortSignal,
@@ -65,9 +104,9 @@ const transactionDone = (transaction: IDBTransaction) =>
     );
   });
 
-const openDatabase = () =>
+const openDatabase = (name: string) =>
   new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+    const request = indexedDB.open(name, DATABASE_VERSION);
     request.addEventListener(
       "upgradeneeded",
       () => {
@@ -107,13 +146,26 @@ export class IndexedDbGsTilePersistentCache implements GsTilePersistentCache {
   readonly #maximumBytes: number;
   readonly #database: Promise<IDBDatabase>;
   #writeTail = Promise.resolve();
+  #closed = false;
+  readonly databaseName: string;
 
-  constructor(maximumBytes = DEFAULT_PERSISTENT_GSTILE_CACHE_BYTES) {
+  constructor(identity: string, maximumBytes = DEFAULT_PERSISTENT_GSTILE_CACHE_BYTES) {
+    if (!identity) throw new Error("Persistent GSTile cache requires an identity");
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
       throw new Error("Persistent GSTile cache size must be a positive integer");
     }
     this.#maximumBytes = maximumBytes;
-    this.#database = openDatabase();
+    this.databaseName = scopedDatabaseName(identity);
+    knownDatabases.add(this.databaseName);
+    this.#database = openDatabase(this.databaseName);
+    openCaches.add(this);
+  }
+
+  async close(): Promise<void> {
+    this.#closed = true;
+    await this.#writeTail;
+    try { (await this.#database).close(); } catch { /* Unavailable storage has no open connection. */ }
+    openCaches.delete(this);
   }
 
   async read(
@@ -122,8 +174,10 @@ export class IndexedDbGsTilePersistentCache implements GsTilePersistentCache {
     signal?: AbortSignal,
   ) {
     signal?.throwIfAborted();
+    if (this.#closed) return null;
     const database = await this.#database;
     signal?.throwIfAborted();
+    if (this.#closed) return null;
     const transaction = database.transaction(RANGE_STORE, "readonly");
     const record = await requestResult(
       transaction.objectStore(RANGE_STORE).get(key) as IDBRequest<
@@ -133,6 +187,7 @@ export class IndexedDbGsTilePersistentCache implements GsTilePersistentCache {
     if (!record || record.byteLength !== expectedByteLength) return null;
     const content = await record.content.arrayBuffer();
     signal?.throwIfAborted();
+    if (this.#closed) return null;
     if (content.byteLength !== expectedByteLength) {
       void this.delete(key);
       return null;
@@ -147,29 +202,26 @@ export class IndexedDbGsTilePersistentCache implements GsTilePersistentCache {
   ) {
     signal?.throwIfAborted();
     if (entries.length === 0) return new Set<string>();
-    const requested = new Map(
-      entries.map((entry) => [entry.key, entry.expectedByteLength]),
-    );
+    if (this.#closed) return new Set<string>();
+    const requested = [...new Map(entries.map(entry => [entry.key, entry.expectedByteLength]))];
     const database = await this.#database;
+    const present = new Set<string>();
+    for (let offset = 0; offset < requested.length; offset += 256) {
+      signal?.throwIfAborted();
+      if (this.#closed) return new Set<string>();
+      const store = database.transaction(ACCESS_STORE, "readonly").objectStore(ACCESS_STORE);
+      const matches = await Promise.all(requested.slice(offset, offset + 256).map(async ([key, expected]) => {
+        const record = await requestResult(store.get(key) as IDBRequest<AccessRecord | undefined>);
+        return record?.byteLength === expected ? key : null;
+      }));
+      for (const key of matches) if (key !== null) present.add(key);
+    }
     signal?.throwIfAborted();
-    const transaction = database.transaction(ACCESS_STORE, "readonly");
-    const records = await requestResult(
-      transaction.objectStore(ACCESS_STORE).getAll() as IDBRequest<
-        AccessRecord[]
-      >,
-    );
-    signal?.throwIfAborted();
-    return new Set(
-      records
-        .filter(
-          (record) => requested.get(record.key) === record.byteLength,
-        )
-        .map((record) => record.key),
-    );
+    return this.#closed ? new Set<string>() : present;
   }
 
   write(key: string, content: ArrayBuffer) {
-    if (content.byteLength > this.#maximumBytes) return Promise.resolve();
+    if (this.#closed || content.byteLength > this.#maximumBytes) return Promise.resolve();
     const record: RangeRecord = {
       key,
       content: new Blob([content]),
@@ -185,6 +237,7 @@ export class IndexedDbGsTilePersistentCache implements GsTilePersistentCache {
 
   async #put(record: RangeRecord) {
     const database = await this.#database;
+    if (this.#closed) return 0;
     const transaction = database.transaction(
       [RANGE_STORE, ACCESS_STORE, META_STORE],
       "readwrite",
@@ -257,6 +310,7 @@ export class IndexedDbGsTilePersistentCache implements GsTilePersistentCache {
   async #touch(key: string, byteLength: number) {
     try {
       const database = await this.#database;
+      if (this.#closed) return;
       const transaction = database.transaction(ACCESS_STORE, "readwrite");
       transaction.objectStore(ACCESS_STORE).put({
         key,
@@ -272,6 +326,7 @@ export class IndexedDbGsTilePersistentCache implements GsTilePersistentCache {
   async delete(key: string) {
     try {
       const database = await this.#database;
+      if (this.#closed) return;
       const transaction = database.transaction(
         [RANGE_STORE, ACCESS_STORE, META_STORE],
         "readwrite",
@@ -301,7 +356,7 @@ export class IndexedDbGsTilePersistentCache implements GsTilePersistentCache {
   }
 }
 
-export const createGsTilePersistentCache = (): GsTilePersistentCache | null =>
-  typeof indexedDB === "undefined"
+export const createGsTilePersistentCache = (identity: string | null): GsTilePersistentCache | null =>
+  typeof indexedDB === "undefined" || !persistenceEnabled || identity === null
     ? null
-    : new IndexedDbGsTilePersistentCache();
+    : new IndexedDbGsTilePersistentCache(identity);
