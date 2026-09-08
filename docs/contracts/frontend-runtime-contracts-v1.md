@@ -26,6 +26,10 @@ to expose an API detail message; they never enter a success domain model.
 
 WebSocket mission-status messages use the same fail-closed decoder boundary
 after JSON parsing. Invalid events are logged and do not mutate browser state.
+Protocol messages `{"type":"ping"}` are consumed before the mission decoder;
+the browser answers `{"type":"pong"}` on that same socket. Received pongs
+refresh the server idle timer, while periodic authorization revalidation remains
+independent and can still close a revoked session.
 
 ## Domain ownership
 

@@ -236,3 +236,44 @@ def test_status_connection_closes_when_authorization_changes(monkeypatch):
 
     assert socket.closed == (4403, "Authorization changed")
     assert hub.connections == {}
+
+
+def test_pong_keeps_idle_connection_alive_beyond_five_minutes(monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+
+    now = [0.0]
+    validations = []
+    socket = FakeWebSocket()
+    authorization = security.WebSocketAuthorization(
+        principal=_principal(), token="credential-token", peer="203.0.113.10",
+    )
+
+    async def send_text(message):
+        socket.messages.append(message)
+        if message == '{"type":"ping"}':
+            socket.received.append('{"type":"pong"}')
+
+    async def timed_receive(awaitable, *, timeout):
+        if now[0] > 400:
+            awaitable.close()
+            raise WebSocketDisconnect()
+        if socket.received:
+            now[0] += 1
+            return await awaitable
+        awaitable.close()
+        now[0] += timeout
+        raise TimeoutError()
+
+    def validate(_authorization):
+        validations.append(now[0])
+        return "valid"
+
+    socket.send_text = send_text
+    monkeypatch.setattr(realtime, "monotonic", lambda: now[0])
+    monkeypatch.setattr(realtime.asyncio, "wait_for", timed_receive)
+    monkeypatch.setattr(realtime, "websocket_authorization_status", validate)
+    asyncio.run(realtime.serve_status_connection(socket, authorization, hub=realtime.StatusHub()))
+    assert now[0] > 400
+    assert socket.closed is None
+    assert len(validations) >= 8  # Pongs never bypass periodic authorization.
+    assert socket.messages.count('{"type":"ping"}') == len(validations)
