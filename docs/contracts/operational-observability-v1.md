@@ -18,6 +18,11 @@ or raw request identifier. `X-Request-ID` is instead validated or generated,
 returned to the caller and included in failed-request logs. Pipeline events
 retain their existing tenant correlation identifiers.
 
+HTTP exceptions with status 5xx and unhandled exceptions return a generic
+`Unable to process request` detail and a `request_id` matching the response
+header. Complete exception chains stay in server logs with that identifier.
+Actionable 4xx details and retry-after semantics are preserved.
+
 ## Signals
 
 | Signal | Meaning |
