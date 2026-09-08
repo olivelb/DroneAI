@@ -153,7 +153,7 @@ Vec3 position(const Raw &r, const Quant &q) {
 Bundle::Bundle(const std::filesystem::path &path) {
   directory = std::filesystem::is_directory(path) ? path : path.parent_path();
   auto manifest = directory / L"manifest.json";
-  require(std::filesystem::file_size(manifest) <= 256ull * 1024 * 1024, "Manifest exceeds 256 MiB");
+  require(std::filesystem::file_size(manifest) <= 8ull * 1024 * 1024, "Manifest exceeds 8 MiB");
   std::ifstream input(manifest, std::ios::binary);
   require(bool(input), "Cannot open manifest.json");
   Json j = Json::parse(input);
@@ -178,8 +178,8 @@ Bundle::Bundle(const std::filesystem::path &path) {
     require(!pack.id.empty() && packIds.emplace(pack.id, packs.size()).second, "Duplicate pack id");
     safePath(directory, pack.path);
     require(digest(pack.sha), "Invalid pack digest");
-    pack.count = integer(p, "recordCount", 1, 16000000);
-    pack.bytes = integer(p, "byteLength", 32, 1536000032);
+    pack.count = integer(p, "recordCount", 1, (128ull * 1024 * 1024 - 32) / 96);
+    pack.bytes = integer(p, "byteLength", 32, 128ull * 1024 * 1024);
     require(integer(p, "byteOffset") == 32 && pack.bytes == 32 + 96 * pack.count,
             "Invalid pack length");
     if (p.contains("streams")) {
@@ -233,7 +233,8 @@ Bundle::Bundle(const std::filesystem::path &path) {
     require(inner != n.contains("tile") && inner == n.contains("lodTile"),
             "Invalid node representation");
     if (inner) {
-      require(n.at("children").is_array() && !n.at("children").empty(), "Empty internal node");
+      require(n.at("children").is_array() && n.at("children").size() == 2,
+              "Internal node must have exactly two children");
       for (const auto &c : n.at("children"))
         node.children.push_back(nodeIds.at(c.get<std::string>()));
     }

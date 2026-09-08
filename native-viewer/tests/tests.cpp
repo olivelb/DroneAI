@@ -88,6 +88,28 @@ int main() {
                  {"byteLength", bytes.size()},
                  {"recordCount", 3},
                  {"byteOffset", 32}}}}};
+    for (const auto &entry : std::filesystem::directory_iterator(GSTILE_CORPUS_DIRECTORY)) {
+      if (entry.path().extension() != ".json") continue;
+      std::ifstream fixture(entry.path());
+      save(dir / "manifest.json", Json::parse(fixture));
+      if (entry.path().stem().string().ends_with("-invalid"))
+        rejects([&] { Bundle invalid(dir); });
+      else {
+        Bundle valid(dir);
+        expect(!valid.nodes.empty(), "Shared valid manifest admitted");
+      }
+    }
+    {
+      std::ofstream oversized(dir / "manifest.json", std::ios::binary);
+      oversized.seekp(8 * 1024 * 1024);
+      oversized.put(' ');
+    }
+    bool sizeRejected = false;
+    try { Bundle oversized(dir); }
+    catch (const std::exception &error) {
+      sizeRejected = std::string(error.what()) == "Manifest exceeds 8 MiB";
+    }
+    expect(sizeRejected, "Oversized manifest rejected before parsing");
     save(dir / "manifest.json", j);
     Bundle bundle(dir);
     Camera camera;
