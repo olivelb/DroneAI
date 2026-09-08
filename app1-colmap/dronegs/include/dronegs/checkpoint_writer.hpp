@@ -116,11 +116,15 @@ inline void sync_checkpoint_file(const std::filesystem::path& path) {
 
 inline void sync_checkpoint_directory(const std::filesystem::path& path) {
 #ifndef _WIN32
-    const int descriptor =
-        ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY);
-    if (descriptor >= 0) {
-        static_cast<void>(::fsync(descriptor));
-        ::close(descriptor);
+    const auto parent = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
+    const int descriptor = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY);
+    if (descriptor < 0) {
+        throw std::runtime_error("cannot open checkpoint directory for fsync: " + parent.string());
+    }
+    const int result = ::fsync(descriptor);
+    ::close(descriptor);
+    if (result != 0) {
+        throw std::runtime_error("cannot fsync checkpoint directory: " + parent.string());
     }
 #else
     static_cast<void>(path);

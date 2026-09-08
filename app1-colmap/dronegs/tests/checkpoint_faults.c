@@ -7,6 +7,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <fcntl.h>
+#include <stdarg.h>
+#include <sys/stat.h>
 
 int rename(const char *from, const char *to) {
     const char *fault=getenv("DRONEGS_TEST_IO_FAULT");
@@ -20,8 +23,27 @@ int rename(const char *from, const char *to) {
 }
 int fsync(int fd) {
     const char *fault=getenv("DRONEGS_TEST_IO_FAULT");
-    if(fault && !strcmp(fault,"fsync")){errno=EIO;return -1;}
+    struct stat info;
+    if(fault && (!strcmp(fault,"fsync") ||
+       (!strcmp(fault,"directory-fsync") && !fstat(fd,&info) && S_ISDIR(info.st_mode)))) {
+        errno=EIO;return -1;
+    }
     int (*real_fsync)(int)=dlsym(RTLD_NEXT,"fsync");
     if(!real_fsync){errno=EIO;return -1;}
     return real_fsync(fd);
+}
+
+int open(const char *path, int flags, ...) {
+    const char *fault=getenv("DRONEGS_TEST_IO_FAULT");
+    if(fault && !strcmp(fault,"directory-open") && (flags & O_DIRECTORY)) {
+        errno=EACCES;return -1;
+    }
+    int (*real_open)(const char*,int,...)=dlsym(RTLD_NEXT,"open");
+    if(!real_open){errno=EIO;return -1;}
+    if((flags & O_CREAT) || (flags & O_TMPFILE)==O_TMPFILE) {
+        va_list args;va_start(args,flags);
+        mode_t mode=va_arg(args,mode_t);va_end(args);
+        return real_open(path,flags,mode);
+    }
+    return real_open(path,flags);
 }
