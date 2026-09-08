@@ -1,4 +1,4 @@
-FROM python:3.12-slim@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -6,16 +6,19 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
+# Remove unused OS utilities through apt, preserving an accurate SBOM.
+# OpenSSL and its legacy provider remain required by CA certificates/libssl.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        libexpat1 libssl3t64 openssl openssl-provider-legacy \
-        bsdutils libblkid1 liblastlog2-2 libmount1 libsmartcols1 libuuid1 \
-        login mount util-linux \
+        libexpat1 libssl3t64 \
+    && apt-get purge --yes --allow-remove-essential bsdutils login mount util-linux perl-base \
+    && apt-get autoremove --yes \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements/api.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --require-hashes \
-    --requirement /tmp/requirements.txt
+    --requirement /tmp/requirements.txt \
+    && pip check
 
 RUN groupadd --gid 10001 droneai \
     && useradd --uid 10001 --gid 10001 --create-home droneai

@@ -8,9 +8,11 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import rate_limit, security
+from .http_errors import api_error_response
 from .observability import operational_metrics_middleware
 
 
@@ -82,6 +84,8 @@ class RequestBodyLimitMiddleware:
 
 
 def configure_http_middleware(application: FastAPI) -> None:
+    application.add_exception_handler(StarletteHTTPException, api_error_response)
+    application.add_exception_handler(Exception, api_error_response)
     application.add_middleware(rate_limit.RasterTileRateLimitMiddleware)
     application.add_middleware(rate_limit.OrganizationRequestQuotaMiddleware)
     application.add_middleware(rate_limit.IdentityRateLimitMiddleware)

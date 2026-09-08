@@ -48,9 +48,11 @@ API_TYPED_PATHS := \
 	app4-dashboard/api/control_worker_health.py \
 	app4-dashboard/api/health.py \
 	app4-dashboard/api/http_middleware.py \
+	app4-dashboard/api/http_errors.py \
 	app4-dashboard/api/observability.py \
 	app4-dashboard/api/security.py \
 	app4-dashboard/api/rate_limit.py \
+	app4-dashboard/api/rate_limit_maintenance.py \
 	app4-dashboard/api/retention.py \
 	app4-dashboard/api/messaging.py \
 	app4-dashboard/api/realtime.py \
@@ -63,9 +65,12 @@ API_FRAMEWORK_TYPED_PATHS := \
 	app4-dashboard/api/map_schemas.py \
 	app4-dashboard/api/stage_schemas.py
 API_DOMAIN_TYPED_PATHS := \
+	app4-dashboard/api/mission_catalog_sync.py \
 	app4-dashboard/api/access_audit.py \
 	app4-dashboard/api/analysis_support.py \
 	app4-dashboard/api/dataset_access.py \
+	app4-dashboard/api/dataset_browse.py \
+	app4-dashboard/api/dataset_image_headers.py \
 	app4-dashboard/api/dataset_upload_contracts.py \
 	app4-dashboard/api/dataset_upload_recovery.py \
 	app4-dashboard/api/dataset_upload_storage.py \

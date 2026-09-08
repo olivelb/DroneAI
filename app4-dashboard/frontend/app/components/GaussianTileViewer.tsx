@@ -2,6 +2,7 @@
 
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { useAuth } from "../lib/auth";
 import { apiCredentials } from "../lib/api-client";
 import type {
   GaussianRenderBackend,
@@ -13,7 +14,7 @@ import {
   gstileVerticalFovDegrees,
 } from "../lib/gstile/playcanvas-backend";
 import { decodeGsTileViewerDescriptor } from "../lib/gstile/descriptor";
-import { createGsTilePersistentCache } from "../lib/gstile/persistent-range-cache";
+import { createGsTilePersistentCache, gsTileCacheIdentity } from "../lib/gstile/persistent-range-cache";
 import {
   DEFAULT_GSTILE_MEMORY_CACHE_BYTES,
   DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS,
@@ -98,6 +99,8 @@ export default function GaussianTileViewer({
   createBackend = defaultBackendFactory,
   className = "",
 }: GaussianTileViewerProps) {
+  const { authPrincipal } = useAuth();
+  const cacheIdentity = gsTileCacheIdentity(authPrincipal);
   const searchParams = useSearchParams();
   const backendQueryKey = searchParams.toString();
   const memoryCacheBytes = DEFAULT_GSTILE_MEMORY_CACHE_BYTES;
@@ -155,11 +158,12 @@ export default function GaussianTileViewer({
     const controller = new AbortController();
     // Six requests saturate the usual per-origin HTTP/1.1 connection pool
     // without the burst memory of decoding an unbounded LOD cut concurrently.
+    const persistentCache = createGsTilePersistentCache(cacheIdentity);
     const scheduler = new GsTileRangeScheduler(
       6,
       memoryCacheBytes,
       DEFAULT_GSTILE_ORPHAN_GRACE_MILLISECONDS,
-      createGsTilePersistentCache(),
+      persistentCache,
     );
     const backend = createBackend();
     backendRef.current = backend;
@@ -242,8 +246,9 @@ export default function GaussianTileViewer({
       observer.disconnect();
       backendRef.current = null;
       backend.dispose();
+      void persistentCache?.close?.();
     };
-  }, [backendQueryKey, createBackend, descriptorUrl, manifestUrl, memoryCacheBytes]);
+  }, [backendQueryKey, cacheIdentity, createBackend, descriptorUrl, manifestUrl, memoryCacheBytes]);
 
   const displayStatus =
     status === "Prêt" && statistics.lodState === "refining"

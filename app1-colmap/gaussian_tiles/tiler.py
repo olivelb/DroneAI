@@ -24,6 +24,7 @@ from shared.gstile_defaults import (
 )
 from shared.gstile_manifest import (
     GSTILE_ADAPTIVE_LOD_PROFILE,
+    GSTILE_MAX_PACK_BYTES,
     GSTILE_SCHEMA,
     GSTILE_VERSION,
 )
@@ -90,10 +91,10 @@ class GsTileBuildOptions:
             type(self.pack_target_bytes) is not int
             or not PACK_HEADER_SIZE + PACK_RECORD_SIZE
             <= self.pack_target_bytes
-            <= 1024**3
+            <= GSTILE_MAX_PACK_BYTES
         ):
             raise ValueError(
-                "GSTile pack_target_bytes must be between 128 bytes and 1 GiB"
+                "GSTile pack_target_bytes must be between 128 bytes and 128 MiB"
             )
         if len(self.coordinate_origin) != 3 or not all(np.isfinite(value) for value in self.coordinate_origin):
             raise ValueError("GSTile coordinate origin must contain three finite values")

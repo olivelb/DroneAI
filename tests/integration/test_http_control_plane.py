@@ -149,6 +149,10 @@ def test_launch_and_cancel_mission_through_real_http_control_plane() -> None:
         ).json()
         assert started == {"status": "success", "vol_id": mission_id}
         mission_created = True
+        before_cancel = _api("GET", "/missions/revisions").json()
+        assert mission_id in before_cancel["versions"]
+        selected = _api("POST", "/missions/catalog-items", json={"vol_ids": [mission_id]}).json()
+        assert selected["items"][0]["vol_id"] == mission_id
 
         cancelled = _api(
             "POST",
@@ -158,6 +162,10 @@ def test_launch_and_cancel_mission_through_real_http_control_plane() -> None:
         detail = _api("GET", f"/missions/{mission_id}").json()
         assert detail["status"] == "cancelled"
         assert detail["owner_subject"] == "http-e2e-admin"
+        after_cancel = _api("GET", "/missions/revisions").json()
+        assert after_cancel["versions"][mission_id] != before_cancel["versions"][mission_id]
+        selected = _api("POST", "/missions/catalog-items", json={"vol_ids": [mission_id]}).json()
+        assert selected["items"][0]["status"] == "cancelled"
 
         delivery = None
         deadline = time.monotonic() + 20
