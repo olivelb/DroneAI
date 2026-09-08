@@ -261,18 +261,7 @@ spec:
           value: {{ .Values.dashboardApi.auth.databaseAuthEnabled | quote }}
         - name: DRONEAI_ALLOW_STATIC_BOOTSTRAP
           value: {{ .Values.dashboardApi.auth.allowStaticBootstrap | quote }}
-        - name: DRONEAI_IDENTITY_RATE_LIMIT_BACKEND
-          value: {{ .Values.dashboardApi.auth.rateLimitBackend | quote }}
-        - name: DRONEAI_IDENTITY_PEER_RATE_LIMIT_PER_MINUTE
-          value: {{ .Values.dashboardApi.auth.peerRateLimitPerMinute | quote }}
-        - name: DRONEAI_IDENTITY_PEER_RATE_LIMIT_BURST
-          value: {{ .Values.dashboardApi.auth.peerRateLimitBurst | quote }}
-        - name: DRONEAI_IDENTITY_CREDENTIAL_RATE_LIMIT_PER_MINUTE
-          value: {{ .Values.dashboardApi.auth.credentialRateLimitPerMinute | quote }}
-        - name: DRONEAI_IDENTITY_CREDENTIAL_RATE_LIMIT_BURST
-          value: {{ .Values.dashboardApi.auth.credentialRateLimitBurst | quote }}
-        - name: DRONEAI_IDENTITY_RATE_LIMIT_MAX_CLIENTS
-          value: {{ .Values.dashboardApi.auth.rateLimitMaxClients | quote }}
+        {{- include "drone-ai.rateLimitEnv" . | nindent 8 }}
         - name: DRONEAI_RLS_REQUIRED
           value: {{ .Values.dashboardApi.rowLevelSecurityRequired | quote }}
         - name: DRONEAI_METRICS_ENABLED
@@ -315,14 +304,6 @@ spec:
           value: {{ .Values.dashboardApi.uploads.maxBatchBytes | quote }}
         - name: DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED
           value: {{ .Values.dashboardApi.saas.organizationRequestQuotasEnabled | quote }}
-        - name: DRONEAI_TILE_RATE_LIMIT_PER_MINUTE
-          value: {{ .Values.dashboardApi.tiles.rateLimitPerMinute | quote }}
-        - name: DRONEAI_TILE_RATE_LIMIT_BACKEND
-          value: {{ .Values.dashboardApi.tiles.rateLimitBackend | quote }}
-        - name: DRONEAI_TILE_RATE_LIMIT_BURST
-          value: {{ .Values.dashboardApi.tiles.rateLimitBurst | quote }}
-        - name: DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS
-          value: {{ .Values.dashboardApi.tiles.rateLimitMaxClients | quote }}
         {{- if .Values.dashboardApi.controlWorker.enabled }}
         - name: DRONEAI_STAGE_JOBS_ENABLED
           value: {{ .Values.stageJobs.enabled | quote }}

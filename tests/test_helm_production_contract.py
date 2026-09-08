@@ -51,7 +51,7 @@ def test_browser_upload_cors_exposes_multipart_etag() -> None:
 def test_production_api_scale_out_uses_shared_runtime_contracts() -> None:
     defaults = _read(CHART / "values.yaml")
     production = _read(CHART / "values-production.example.yaml")
-    deployment = _read(CHART / "templates" / "dashboard-api.yaml")
+    deployment = _read(CHART / "templates" / "dashboard-api.yaml") + _read(CHART / "templates" / "_rate-limit-env.tpl")
 
     assert "replicaCount: 1" in defaults
     assert "rateLimitBackend: auto" in defaults
@@ -108,7 +108,7 @@ def test_production_identity_uses_database_credentials_and_rotatable_secrets() -
     defaults = _read(CHART / "values.yaml")
     production = _read(CHART / "values-production.example.yaml")
     preproduction = _read(CHART / "values-ovh-preprod.example.yaml")
-    deployment = _read(CHART / "templates" / "dashboard-api.yaml")
+    deployment = _read(CHART / "templates" / "dashboard-api.yaml") + _read(CHART / "templates" / "_rate-limit-env.tpl")
 
     assert "databaseAuthEnabled: false" in defaults
     assert "databaseAuthEnabled: true" in production
@@ -132,7 +132,7 @@ def test_production_api_uses_a_distinct_rls_database_role() -> None:
     defaults = _read(CHART / "values.yaml")
     production = _read(CHART / "values-production.example.yaml")
     preproduction = _read(CHART / "values-ovh-preprod.example.yaml")
-    deployment = _read(CHART / "templates" / "dashboard-api.yaml")
+    deployment = _read(CHART / "templates" / "dashboard-api.yaml") + _read(CHART / "templates" / "_rate-limit-env.tpl")
     helpers = _read(CHART / "templates" / "_helpers.tpl")
 
     assert "databaseUrlSecretKey: database-url" in defaults
@@ -151,7 +151,7 @@ def test_production_api_uses_a_distinct_rls_database_role() -> None:
 
 def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
     defaults = _read(CHART / "values.yaml")
-    deployment = _read(CHART / "templates" / "dashboard-api.yaml")
+    deployment = _read(CHART / "templates" / "dashboard-api.yaml") + _read(CHART / "templates" / "_rate-limit-env.tpl")
     control_worker = _read(CHART / "templates" / "dashboard-control-worker.yaml")
     control_env = _read(CHART / "templates" / "_control-env.tpl")
 
@@ -194,7 +194,7 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
 def test_protected_overlays_exclusively_use_complete_bounded_compute() -> None:
     production = _read(CHART / "values-production.example.yaml")
     preproduction = _read(CHART / "values-ovh-preprod.example.yaml")
-    deployment = _read(CHART / "templates" / "dashboard-api.yaml")
+    deployment = _read(CHART / "templates" / "dashboard-api.yaml") + _read(CHART / "templates" / "_rate-limit-env.tpl")
     helpers = _read(CHART / "templates" / "_helpers.tpl")
 
     for values in (production, preproduction):
@@ -449,3 +449,36 @@ def test_production_render_rejects_internal_or_implicit_kafka() -> None:
     )
     assert implicit.returncode != 0
     assert "kafka.broker must identify an explicit external service" in implicit.stderr
+
+
+def test_rendered_api_and_worker_share_custom_rate_limit_settings():
+    import shutil
+    import subprocess
+    import pytest
+    import yaml
+
+    if shutil.which("helm") is None:
+        pytest.skip("Helm executable is required for the real rendered contract")
+    rendered = subprocess.check_output([
+        "helm", "template", "quota-test", str(CHART),
+        "--set", "dashboardApi.controlWorker.enabled=true",
+        "--set", "dashboardApi.auth.peerRateLimitPerMinute=17",
+        "--set", "dashboardApi.auth.peerRateLimitBurst=400",
+        "--set", "dashboardApi.auth.credentialRateLimitBurst=300",
+        "--set", "dashboardApi.tiles.rateLimitBurst=800",
+        "--set", "dashboardApi.tiles.rateLimitMaxClients=51",
+    ], text=True)
+    quotas = {}
+    for document in yaml.safe_load_all(rendered):
+        if not document or document.get("kind") != "Deployment":
+            continue
+        name = document["metadata"]["name"]
+        if name not in {"dashboard-api", "dashboard-control-worker"}:
+            continue
+        env = document["spec"]["template"]["spec"]["containers"][0]["env"]
+        quotas[name] = {item["name"]: item.get("value") for item in env
+                        if "RATE_LIMIT" in item["name"]}
+    assert len(quotas["dashboard-api"]) == 10
+    assert quotas["dashboard-api"] == quotas["dashboard-control-worker"]
+    assert quotas["dashboard-control-worker"]["DRONEAI_IDENTITY_PEER_RATE_LIMIT_BURST"] == "400"
+    assert quotas["dashboard-control-worker"]["DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS"] == "51"

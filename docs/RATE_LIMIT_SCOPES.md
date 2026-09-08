@@ -9,6 +9,10 @@ Existing hashes cannot be reversed into scopes. They remain in `legacy` and are
 adopted on first use without resetting tokens. Unused legacy rows are retained;
 they must not be purged without a separately verified expiry policy.
 
+Helm passes one shared rate-limit configuration to the API and control worker.
+Custom deployments must also pass identical backend, refill, burst and retention
+settings to both processes; a mismatched expiry policy could reset active quotas.
+
 The supervised control worker reclaims at most 256 fully refilled idle buckets
 per scope every 30 seconds. HTTP `consume()` never counts or deletes buckets.
 MAX_CLIENTS is a database retention target, not a hard admission limit: active
