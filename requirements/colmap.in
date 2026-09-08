@@ -11,7 +11,7 @@ plyfile
 prometheus-client
 psycopg2-binary
 pydantic
-pycolmap==4.1.1
+pycolmap==4.2.0
 pyproj
 rasterio
 scipy
