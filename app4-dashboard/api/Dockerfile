@@ -6,16 +6,19 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
+# Remove unused OS utilities through apt, preserving an accurate SBOM.
+# OpenSSL and its legacy provider remain required by CA certificates/libssl.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        libexpat1 libssl3t64 openssl openssl-provider-legacy \
-        bsdutils libblkid1 liblastlog2-2 libmount1 libsmartcols1 libuuid1 \
-        login mount util-linux \
+        libexpat1 libssl3t64 \
+    && apt-get purge --yes --allow-remove-essential bsdutils login mount util-linux perl-base \
+    && apt-get autoremove --yes \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements/api.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --require-hashes \
-    --requirement /tmp/requirements.txt
+    --requirement /tmp/requirements.txt \
+    && pip check
 
 RUN groupadd --gid 10001 droneai \
     && useradd --uid 10001 --gid 10001 --create-home droneai

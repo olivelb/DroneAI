@@ -1,4 +1,4 @@
-import { bench, describe } from "vitest";
+import { test } from "vitest";
 import { FloatPacking } from "playcanvas";
 import type { GsTileQuantization } from "./contracts";
 import {
@@ -79,7 +79,8 @@ const legacyGsTileToPlyProperties = (tile: DecodedGsTile) => {
   return properties;
 };
 
-describe("GSTile Q96 decode", () => {
+test("GSTile Q96 decode", { timeout: 60_000 }, async ({ bench }) => {
+  await bench.compare(
   bench("allocate, decode and copy into a final cut", () => {
     const decoded = decodeSha256VerifiedGsTilePackTile(
       content,
@@ -89,7 +90,7 @@ describe("GSTile Q96 decode", () => {
       quantization,
     );
     copyDecodedGsTile(destination, 0, decoded);
-  });
+  }),
 
   bench("decode directly into a final cut", () => {
     decodeSha256VerifiedGsTilePackTileInto(
@@ -101,20 +102,24 @@ describe("GSTile Q96 decode", () => {
       destination,
       0,
     );
-  });
+  }),
+  );
 });
 
-describe("GSTile merged PlayCanvas column conversion", () => {
+test("GSTile merged PlayCanvas column conversion", { timeout: 60_000 }, async ({ bench }) => {
+  await bench.compare(
   bench("legacy repeated strided scans", () => {
     legacyGsTileToPlyProperties(destination);
-  });
+  }),
 
   bench("single sequential scan per decoded field", () => {
     gsTileToPlyProperties(destination);
-  });
+  }),
+  );
 });
 
-describe("GSTile merged PlayCanvas final CPU pipeline", () => {
+test("GSTile merged PlayCanvas final CPU pipeline", { timeout: 60_000 }, async ({ bench }) => {
+  await bench.compare(
   bench("row-major decode followed by final column allocations", () => {
     decodeSha256VerifiedGsTilePackTileInto(
       content,
@@ -127,7 +132,7 @@ describe("GSTile merged PlayCanvas final CPU pipeline", () => {
     );
     gsTileToPlyProperties(destination);
     gsTileOpacityStreams(destination);
-  });
+  }),
 
   bench("decode directly into final PlayCanvas columns", () => {
     decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
@@ -139,7 +144,7 @@ describe("GSTile merged PlayCanvas final CPU pipeline", () => {
       columnDestination,
       0,
     );
-  });
+  }),
 
   bench("decode and pack directly into final PlayCanvas resource streams", () => {
     decodeSha256VerifiedGsTilePackTileIntoPlayCanvasColumns(
@@ -151,7 +156,8 @@ describe("GSTile merged PlayCanvas final CPU pipeline", () => {
       packedColumnDestination,
       0,
     );
-  });
+  }),
+  );
 });
 
 const transformCenterStream = new Float32Array(recordCount * 3);
@@ -189,7 +195,8 @@ for (let splat = 0; splat < recordCount; splat += 1) {
 const transformA = new Uint32Array(recordCount * 4);
 const transformB = new Uint16Array(recordCount * 4);
 
-describe("GSTile native transform packing", () => {
+test("GSTile native transform packing", { timeout: 60_000 }, async ({ bench }) => {
+  await bench.compare(
   bench("PlayCanvas float-to-half conversion fallback", () => {
     packGsTileNativeTransforms(
       {
@@ -207,7 +214,7 @@ describe("GSTile native transform packing", () => {
       FloatPacking.float2Half,
       null,
     );
-  });
+  }),
 
   bench("native Float16Array conversion", () => {
     packGsTileNativeTransforms(
@@ -225,7 +232,7 @@ describe("GSTile native transform packing", () => {
       transformB,
       FloatPacking.float2Half,
     );
-  });
+  }),
 
   bench("native conversion with normalized Q96 rotations", () => {
     packGsTileNativeTransforms(
@@ -243,7 +250,7 @@ describe("GSTile native transform packing", () => {
       transformB,
       FloatPacking.float2Half,
     );
-  });
+  }),
 
   bench("trusted normalized Q96 rotations", () => {
     packGsTileNativeTransforms(
@@ -263,5 +270,6 @@ describe("GSTile native transform packing", () => {
       globalThis.Float16Array,
       { rotationIsNormalized: true },
     );
-  });
+  }),
+  );
 });

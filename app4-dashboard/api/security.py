@@ -130,6 +130,7 @@ def build_tile_rate_limiter() -> RateLimiter:
     max_keys = int(os.getenv("DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS", "10000"))
     if backend == "database":
         return DatabaseTokenBucketRateLimiter(
+            scope="tile",
             session_scope=get_session,
             requests_per_minute=requests_per_minute,
             burst=burst,
@@ -173,6 +174,7 @@ def build_identity_rate_limiter(*, scope: str) -> RateLimiter:
     )
     if backend == "database":
         return DatabaseTokenBucketRateLimiter(
+            scope=f"identity:{scope}",
             session_scope=get_session,
             requests_per_minute=requests_per_minute,
             burst=burst,

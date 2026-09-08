@@ -6,7 +6,7 @@ import threading
 import time
 from collections import OrderedDict
 from contextlib import AbstractContextManager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any, Protocol
 from collections.abc import Callable
@@ -73,12 +73,16 @@ class DatabaseTokenBucketRateLimiter:
         self,
         *,
         session_scope: SessionScope,
+        scope: str,
         requests_per_minute: int,
         burst: int,
         max_keys: int = 100_000,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         _validate_configuration(requests_per_minute, burst, max_keys)
+        if not scope or len(scope) > 64 or scope == "legacy":
+            raise ValueError("a non-legacy rate-limit scope of at most 64 characters is required")
+        self.scope = scope
         self.session_scope = session_scope
         self.requests_per_minute = requests_per_minute
         self.burst = burst
@@ -90,32 +94,54 @@ class DatabaseTokenBucketRateLimiter:
     def _key_hash(key: str) -> str:
         return sha256(key.encode("utf-8")).hexdigest()
 
-    def _trim_oldest(self, session: Any) -> None:
-        count = int(session.query(APIRateLimitBucket).count())
-        overflow = count - self.max_keys + 1
-        if overflow <= 0:
-            return
-        oldest = (
-            session.query(APIRateLimitBucket)
-            .order_by(APIRateLimitBucket.updated_at.asc())
-            .limit(overflow)
-            .all()
-        )
-        for record in oldest:
-            session.delete(record)
+    def collect_expired(self, *, batch_size: int = 256) -> int:
+        """Bounded maintenance, never called from consume.
+
+        max_keys is a retention target, not permission to reset active quotas.
+        High cardinality may temporarily exceed it until buckets refill.
+        """
+        if batch_size < 1 or batch_size > 4096:
+            raise ValueError("batch_size must be between 1 and 4096")
+        cutoff = self._clock() - timedelta(seconds=max(300, self.burst / self._rate_per_second))
+        with self.session_scope() as session:
+            scoped = session.query(APIRateLimitBucket).filter(APIRateLimitBucket.scope == self.scope)
+            overflow = max(0, scoped.count() - self.max_keys)
+            if not overflow:
+                return 0
+            records = (
+                scoped.filter(APIRateLimitBucket.updated_at <= cutoff)
+                .order_by(APIRateLimitBucket.updated_at.asc())
+                .limit(min(batch_size, overflow))
+                .with_for_update(skip_locked=True)
+                .all()
+            )
+            for record in records:
+                session.delete(record)
+            return len(records)
 
     def _consume_once(self, key_hash: str, now: datetime) -> float | None:
         with self.session_scope() as session:
             record = (
                 session.query(APIRateLimitBucket)
-                .filter(APIRateLimitBucket.key_hash == key_hash)
+                .filter(APIRateLimitBucket.scope == self.scope, APIRateLimitBucket.key_hash == key_hash)
                 .with_for_update()
                 .first()
             )
             if record is None:
-                self._trim_oldest(session)
+                # Hashes cannot be reversed during migration. Adopt an existing
+                # legacy bucket on its next request, preserving its token balance.
+                record = (
+                    session.query(APIRateLimitBucket)
+                    .filter(APIRateLimitBucket.scope == "legacy", APIRateLimitBucket.key_hash == key_hash)
+                    .with_for_update()
+                    .first()
+                )
+                if record is not None:
+                    record.scope = self.scope
+            if record is None:
                 session.add(
                     APIRateLimitBucket(
+                        scope=self.scope,
                         key_hash=key_hash,
                         tokens=float(self.burst - 1),
                         updated_at=now,

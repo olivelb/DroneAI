@@ -14,7 +14,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--artifacts-root", type=Path, required=True)
-    parser.add_argument("--fault", choices=("fsync", "rename"))
+    parser.add_argument("--fault", choices=("fsync", "rename", "directory-open", "directory-fsync"))
     parser.add_argument("--fault-library", type=Path)
     args = parser.parse_args()
     if bool(args.fault) != bool(args.fault_library):

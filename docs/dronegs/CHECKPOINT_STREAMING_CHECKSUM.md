@@ -17,7 +17,7 @@ Both macros reject values other than0/1 at compile time. They are compiler defin
 
 The order remains: serialize `.tmp`, flush/close, compute checksum, append/flush the trailer, fsync the temporary, rename with the existing `.previous` fallback, then sync the directory. Pair-to-planar conversion retains its4MiB buffer. No array, optimizer state, scalar width, format version or publication step is removed.
 
-This extraction does not strengthen the existing durability guarantees. In particular, the stream-close error and directory-fsync result retain their original handling, and a failure of the fallback restoration itself is not covered by the injected tests. The tests are not a power-loss qualification. Errors that the existing path detects continue to fail rather than report success.
+Linux publication now fails if opening or syncing the parent directory fails, including when the checkpoint path is only a basename (parent `.`). These failures occur after rename: the new checksum-valid file may already be visible, while the write reports failure and must not be acknowledged as durable. Stream-close handling remains unchanged, and failure of the fallback restoration itself is not covered by injected tests. Windows synchronization remains unqualified. These tests are not a power-loss qualification.
 
 The frozen test reference contains the original writer from source SHA `95fed9a03d3893ade4a20a7aa605563ab52f5d63b972251656f737ad6af31164`, adapted only to host fixture names/types. Its checksum, synchronization and serialization bodies also match the pre-extraction repository implementation. Keep this reference independent of subsequent writer edits.
 
@@ -35,7 +35,7 @@ In a normal DroneGS build, select these tests with `ctest --test-dir <build> -L 
 
 Both default-macro configurations0/1 run the same actual serializer in reference and streaming modes. Counts0,1,3,23301,23302 cover optionals, an embedded NUL string, nonzero moments, and SH component buffers immediately below/above4MiB. Every file is compared byte for byte against the frozen writer, checked with its FNV routine, and compared by full SHA256. Zero gaussians is a serializer edge case only; the existing checkpoint loader rejects that state.
 
-The six CTests additionally cover replacement, corruption, truncation, truncated moment arrays, missing parent directories, failed writes, fsync failure, and failed publication with a previously published checkpoint. Each invocation creates a unique artifact directory under the test build tree and retains its logs/results and checkpoint files. Repeated test invocations therefore do not collide or delete earlier evidence. The two parity tests together retain about243MiB of checkpoint fixtures per full run; fault fixtures are small. No dataset or GPU is required.
+The ten CTests additionally cover replacement, corruption, truncation, truncated moment arrays, missing parent directories, failed writes, file fsync failure, directory open/fsync failure after publication, basename paths, and failed publication with a previously published checkpoint. Each invocation creates a unique artifact directory under the test build tree and retains its logs/results and checkpoint files. Repeated test invocations therefore do not collide or delete earlier evidence. The two parity tests together retain about243MiB of checkpoint fixtures per full run; fault fixtures are small. No dataset or GPU is required.
 
 ## Qualification and measured limits
 

@@ -418,7 +418,12 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
       });
       return;
     }
-    if (url.pathname === "/missions") {
+    if (url.pathname === "/missions/revisions") {
+      await route.fulfill(json({ versions: { "mission-existing": `${missionStatus}:${missionProgress}:${missionStep}` },
+        observed_at: Date.parse("2026-08-09T12:00:00Z") / 1000, stale_after_seconds: 120 }));
+      return;
+    }
+    if (url.pathname === "/missions" || url.pathname === "/missions/catalog-items") {
       await route.fulfill(json({
         items: [{
           vol_id: "mission-existing",
@@ -816,20 +821,22 @@ test("dashboard serves browser security headers", async ({ request }) => {
 
 test("the workspace runtime loads missions beyond the first hundred", async ({ page }) => {
   await mockApi(page);
-  const offsets: number[] = [];
-  await page.route("http://127.0.0.1:30080/missions?**", async (route) => {
-    const offset = Number(new URL(route.request().url()).searchParams.get("offset"));
-    offsets.push(offset);
-    const item = (vol_id: string) => ({ vol_id, owner_subject: "e2e-operator", status: "success",
+  const batches: number[] = [];
+  const ids = ["mission-existing", ...Array.from({ length: 99 }, (_, index) => `mission-page-one-${index}`), "mission-page-two"];
+  await page.route("http://127.0.0.1:30080/missions/revisions", async (route) => {
+    await route.fulfill(json({ versions: Object.fromEntries(ids.map((id) => [id, "v1"])),
+      observed_at: Date.parse("2026-08-09T12:00:00Z") / 1000, stale_after_seconds: 120 }));
+  });
+  await page.route("http://127.0.0.1:30080/missions/catalog-items", async (route) => {
+    const requested: string[] = route.request().postDataJSON().vol_ids;
+    batches.push(requested.length);
+    const items = requested.map((vol_id) => ({ vol_id, owner_subject: "e2e-operator", status: "success",
       current_step: "DONE", progress: 100, pipeline: "modern", quality_profile: "normal-v3",
-      attempt_count: 1, updated_at: "2026-08-09T12:00:00Z", overall_status: "success", is_stale: false });
-    await route.fulfill(json({
-      items: offset === 0 ? [item("mission-existing"), ...Array.from({ length: 99 }, (_, index) => item(`mission-page-one-${index}`))] : [item("mission-page-two")],
-      total: 101, offset, limit: 100,
-    }));
+      attempt_count: 1, updated_at: "2026-08-09T12:00:00Z", overall_status: "success", is_stale: false }));
+    await route.fulfill(json({ items, total: items.length, offset: 0, limit: requested.length }));
   });
   await page.goto("/");
   await page.locator("summary").filter({ hasText: "Previous missions" }).click();
   await expect(page.getByText("mission-page-two", { exact: true })).toBeVisible();
-  expect(offsets).toEqual([0, 100]);
+  expect(batches).toEqual([100, 1]);
 });

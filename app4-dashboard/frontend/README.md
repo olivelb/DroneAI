@@ -69,15 +69,28 @@ polling, stale WebSocket protection and the five-stage projection. CI installs
 Chromium with its Linux system dependencies and retains the Playwright report
 on failure.
 
-`npm ci` also applies three fail-closed patches to pinned PlayCanvas 2.21.4:
+`npm ci` applies five fail-closed patches to pinned PlayCanvas 2.21.4:
 the FastGS off-axis covariance bound, lossless float32 quaternion/scale work
-streams and stable incremental unified-world allocations. Every patch is
-idempotent, rejects an unaudited engine source shape and is covered by a source
-transformation test. Keep all three scripts available before `npm ci` in
-container builds.
+streams, stable incremental unified-world allocations, container intervals and
+work-buffer view-direction transforms. Every patch is idempotent, rejects an
+unaudited engine version/source shape and has a source transformation test.
+Keep all five scripts available before `npm ci` in container builds.
+
+Dependabot proposes PlayCanvas separately from the ordinary frontend group.
+A new engine release needs a dedicated review of all five patches, provenance
+hashes and representative viewer rendering qualification; changing the version
+guards alone is not sufficient. The 2.22.0 proposal remains unqualified and the
+runtime stays on 2.21.4. This does not suppress future engine/security alerts.
 
 Use the committed `package-lock.json`; do not replace `npm ci` with an
-unreviewed dependency update.
+unreviewed dependency update. Repair Dependabot lockfile inconsistencies with
+`corepack npm@10.8.2 install --package-lock-only --ignore-scripts`, review the
+diff, then prove a clean `corepack npm@10.8.2 ci` before the normal tests/build.
+
+Vitest 5 uses the test-context `bench` fixture for the existing Q96 benchmarks.
+Run `corepack npm exec -- vitest bench --run app/lib/gstile/decode.bench.ts` to
+check that harness explicitly; ordinary unit tests do not run benchmarks.
+Benchmark results remain machine-specific measurements, not production claims.
 
 ## Internationalization
 

@@ -1428,3 +1428,24 @@ def test_bounded_candidate_window_rotates_past_an_ineligible_owner(stage_session
     with stage_sessions() as session:
         jobs = orchestrator.reserve_ready_jobs(session, settings, datetime.now(UTC))
         assert [job.request.run_id for job in jobs] == ["c" * 32]
+
+
+def test_local_sam3_snapshot_removes_runtime_hf_secret(monkeypatch):
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "false")
+    monkeypatch.setenv("DRONEAI_STAGE_SAM3_MODEL_DIRECTORY", "/opt/models/sam3")
+    monkeypatch.setenv("DRONEAI_STAGE_SAM3_ARTIFACT_SHA256", "a" * 64)
+    settings = orchestrator.settings_from_environment()
+    environment = dict(settings.detection_environment)
+    assert environment["SAM3_MODEL_DIRECTORY"] == "/opt/models/sam3"
+    assert environment["HF_HUB_OFFLINE"] == "1"
+    assert environment["TRANSFORMERS_OFFLINE"] == "1"
+    assert settings.detection_secret_environment == ()
+
+
+@pytest.mark.parametrize("directory,sha", [("relative", "a" * 64), ("/opt/models/sam3", "")])
+def test_local_sam3_settings_fail_closed_without_pinned_snapshot(monkeypatch, directory, sha):
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "false")
+    monkeypatch.setenv("DRONEAI_STAGE_SAM3_MODEL_DIRECTORY", directory)
+    monkeypatch.setenv("DRONEAI_STAGE_SAM3_ARTIFACT_SHA256", sha)
+    with pytest.raises(ValueError, match="Local SAM3 requires"):
+        orchestrator.settings_from_environment()

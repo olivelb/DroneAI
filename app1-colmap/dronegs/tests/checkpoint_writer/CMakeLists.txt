@@ -26,7 +26,7 @@ foreach(mode IN ITEMS 0 1)
     target_compile_definitions(${target} PRIVATE
         DRONEGS_EXPERIMENTAL_STREAMING_CHECKPOINT_CHECKSUM=${mode}
         DRONEGS_PROFILE_CHECKPOINT_WRITE_PHASES=1)
-    foreach(test_case IN ITEMS parity fsync rename)
+    foreach(test_case IN ITEMS parity fsync rename directory-open directory-fsync)
         set(arguments
             --binary $<TARGET_FILE:${target}>
             --artifacts-root ${CMAKE_CURRENT_BINARY_DIR}/artifacts)
