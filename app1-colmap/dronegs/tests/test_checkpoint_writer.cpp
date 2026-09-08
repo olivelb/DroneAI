@@ -150,9 +150,20 @@ void injected_failures(const fs::path& root,const std::string& fault) {
     for(auto mode:{Mode::reread_file,Mode::streaming}) {
         auto p=root/(std::string("fault-")+(mode==Mode::streaming?"streaming":"reread")+".ckpt");
         const std::vector<char> old={'p','r','e','v','i','o','u','s'};put(p,old);
-        rejects([&]{io::write_checkpoint(s,p,mode);},fault=="rename"?"cannot publish checkpoint":"cannot fsync checkpoint");
-        require(bytes(p)==old,"failure lost previous checkpoint");
-        require(fs::is_regular_file(p.string()+".tmp"),"failure did not retain temporary");
+        const bool directory_failure = fault == "directory-open" || fault == "directory-fsync";
+        const char* reason = fault == "rename" ? "cannot publish checkpoint" :
+            fault == "directory-open" ? "cannot open checkpoint directory for fsync" :
+            fault == "directory-fsync" ? "cannot fsync checkpoint directory" : "cannot fsync checkpoint";
+        rejects([&]{io::write_checkpoint(s,p,mode);},reason);
+        if (directory_failure) {
+            // Publication already happened, but durable success must not be acknowledged.
+            require(bytes(p)!=old,"post-publication fault did not exercise new checkpoint");
+            checksum_valid(p);
+            require(!fs::exists(p.string()+".tmp"),"published temporary remains");
+        } else {
+            require(bytes(p)==old,"failure lost previous checkpoint");
+            require(fs::is_regular_file(p.string()+".tmp"),"failure did not retain temporary");
+        }
         require(!fs::exists(p.string()+".previous"),"previous checkpoint was not restored");
     }
 }
@@ -168,6 +179,11 @@ int main(int argc,char** argv) {
             parity(root,0,false);parity(root,1,false);parity(root,3,true);
             parity(root,23301,true);parity(root,23302,true); // straddle 4MiB SH component chunk
             local_failures(root);
+            const auto working_directory = fs::current_path();
+            fs::current_path(root);
+            io::write_checkpoint(fixture(3,true), "relative.ckpt");
+            checksum_valid("relative.ckpt");
+            fs::current_path(working_directory);
         }
         std::cout << "{\"status\":\"PASS\",\"default_streaming\":"
             << (io::default_checksum_mode==Mode::streaming?"true":"false") << "}\n";
