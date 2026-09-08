@@ -5,11 +5,14 @@ from __future__ import annotations
 from typing import Annotated, Any, TypedDict, cast
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import selectinload
 
 from shared.database import Mission, get_session
 
 from ..mission_access import get_owned_mission, mission_query
 from ..mission_detail import mission_detail_projection
+from ..mission_catalog_sync import MissionCatalogIndex, catalogue_index
+from ..schemas import MissionCatalogSelection
 from ..mission_state import serialize_mission
 from ..stage_projection import project_stage_mission
 from ..security import Principal, require_authenticated
@@ -90,7 +93,7 @@ def mission_catalog(
         total = int(query.count())
         missions = cast(
             list[Mission],
-            query.order_by(Mission.updated_at.desc())
+            query.options(selectinload(Mission.stage_runs)).order_by(Mission.updated_at.desc())
             .offset(offset)
             .limit(limit)
             .all(),
@@ -101,6 +104,32 @@ def mission_catalog(
             "limit": limit,
             "offset": offset,
         }
+
+
+@router.get("/missions/revisions")
+def mission_revisions(
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> MissionCatalogIndex:
+    with get_session() as session:
+        return catalogue_index(session, principal, owner_subject)
+
+
+@router.post("/missions/catalog-items")
+def mission_catalog_items(
+    selection: MissionCatalogSelection,
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> MissionCatalogResponse:
+    with get_session() as session:
+        query = cast(Any, mission_query(
+            session, principal, requested_owner=owner_subject, action="catalog"
+        ))
+        missions = query.filter(Mission.vol_id.in_(selection.vol_ids)).options(
+            selectinload(Mission.stage_runs)
+        ).all()
+        return {"items": [_catalog_item(mission) for mission in missions],
+                "total": len(missions), "limit": len(selection.vol_ids), "offset": 0}
 
 
 @router.get("/missions/{vol_id}")

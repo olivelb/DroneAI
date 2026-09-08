@@ -8,7 +8,8 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { fetchMissionCatalog, fetchMissionDetail, getWsBaseUrl } from "./api";
+import { fetchMissionDetail, getWsBaseUrl } from "./api";
+import { MissionCatalogSynchronizer } from "./mission-catalog-sync";
 import { useAuth } from "./auth";
 import {
   autoSelectMission,
@@ -55,6 +56,7 @@ export function MissionRuntimeProvider({
 
 function AuthenticatedMissionRuntime({ children }: { children: React.ReactNode }) {
   const { authStatus } = useAuth();
+  const [catalogSync] = useState(() => new MissionCatalogSynchronizer());
   const [missions, setMissions] = useState<Record<string, MissionSummary>>({});
   const [activeMissionId, setActiveMissionId] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
@@ -105,16 +107,10 @@ function AuthenticatedMissionRuntime({ children }: { children: React.ReactNode }
   const refreshSummary = useCallback(async () => {
     const request = ++catalogRequestRef.current;
     try {
-      const catalog = await fetchMissionCatalog(100, 0, lifetime.current?.signal);
-      while (catalog.items.length < catalog.total) {
-        if (lifetime.current?.signal.aborted || request !== catalogRequestRef.current) return;
-        const page = await fetchMissionCatalog(100, catalog.items.length, lifetime.current?.signal);
-        if (!page.items.length) break;
-        catalog.items.push(...page.items);
-      }
+      const items = await catalogSync.refresh(lifetime.current?.signal);
       if (lifetime.current?.signal.aborted || request !== catalogRequestRef.current) return;
       const current = activeVolIdRef.current;
-      const map = catalogueWithSelectedDetail(catalog.items, missionsRef.current, current);
+      const map = catalogueWithSelectedDetail(items, missionsRef.current, current, false);
       const selected = autoSelectMission(map, current);
       missionsRef.current = map;
       setMissions(map);
@@ -127,7 +123,7 @@ function AuthenticatedMissionRuntime({ children }: { children: React.ReactNode }
     } catch (error) {
       console.error("Mission catalog error:", error);
     }
-  }, [refreshSelectedMission]);
+  }, [catalogSync, refreshSelectedMission]);
 
   useEffect(() => {
     if (authStatus !== "authenticated") return;
@@ -160,7 +156,8 @@ function AuthenticatedMissionRuntime({ children }: { children: React.ReactNode }
           if (replyToStatusPing(message, (reply) => socket.send(reply))) return;
           const payload = parseStatusPayload(message);
           const existing = missionsRef.current[payload.vol_id];
-          if (!existing || existing.stage_runs?.length) {
+          if (!existing) { void refreshSummary(); return; }
+          if (existing.stage_runs?.length) {
             if (activeVolIdRef.current === payload.vol_id) void refreshSelectedMission(payload.vol_id);
             return;
           }
@@ -214,7 +211,7 @@ function AuthenticatedMissionRuntime({ children }: { children: React.ReactNode }
       ws?.close();
       setWsConnected(false);
     };
-  }, [authStatus, refreshSelectedMission]);
+  }, [authStatus, refreshSelectedMission, refreshSummary]);
 
   const activeMission = activeMissionId
     ? missions[activeMissionId] ?? null
