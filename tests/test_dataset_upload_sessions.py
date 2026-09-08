@@ -107,6 +107,12 @@ def fake_storage(monkeypatch):
         ],
     )
     monkeypatch.setattr(uploads.storage, "complete_multipart_upload", complete)
+    def prefix(key, *, expected_size, etag, max_bytes=16):
+        assert etag == object_info[key]["etag"]
+        header = objects.get(key, b"\xff\xd8\xff" + b"\0" * 13)
+        return header[:min(expected_size, max_bytes)]
+    monkeypatch.setattr(uploads.storage, "get_object_prefix", prefix)
+
     monkeypatch.setattr(
         uploads.storage,
         "get_object_info",
@@ -832,3 +838,49 @@ def test_resume_parts_are_visible_only_to_the_upload_owner(upload_session, fake_
         with pytest.raises(HTTPException) as error:
             uploads.uploaded_parts(upload_session, session_id, file_id, foreign)
         assert error.value.status_code == 404
+
+
+def test_bad_image_header_cannot_enter_ready_catalog(upload_session, fake_storage):
+    principal = security.Principal("operator-1", "operator")
+    response = uploads.create_upload_session(upload_session, uploads.UploadSessionRequest(
+        dataset_name="bad-image-header", files=[{"name": "photo.jpg", "size": 1024}],
+    ), principal)
+    upload_session.commit()
+    descriptor = response["files"][0]
+    fake_storage["completed"][descriptor["s3_key"]] = 1024
+    fake_storage["objects"][descriptor["s3_key"]] = b"%PDF-1.7 invalid image"
+    with pytest.raises(HTTPException) as error:
+        uploads.complete_upload_file(upload_session, response["session_id"], descriptor["file_id"],
+            uploads.CompleteUploadFileRequest(parts=[{"part_number": 1, "etag": '"part-1"'}]), principal)
+    assert error.value.status_code == 422
+    assert upload_session.query(DatasetUploadFile).one().status == "failed"
+    assert upload_session.query(DatasetUploadSession).one().status == "failed"
+    assert upload_session.query(Dataset).count() == 0
+    with pytest.raises(HTTPException):
+        uploads.finalize_upload_session(upload_session, response["session_id"], principal)
+
+
+def test_header_transport_failure_retains_recoverable_intent(upload_session, fake_storage, monkeypatch):
+    principal = security.Principal("operator-1", "operator")
+    response = uploads.create_upload_session(upload_session, uploads.UploadSessionRequest(
+        dataset_name="header-retry", files=[{"name": "photo.jpg", "size": 1024}],
+    ), principal)
+    upload_session.commit()
+    descriptor = response["files"][0]
+    fake_storage["completed"][descriptor["s3_key"]] = 1024
+    def unavailable(*args, **kwargs):
+        raise OSError("range temporarily unavailable")
+    original_prefix = uploads.storage.get_object_prefix
+    monkeypatch.setattr(uploads.storage, "get_object_prefix", unavailable)
+    with pytest.raises(HTTPException) as error:
+        uploads.complete_upload_file(upload_session, response["session_id"], descriptor["file_id"],
+            uploads.CompleteUploadFileRequest(parts=[{"part_number": 1, "etag": '"part-1"'}]), principal)
+    assert error.value.status_code == 502
+    assert upload_session.query(DatasetUploadFile).one().status == "completing"
+    assert upload_session.query(Dataset).count() == 0
+    monkeypatch.setattr(uploads.storage, "get_object_prefix", original_prefix)
+    result = uploads.complete_upload_file(upload_session, response["session_id"], descriptor["file_id"],
+        uploads.CompleteUploadFileRequest(parts=[{"part_number": 1, "etag": '"part-1"'}]), principal)
+    assert result["status"] == "completed"
+    assert fake_storage["state"]["complete_calls"] == 1
+    assert uploads.finalize_upload_session(upload_session, response["session_id"], principal)["status"] == "done"
