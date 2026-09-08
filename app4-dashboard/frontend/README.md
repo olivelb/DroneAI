@@ -87,6 +87,11 @@ unreviewed dependency update. Repair Dependabot lockfile inconsistencies with
 `corepack npm@10.8.2 install --package-lock-only --ignore-scripts`, review the
 diff, then prove a clean `corepack npm@10.8.2 ci` before the normal tests/build.
 
+Vitest 5 uses the test-context `bench` fixture for the existing Q96 benchmarks.
+Run `corepack npm exec -- vitest bench --run app/lib/gstile/decode.bench.ts` to
+check that harness explicitly; ordinary unit tests do not run benchmarks.
+Benchmark results remain machine-specific measurements, not production claims.
+
 ## Internationalization
 
 The dependency-free locale contract lives in `app/lib/i18n`. English is the
