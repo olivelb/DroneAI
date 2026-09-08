@@ -1,0 +1,81 @@
+{
+  "Results": [
+    {
+      "Target": "Debian trixie API image, scan 2026-09-08",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2026-54369",
+          "PkgName": "libacl1",
+          "InstalledVersion": "2.4.0-1",
+          "Severity": "HIGH"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-69720",
+          "PkgName": "libncursesw6",
+          "InstalledVersion": "6.5+20250216-2",
+          "Severity": "HIGH"
+        },
+        {
+          "VulnerabilityID": "CVE-2026-11822",
+          "PkgName": "libsqlite3-0",
+          "InstalledVersion": "3.53.4-2",
+          "Severity": "HIGH"
+        },
+        {
+          "VulnerabilityID": "CVE-2026-11824",
+          "PkgName": "libsqlite3-0",
+          "InstalledVersion": "3.53.4-2",
+          "Severity": "HIGH"
+        },
+        {
+          "VulnerabilityID": "CVE-2026-16742",
+          "PkgName": "libsystemd0",
+          "InstalledVersion": "257.13-1~deb13u1",
+          "Severity": "HIGH"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-69720",
+          "PkgName": "libtinfo6",
+          "InstalledVersion": "6.5+20250216-2",
+          "Severity": "HIGH"
+        },
+        {
+          "VulnerabilityID": "CVE-2026-16742",
+          "PkgName": "libudev1",
+          "InstalledVersion": "257.13-1~deb13u1",
+          "Severity": "HIGH"
+        },
+        {
+          "VulnerabilityID": "CVE-2026-76642",
+          "PkgName": "libuuid1",
+          "InstalledVersion": "2.41.5-0+deb13u1",
+          "Severity": "HIGH"
+        },
+        {
+          "VulnerabilityID": "CVE-2026-78408",
+          "PkgName": "libuuid1",
+          "InstalledVersion": "2.41.5-0+deb13u1",
+          "Severity": "HIGH"
+        },
+        {
+          "VulnerabilityID": "CVE-2026-78409",
+          "PkgName": "libuuid1",
+          "InstalledVersion": "2.41.5-0+deb13u1",
+          "Severity": "HIGH"
+        },
+        {
+          "VulnerabilityID": "CVE-2026-78410",
+          "PkgName": "libuuid1",
+          "InstalledVersion": "2.41.5-0+deb13u1",
+          "Severity": "HIGH"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-69720",
+          "PkgName": "ncurses-base",
+          "InstalledVersion": "6.5+20250216-2",
+          "Severity": "HIGH"
+        }
+      ]
+    }
+  ]
+}

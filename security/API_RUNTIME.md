@@ -81,3 +81,39 @@ symlinks by design. The package upgrade does not turn arbitrary privileged
 legacy callers into safe code. The API runs as UID 10001 and qualification drops
 all capabilities. Any future privileged ACL consumer needs its own path/fd audit.
 Rollback must restore ACL, tar and the corresponding verifier together.
+
+## Exact dispositions and expiry (2026-09-08)
+
+The final image retains **12 raw HIGH, zero CRITICAL**, with no fixable findings
+in this dated Trivy database. Three occurrences concern the corrected SQLite/ACL
+packages above. Nine concern vulnerable components absent from the runtime:
+
+| Finding | Remaining binary package(s) | Vulnerable component and proof |
+|---|---|---|
+| [CVE-2025-69720](https://security-tracker.debian.org/tracker/CVE-2025-69720) | libncursesw6, libtinfo6, ncurses-base | `infocmp` / ncurses-bin absent |
+| [CVE-2026-16742](https://security-tracker.debian.org/tracker/CVE-2026-16742) | libsystemd0, libudev1 | systemd-homed service/package absent |
+| [CVE-2026-76642](https://security-tracker.debian.org/tracker/CVE-2026-76642) | libuuid1 | mount post-hook code and libmount absent |
+| [CVE-2026-78408](https://security-tracker.debian.org/tracker/CVE-2026-78408) | libuuid1 | nsenter absent |
+| [CVE-2026-78409](https://security-tracker.debian.org/tracker/CVE-2026-78409) | libuuid1 | mount subdirectory code and libmount absent |
+| [CVE-2026-78410](https://security-tracker.debian.org/tracker/CVE-2026-78410) | libuuid1 | mount bind/ownership code and libmount absent |
+
+These are source-package mappings, not vulnerabilities in the retained UUID,
+terminal-data, systemd-client or udev-client libraries for these exact CVEs.
+The checker verifies the removed packages, executable paths and libmount files
+at build time and on the immutable promotion digest. A deliberately reintroduced
+`infocmp` path must fail. The corrected native versions and consumers are also
+mandatory: a waiver cannot substitute for those checks.
+
+[The registry](unfixed-cve-waivers.json) has twelve exact image/CVE/package/version
+entries for `drone-dashboard-api`, owned by code owner `@olivelb`, expiring
+**2026-10-08**. It accepts zero unexplained findings in the measured API image;
+it does not claim zero raw findings. A changed package version, new CVE, another
+image or expired entry is rejected. Review these dispositions before expiry and
+replace snapshot packages with qualified stable fixes when available. Do not
+extend dates without a fresh scan and applicability review.
+
+The raw Trivy report, SBOM and native-runtime JSON remain promotion artifacts.
+Fixable HIGH/CRITICAL still fail the separate Trivy gate. These dispositions do
+not qualify other service images, a release tag, deployment or infrastructure.
+Removing an entry immediately restores the promotion block for that finding;
+reverting the native checker requires reverting its dependent dispositions too.
