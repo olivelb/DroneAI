@@ -8,12 +8,21 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 #include "dronegs/rasterization.hpp"
 #include "dronegs/training.hpp"
 
 namespace dronegs {
+
+// Only this condition is recoverable by selecting another training view.
+// Thrown before any optimizer, random-state, or refinement-statistics update.
+class NoProjectedGaussians : public std::runtime_error {
+public:
+    NoProjectedGaussians()
+        : std::runtime_error("no Gaussian projects into the selected training view") {}
+};
 
 enum class RefinementStatisticsMode {
     collect,
@@ -90,6 +99,10 @@ public:
         OrderedAlphaTrainingContext&&) noexcept;
     OrderedAlphaTrainingContext& operator=(
         OrderedAlphaTrainingContext&&) noexcept;
+
+    // Uses the same GPU projection and tile-pair admission as train_step.
+    // No image decode and no optimizer update; valid on seed or learned state.
+    bool has_projection(const RasterCamera& camera);
 
     float evaluate(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
