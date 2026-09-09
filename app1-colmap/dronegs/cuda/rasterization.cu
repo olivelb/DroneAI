@@ -5014,6 +5014,47 @@ struct OrderedAlphaTrainingContext::Impl {
         return result;
     }
 
+    std::uint64_t project_frame(
+        const RasterCamera& camera, GpuStageTimer& stage_timer) {
+        const auto device_camera = make_device_camera(camera);
+        const auto gaussian_items =
+            static_cast<std::uint32_t>(gaussian_count);
+        constexpr std::uint32_t block_size = 256U;
+        const auto gaussian_blocks =
+            (gaussian_items + block_size - 1U) / block_size;
+        visible_splats.zero(1U);
+        project_alpha_splats_kernel<<<gaussian_blocks, block_size>>>(
+            gaussians.data(), gaussian_items, device_camera,
+            records.data(), projected_sh_basis.data(), depth_keys.data(),
+            visible_splats.data(),
+            active_sh_degree,
+            opacity_sh_enabled ? active_sh_degree : 0U,
+            antialias_filter_variance,
+            fastgs_compatibility);
+        require_cuda(
+            cudaGetLastError(),
+            "launch persistent alpha projection");
+        stage_timer.mark(1U);
+        stage_timer.mark(2U);
+        const auto count_blocks =
+            (gaussian_items + 1U + block_size - 1U) / block_size;
+        extract_pair_counts_kernel<<<count_blocks, block_size>>>(
+            records.data(), gaussian_items,
+            camera.width, camera.height, pair_counts.data(),
+            !fastgs_compatibility);
+        require_cuda(
+            cudaGetLastError(),
+            "launch persistent pair count extraction");
+        scan_counts();
+        std::uint64_t pair_count = 0U;
+        require_cuda(
+            cudaMemcpy(
+                &pair_count, pair_offsets.data() + gaussian_items,
+                sizeof(pair_count), cudaMemcpyDeviceToHost),
+            "copy persistent tile pair count");
+        return pair_count;
+    }
+
     float render_loss(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
         std::size_t target_bytes, bool compute_gradient,
@@ -5081,83 +5122,58 @@ struct OrderedAlphaTrainingContext::Impl {
         }
         GpuStageTimer stage_timer(collect_stage_telemetry);
         target.copy_from_host(target_rgb, target_bytes);
+        const auto pair_count = project_frame(camera, stage_timer);
         const auto device_camera = make_device_camera(camera);
-        const auto gaussian_items =
-            static_cast<std::uint32_t>(gaussian_count);
+        const auto gaussian_items = static_cast<std::uint32_t>(gaussian_count);
         constexpr std::uint32_t block_size = 256U;
-        const auto gaussian_blocks =
-            (gaussian_items + block_size - 1U) / block_size;
-        visible_splats.zero(1U);
-        project_alpha_splats_kernel<<<gaussian_blocks, block_size>>>(
-            gaussians.data(), gaussian_items, device_camera,
-            records.data(), projected_sh_basis.data(), depth_keys.data(),
-            visible_splats.data(),
-            active_sh_degree,
-            opacity_sh_enabled ? active_sh_degree : 0U,
-            antialias_filter_variance,
-            fastgs_compatibility);
-        require_cuda(
-            cudaGetLastError(),
-            "launch persistent alpha projection");
-        stage_timer.mark(1U);
-        stage_timer.mark(2U);
-        const auto count_blocks =
-            (gaussian_items + 1U + block_size - 1U) / block_size;
-        extract_pair_counts_kernel<<<count_blocks, block_size>>>(
-            records.data(), gaussian_items,
-            camera.width, camera.height, pair_counts.data(),
-            !fastgs_compatibility);
-        require_cuda(
-            cudaGetLastError(),
-            "launch persistent pair count extraction");
-        scan_counts();
-        std::uint64_t pair_count = 0U;
-        require_cuda(
-            cudaMemcpy(
-                &pair_count, pair_offsets.data() + gaussian_items,
-                sizeof(pair_count), cudaMemcpyDeviceToHost),
-            "copy persistent tile pair count");
-        if (pair_count == 0U ||
-            pair_count >
-                static_cast<std::uint64_t>(
-                    std::numeric_limits<int>::max())) {
-            throw std::runtime_error(
-                pair_count == 0U
-                    ? "no sparse Gaussian projects into the selected training image"
-                    : "ordered training pair count exceeds CUB item limit");
+        const auto gaussian_blocks = (gaussian_items + block_size - 1U) / block_size;
+        if (pair_count == 0U && compute_gradient) {
+            throw NoProjectedGaussians();
         }
+        if (pair_count > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+            throw std::runtime_error("ordered training pair count exceeds CUB item limit");
+        }
+        // Empty held-out views remain in the denominator, rendered as background.
+        // They must not disappear from quality metrics as the model evolves.
+        const bool empty_evaluation_view = pair_count == 0U && !compute_gradient;
+        const bool include_empty_pixels =
+            objective_policy.include_empty_pixels || empty_evaluation_view;
         const auto pair_items =
             static_cast<std::uint32_t>(pair_count);
-        tile_depth_keys.ensure(pair_items);
-        sorted_tile_depth_keys.ensure(pair_items);
-        record_indices.ensure(pair_items);
-        sorted_record_indices.ensure(pair_items);
-        duplicate_tile_pairs_kernel<<<gaussian_blocks, block_size>>>(
-            records.data(), gaussian_items,
-            pair_offsets.data(), camera.width, camera.height,
-            device_camera.tiles_x,
-            tile_depth_keys.data(), record_indices.data(),
-            !fastgs_compatibility);
-        require_cuda(
-            cudaGetLastError(),
-            "launch persistent tile pair duplication");
+        tile_depth_keys.ensure(std::max(1U, pair_items));
+        sorted_tile_depth_keys.ensure(std::max(1U, pair_items));
+        record_indices.ensure(std::max(1U, pair_items));
+        sorted_record_indices.ensure(std::max(1U, pair_items));
+        if (pair_items != 0U) {
+            duplicate_tile_pairs_kernel<<<gaussian_blocks, block_size>>>(
+                records.data(), gaussian_items,
+                pair_offsets.data(), camera.width, camera.height,
+                device_camera.tiles_x,
+                tile_depth_keys.data(), record_indices.data(),
+                !fastgs_compatibility);
+            require_cuda(
+                cudaGetLastError(),
+                "launch persistent tile pair duplication");
+        }
         stage_timer.mark(3U);
         const auto tile_count =
             static_cast<std::size_t>(device_camera.tiles_x) *
             device_camera.tiles_y;
-        sort_pairs(pair_items, tile_count);
+        if (pair_items != 0U) sort_pairs(pair_items, tile_count);
         tile_starts.ensure(tile_count);
         tile_ends.ensure(tile_count);
         tile_starts.zero(tile_count);
         tile_ends.zero(tile_count);
-        const auto pair_blocks =
-            (pair_items + block_size - 1U) / block_size;
-        build_tile_ranges_kernel<<<pair_blocks, block_size>>>(
-            sorted_tile_depth_keys.data(), pair_items,
-            tile_starts.data(), tile_ends.data());
-        require_cuda(
-            cudaGetLastError(),
-            "launch persistent tile range construction");
+        if (pair_items != 0U) {
+            const auto pair_blocks =
+                (pair_items + block_size - 1U) / block_size;
+            build_tile_ranges_kernel<<<pair_blocks, block_size>>>(
+                sorted_tile_depth_keys.data(), pair_items,
+                tile_starts.data(), tile_ends.data());
+            require_cuda(
+                cudaGetLastError(),
+                "launch persistent tile range construction");
+        }
         stage_timer.mark(4U);
 
         const bool use_structural_fastgs =
@@ -5208,7 +5224,7 @@ struct OrderedAlphaTrainingContext::Impl {
                     ? ssim_backward_terms.data()
                     : nullptr,
                 camera.width, camera.height,
-                objective_policy.include_empty_pixels);
+                include_empty_pixels);
             require_cuda(
                 cudaGetLastError(),
                 "launch fused ordered L1/SSIM forward");
@@ -5216,7 +5232,7 @@ struct OrderedAlphaTrainingContext::Impl {
             ordered_l1_loss_kernel<<<pixel_blocks, block_size>>>(
                 rgb.data(), transmittance.data(), target.data(),
                 loss_sum.data(), active_pixels.data(), pixel_count,
-                objective_policy.include_empty_pixels);
+                include_empty_pixels);
             require_cuda(
                 cudaGetLastError(),
                 "launch persistent ordered L1 loss");
@@ -5317,7 +5333,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 sample_blocks, block_size>>>(
                 rgb.data(), transmittance.data(), target.data(),
                 metric_horizontal_moments.data(), sample_count,
-                objective_policy.include_empty_pixels);
+                include_empty_pixels);
             require_cuda(
                 cudaGetLastError(),
                 "launch ordered active squared-error objective");
@@ -5353,7 +5369,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 10.0F * std::log10(1.0F / mean_squared_error);
             quality->ssim = mean_ssim;
             quality->active_pixel_fraction =
-                static_cast<float>(host_active_pixels) /
+                static_cast<float>(empty_evaluation_view ? 0U : host_active_pixels) /
                 static_cast<float>(pixel_count);
             if (!std::isfinite(quality->mse) ||
                 !std::isfinite(quality->psnr) ||
@@ -5379,7 +5395,7 @@ struct OrderedAlphaTrainingContext::Impl {
                         image_gradient.data(),
                         camera.width, camera.height,
                         base_objective_weight, mse_blend,
-                        objective_policy.include_empty_pixels);
+                        include_empty_pixels);
                 } else {
                     fused_ordered_l1_ssim_backward_kernel<false><<<
                         render_blocks, render_threads>>>(
@@ -5389,7 +5405,7 @@ struct OrderedAlphaTrainingContext::Impl {
                         image_gradient.data(),
                         camera.width, camera.height,
                         1.0F, 0.0F,
-                        objective_policy.include_empty_pixels);
+                        include_empty_pixels);
                 }
             } else {
                 if (mse_blend > 0.0F) {
@@ -5401,7 +5417,7 @@ struct OrderedAlphaTrainingContext::Impl {
                         image_gradient.data(),
                         camera.width, camera.height,
                         base_objective_weight, mse_blend,
-                        objective_policy.include_empty_pixels);
+                        include_empty_pixels);
                 } else {
                     ordered_objective_gradient_kernel<false><<<
                         pixel_blocks, block_size>>>(
@@ -5411,7 +5427,7 @@ struct OrderedAlphaTrainingContext::Impl {
                         image_gradient.data(),
                         camera.width, camera.height,
                         1.0F, 0.0F,
-                        objective_policy.include_empty_pixels);
+                        include_empty_pixels);
                 }
             }
             require_cuda(
@@ -6390,6 +6406,18 @@ OrderedAlphaTrainingContext::OrderedAlphaTrainingContext(
 
 OrderedAlphaTrainingContext& OrderedAlphaTrainingContext::operator=(
     OrderedAlphaTrainingContext&&) noexcept = default;
+
+bool OrderedAlphaTrainingContext::has_projection(const RasterCamera& camera) {
+    if (camera.width <= 2U * ssim_window_radius ||
+        camera.height <= 2U * ssim_window_radius ||
+        static_cast<std::size_t>(camera.width) * camera.height > impl_->maximum_pixels ||
+        !std::isfinite(camera.fx) || !std::isfinite(camera.fy) ||
+        camera.fx <= 0.0F || camera.fy <= 0.0F) {
+        throw std::invalid_argument("ordered projection frame shape is invalid");
+    }
+    GpuStageTimer timer(false);
+    return impl_->project_frame(camera, timer) != 0U;
+}
 
 float OrderedAlphaTrainingContext::evaluate(
     const RasterCamera& camera, const std::uint8_t* target_rgb,

@@ -17,6 +17,7 @@
 
 #include "dronegs/model.hpp"
 #include "dronegs/ordered_training.hpp"
+#include "dronegs/supported_frame.hpp"
 #include "dronegs/training.hpp"
 
 namespace {
@@ -277,6 +278,90 @@ int main() {
                 std::to_string(metrics.training_frame_count) +
                 " cache_misses=" +
                 std::to_string(metrics.image_cache_misses));
+        }
+        {
+            // A fully transparent seed still passes the historical spherical geometry
+            // test. Exact FastGS admission must remove it before decoding its photo.
+            auto transparent = gaussians;
+            for (auto& gaussian : transparent) gaussian.opacity_logit = -30.0F;
+            auto empty_options = options;
+            empty_options.data_path = root / "missing-images";
+            bool empty_rejected = false;
+            try {
+                static_cast<void>(dronegs::train_ordered_mrnf(empty_options, make_scene(), transparent));
+            } catch (const std::runtime_error& error) {
+                empty_rejected = std::string(error.what()) ==
+                    "no training view has GPU projection support";
+            }
+            if (!empty_rejected) throw std::runtime_error("empty cell was not rejected before image decode");
+
+            // The same photo can lose GPU support after admission. Both synchronous
+            // and deferred steps must reject it before changing checkpoint state.
+            dronegs::RasterCamera supported_camera{.fx=30, .fy=30, .cx=16, .cy=16, .width=32, .height=32};
+            auto empty_camera = supported_camera;
+            empty_camera.translation[2] = -100.0F;
+            auto seed = dronegs::initialize_fixed_topology(make_scene());
+            dronegs::OrderedAlphaTrainingContext context(seed, 1024U, 3U, 100U,
+                dronegs::MrnfOptimizerProfile::reference_absolute, 0U, 1000U, 17U, true);
+            std::vector<std::uint8_t> target(32U * 32U * 3U, 128U);
+            context.save_checkpoint(root / "before-empty.ckpt", {}, "fixture", "fixture");
+            if (!context.has_projection(supported_camera) || context.has_projection(empty_camera))
+                throw std::runtime_error("GPU support does not match visible and empty fixture");
+            for (bool deferred : {false, true}) {
+                bool rejected = false;
+                try {
+                    if (deferred) context.train_step_deferred(empty_camera, target.data(), target.size());
+                    else static_cast<void>(context.train_step(empty_camera, target.data(), target.size()));
+                } catch (const dronegs::NoProjectedGaussians&) { rejected = true; }
+                if (!rejected) throw std::runtime_error("empty GPU step was not rejected");
+            }
+            context.save_checkpoint(root / "after-empty.ckpt", {}, "fixture", "fixture");
+            if (read_bytes(root / "before-empty.ckpt") != read_bytes(root / "after-empty.ckpt"))
+                throw std::runtime_error("rejected step or support probe changed checkpoint state");
+            // Fixed held-out population: a lost view contributes a black prediction,
+            // finite full-image error and zero coverage instead of disappearing.
+            std::vector<float> prediction;
+            const auto quality = context.evaluate_quality(empty_camera, target.data(), target.size(), &prediction);
+            const float expected_mse = std::pow(128.0F / 255.0F, 2.0F);
+            if (std::abs(quality.mse - expected_mse) > 1e-5F ||
+                quality.active_pixel_fraction != 0.0F || !std::isfinite(quality.ssim) ||
+                prediction.size() != target.size() ||
+                !std::all_of(prediction.begin(), prediction.end(), [](float value) { return value == 0.0F; }))
+                throw std::runtime_error("empty held-out view was not scored as background");
+
+            const std::vector<std::size_t> training{2U, 5U, 9U};
+            std::vector<std::size_t> attempts, rejected;
+            const auto attempt = [&](std::size_t frame) {
+                attempts.push_back(frame);
+                if (frame != 5U) throw dronegs::NoProjectedGaussians();
+                return context.train_step(supported_camera, target.data(), target.size());
+            };
+            static_cast<void>(dronegs::with_supported_training_frame(training, 9U, attempt,
+                [&](std::size_t frame) { rejected.push_back(frame); }));
+            if (attempts != std::vector<std::size_t>{9U, 2U, 5U} ||
+                rejected != std::vector<std::size_t>{9U, 2U})
+                throw std::runtime_error("lost-view fallback is not deterministic and split-local");
+            std::size_t empty_attempts = 0U;
+            bool all_empty_rejected = false;
+            try {
+                dronegs::with_supported_training_frame(training, 5U,
+                    [&](std::size_t) -> float { ++empty_attempts; throw dronegs::NoProjectedGaussians(); },
+                    [](std::size_t) {});
+            } catch (const std::runtime_error& error) {
+                all_empty_rejected = std::string(error.what()) == "all training views lost GPU projection support";
+            }
+            if (!all_empty_rejected || empty_attempts != training.size())
+                throw std::runtime_error("all-empty recovery is not bounded");
+            bool unexpected_propagated = false;
+            try {
+                dronegs::with_supported_training_frame(training, 2U,
+                    [](std::size_t) -> float { throw std::runtime_error("CUDA failure fixture"); },
+                    [](std::size_t) { throw std::runtime_error("unexpected retry"); });
+            } catch (const std::runtime_error& error) {
+                unexpected_propagated = std::string(error.what()) == "CUDA failure fixture";
+            }
+            if (!unexpected_propagated) throw std::runtime_error("non-support failure was hidden");
+
         }
         auto corner_gaussians = dronegs::initialize_fixed_topology(
             make_corner_supported_scene());

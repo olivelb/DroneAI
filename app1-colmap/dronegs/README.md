@@ -7,6 +7,26 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
+MRNF view admission now runs the actual FastGS GPU projection and tile-pair
+count before image decoding and splitting. Photos/crops without projected
+Gaussians are excluded, with `training_view_rejected` events identifying the
+image and tile. The COLMAP subset exporter separately removes photos without
+retained observations; source photographs are never deleted.
+
+Geometry and opacity can change during optimization. If an admitted training
+view loses all projections, the trainer tries the following training descriptors
+in deterministic circular order, without advancing the optimizer or RNG for a
+rejected view. Each view is tried at most once per iteration; losing every view
+fails explicitly. Future iterations can reconsider a view after support returns.
+Other CUDA/data errors remain fatal. Held-out views that become empty stay in
+the evaluation population and receive background predictions with zero coverage.
+The final training anchor is also scored as background if it becomes empty.
+
+The training configuration fingerprint is now contract 8 (scalar opacity) or
+7 (directional opacity), because admission and sampling have changed. Older
+training checkpoints are preserved but cannot resume under this contract;
+start a fresh run. The checkpoint file format itself is unchanged.
+
 Version `0.5.0-dev.72` reuses per-context host snapshot/statistic storage across
 refinements, including checkpoint restores. New storage is initialized only on
 first use/growth, with the same six-vector layout as the reference. Active spans

@@ -43,6 +43,7 @@
 #include "dronegs/image.hpp"
 #include "dronegs/colmap.hpp"
 #include "dronegs/ordered_training.hpp"
+#include "dronegs/supported_frame.hpp"
 #include "dronegs/profile_registry.hpp"
 
 namespace dronegs {
@@ -544,7 +545,7 @@ std::vector<FrameDescriptor> make_frame_descriptors(
     const Options& options, const Scene& scene,
     const std::vector<Gaussian>& gaussians,
     std::size_t& maximum_pixels,
-    std::size_t& generated_views) {
+    std::size_t& generated_views, bool ordered_projection = false) {
     std::vector<FrameDescriptor> descriptors;
     descriptors.reserve(
         scene.images.size() * static_cast<std::size_t>(options.tile_mode));
@@ -603,7 +604,7 @@ std::vector<FrameDescriptor> make_frame_descriptors(
             };
             const auto device_camera = make_device_camera(
                 camera, image, geometry);
-            const bool supported = std::any_of(
+            const bool supported = ordered_projection || std::any_of(
                 gaussians.begin(), gaussians.end(),
                 [&device_camera](const Gaussian& gaussian) {
                     return project_gaussian(gaussian, device_camera).visible;
@@ -1622,8 +1623,59 @@ static TrainingMetrics train_ordered_mrnf_impl(
     }
     std::size_t maximum_pixels = 0U;
     std::size_t generated_views = 0U;
-    const auto descriptors = make_frame_descriptors(
-        options, scene, gaussians, maximum_pixels, generated_views);
+    auto descriptors = make_frame_descriptors(
+        options, scene, gaussians, maximum_pixels, generated_views, true);
+    const auto setup_start = std::chrono::steady_clock::now();
+    const auto optimizer_profile = [&options]() {
+        const auto profile =
+            optimizer_profile_from_name(options.optimizer_profile);
+        if (!profile.has_value()) {
+            throw std::invalid_argument(
+                "optimizer profile is not present in the registry");
+        }
+        return *profile;
+    }();
+    if (options.raster_profile != "fastgs" ||
+        options.pruning_policy != "spatial-bounds") {
+        throw std::invalid_argument(
+            "production training requires fastgs and spatial-bounds");
+    }
+    const std::optional<bool> raster_override = true;
+    OrderedAlphaTrainingContext workspace(
+        gaussians, maximum_pixels, options.iterations,
+        static_cast<std::size_t>(options.max_cap),
+        optimizer_profile, options.sh_degree,
+        options.sh_degree_interval, options.seed,
+        raster_override, options.maximum_scale_growth_factor,
+        options.opacity_sh_enabled);
+    const auto support_started = std::chrono::steady_clock::now();
+    std::erase_if(descriptors, [&](const FrameDescriptor& descriptor) {
+        const auto [width, height] = training_dimensions(descriptor, options);
+        const ImageData geometry{
+            .width = width, .height = height,
+            .source_x = descriptor.region.source_x,
+            .source_y = descriptor.region.source_y,
+            .source_to_image_x = static_cast<float>(width) / descriptor.region.width,
+            .source_to_image_y = static_cast<float>(height) / descriptor.region.height,
+        };
+        const bool supported = workspace.has_projection(make_raster_camera(
+            make_device_camera(*descriptor.camera, *descriptor.image, geometry)));
+        if (!supported) {
+            std::cout << "{\"event\":\"training_view_rejected\",\"stage\":\"preflight\","
+                << "\"image_name\":" << diagnostic_json_string(descriptor.image->name)
+                << ",\"image_id\":" << descriptor.image->id
+                << ",\"tile_index\":" << descriptor.tile_index
+                << ",\"reason\":\"no_gpu_projection\"}\n" << std::flush;
+        }
+        return !supported;
+    });
+    if (descriptors.empty()) {
+        throw std::runtime_error("no training view has GPU projection support");
+    }
+    std::cout << "{\"event\":\"training_projection_preflight\",\"seconds\":"
+        << std::chrono::duration<double>(std::chrono::steady_clock::now() - support_started).count()
+        << ",\"generated_views\":" << generated_views
+        << ",\"supported_views\":" << descriptors.size() << "}\n" << std::flush;
     std::cout
         << "{\"event\":\"training_view_expansion\",\"source_images\":"
         << scene.images.size() << ",\"tile_mode\":"
@@ -1654,36 +1706,13 @@ static TrainingMetrics train_ordered_mrnf_impl(
         },
         options.prefetch_depth, options.decode_workers);
 
-    const auto setup_start = std::chrono::steady_clock::now();
-    const auto optimizer_profile = [&options]() {
-        const auto profile =
-            optimizer_profile_from_name(options.optimizer_profile);
-        if (!profile.has_value()) {
-            throw std::invalid_argument(
-                "optimizer profile is not present in the registry");
-        }
-        return *profile;
-    }();
-    if (options.raster_profile != "fastgs" ||
-        options.pruning_policy != "spatial-bounds") {
-        throw std::invalid_argument(
-            "production training requires fastgs and spatial-bounds");
-    }
-    const std::optional<bool> raster_override = true;
-    OrderedAlphaTrainingContext workspace(
-        gaussians, maximum_pixels, options.iterations,
-        static_cast<std::size_t>(options.max_cap),
-        optimizer_profile, options.sh_degree,
-        options.sh_degree_interval, options.seed,
-        raster_override, options.maximum_scale_growth_factor,
-        options.opacity_sh_enabled);
     const auto checkpoint_dataset_fingerprint =
         options.dataset_fingerprint.empty()
             ? dataset_fingerprint(scene, options.data_path)
             : options.dataset_fingerprint;
     std::ostringstream checkpoint_configuration;
     checkpoint_configuration
-        << "contract=" << (options.opacity_sh_enabled ? 5 : 6)
+        << "contract=" << (options.opacity_sh_enabled ? 7 : 8)
         << ";iterations=" << options.iterations
         << ";strategy=" << options.strategy
         << ";sh=" << options.sh_degree
@@ -2108,13 +2137,6 @@ static TrainingMetrics train_ordered_mrnf_impl(
          iteration <= options.iterations; ++iteration) {
         const auto schedule_index =
             static_cast<std::size_t>(iteration - 1U);
-        const auto frame = frame_from_cache(
-            cache, descriptors, schedule[schedule_index], options);
-        prefetch_schedule_window(
-            cache, schedule, schedule_index + 1U,
-            options.prefetch_depth);
-        const auto raster_camera =
-            make_raster_camera(frame.camera);
         const auto degree_before = workspace.active_sh_degree();
         float mse_blend = 0.0F;
         if (options.photometric_finish != 0U &&
@@ -2140,17 +2162,33 @@ static TrainingMetrics train_ordered_mrnf_impl(
         const auto objective_policy =
             training_objective_policy(options, iteration);
         float loss = 0.0F;
-        if (report_progress) {
-            loss = workspace.train_step(
-                raster_camera, frame.image->rgb.data(),
-                frame.image->rgb.size(), mse_blend,
-                refinement_statistics, objective_policy);
-        } else {
-            workspace.train_step_deferred(
-                raster_camera, frame.image->rgb.data(),
-                frame.image->rgb.size(), mse_blend,
-                refinement_statistics, objective_policy);
-        }
+        loss = with_supported_training_frame(
+            frame_split.training, schedule[schedule_index],
+            [&](std::size_t frame_index) {
+                const auto frame = frame_from_cache(cache, descriptors, frame_index, options);
+                if (frame_index == schedule[schedule_index]) {
+                    prefetch_schedule_window(cache, schedule, schedule_index + 1U, options.prefetch_depth);
+                }
+                const auto raster_camera = make_raster_camera(frame.camera);
+                if (report_progress) {
+                    return workspace.train_step(
+                        raster_camera, frame.image->rgb.data(), frame.image->rgb.size(),
+                        mse_blend, refinement_statistics, objective_policy);
+                }
+                workspace.train_step_deferred(
+                    raster_camera, frame.image->rgb.data(), frame.image->rgb.size(),
+                    mse_blend, refinement_statistics, objective_policy);
+                return 0.0F;
+            },
+            [&](std::size_t frame_index) {
+                const auto& descriptor = descriptors[frame_index];
+                std::cout << "{\"event\":\"training_view_rejected\",\"stage\":\"training\","
+                    << "\"iteration\":" << iteration
+                    << ",\"image_name\":" << diagnostic_json_string(descriptor.image->name)
+                    << ",\"image_id\":" << descriptor.image->id
+                    << ",\"tile_index\":" << descriptor.tile_index
+                    << ",\"reason\":\"no_gpu_projection\"}\n" << std::flush;
+            });
         if (workspace.active_sh_degree() != degree_before) {
             std::cout
                 << "{\"event\":\"sh_degree_activation\",\"iteration\":"
