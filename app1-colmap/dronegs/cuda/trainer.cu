@@ -1648,6 +1648,10 @@ static TrainingMetrics train_ordered_mrnf_impl(
         options.sh_degree_interval, options.seed,
         raster_override, options.maximum_scale_growth_factor,
         options.opacity_sh_enabled);
+    const bool imported_model = !options.initial_ply.empty();
+    if (imported_model) {
+        workspace.set_active_sh_degree(options.sh_degree);
+    }
     const auto support_started = std::chrono::steady_clock::now();
     std::erase_if(descriptors, [&](const FrameDescriptor& descriptor) {
         const auto [width, height] = training_dimensions(descriptor, options);
@@ -1748,10 +1752,6 @@ static TrainingMetrics train_ordered_mrnf_impl(
     }
     const auto checkpoint_configuration_fingerprint =
         checkpoint_configuration.str();
-    const bool imported_model = !options.initial_ply.empty();
-    if (imported_model) {
-        workspace.set_active_sh_degree(options.sh_degree);
-    }
     const auto initial_learning_rates =
         workspace.current_learning_rates();
     std::cout

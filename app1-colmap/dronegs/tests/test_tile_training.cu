@@ -363,6 +363,31 @@ int main() {
             if (!unexpected_propagated) throw std::runtime_error("non-support failure was hidden");
 
         }
+        {
+            // Imported directional opacity is already trained: its actual SH
+            // degree must be active during admission, not only after splitting.
+            auto imported = dronegs::initialize_fixed_topology(make_scene());
+            for (auto& gaussian : imported) {
+                gaussian.opacity_logit = -30.0F;
+                gaussian.opacity_sh[5] = 80.0F;  // Positive Y20 along both Z directions.
+            }
+            auto imported_options = options;
+            imported_options.initial_ply = root / "provided-in-memory.ply";
+            imported_options.opacity_sh_enabled = true;
+            imported_options.sh_degree = 2U;
+            imported_options.iterations = 1U;
+            imported_options.checkpoint_every = 0U;
+            imported_options.checkpoint_path.clear();
+            imported_options.output_path = root / "imported-opacity-output";
+            imported_options.run_manifest = imported_options.output_path / "trainer_run.json";
+            const auto imported_metrics = dronegs::train_ordered_mrnf(
+                imported_options, make_scene(), imported);
+            if (imported_metrics.completed_iterations != 1U ||
+                imported_metrics.training_frame_count == 0U ||
+                imported_metrics.final_active_sh_degree != 2U) {
+                throw std::runtime_error("imported directional support was not admitted at its active degree");
+            }
+        }
         auto corner_gaussians = dronegs::initialize_fixed_topology(
             make_corner_supported_scene());
         auto corner_options = options;
