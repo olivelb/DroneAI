@@ -161,9 +161,26 @@ def verify_absent_components() -> dict:
     return {"absent_packages": packages, "absent_executables": executables, "libmount_absent": True}
 
 
+def verify_pcre2() -> dict:
+    installed = subprocess.check_output(
+        ["dpkg-query", "--show", "--showformat=${Version}", "libpcre2-8-0"], text=True
+    ).strip()
+    minimum = "10.46-1~deb13u2"
+    result = subprocess.run(
+        ["dpkg", "--compare-versions", installed, "ge", minimum], check=False
+    )
+    require(result.returncode == 0, f"Vulnerable PCRE2 package: {installed}; need >= {minimum}")
+    # Exercise grep's linked PCRE2 library, not Python's unrelated regex engine.
+    matched = subprocess.check_output(
+        ["grep", "-Po", "(?<=drone-)[0-9]+"], input="drone-42\n", text=True
+    )
+    require(matched == "42\n", "PCRE2 lookbehind consumer check failed")
+    return {"package": installed, "minimum": minimum, "grep_pcre_roundtrip": True}
+
+
 def main() -> None:
     require(os.getuid() == 10001, "Qualification must run as service UID 10001")
-    print(json.dumps({"components": verify_absent_components(), "sqlite": verify_sqlite(), "acl": verify_acl()}, sort_keys=True))
+    print(json.dumps({"components": verify_absent_components(), "sqlite": verify_sqlite(), "acl": verify_acl(), "pcre2": verify_pcre2()}, sort_keys=True))
 
 
 if __name__ == "__main__":
