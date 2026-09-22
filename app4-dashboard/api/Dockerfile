@@ -27,7 +27,7 @@ RUN dpkg -i /tmp/native-packages/*.deb \
 # OpenSSL and its legacy provider remain required by CA certificates/libssl.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        libexpat1 libssl3t64 \
+        libexpat1 libssl3t64 libpcre2-8-0 \
     && apt-get purge --yes --allow-remove-essential bsdutils login mount util-linux perl-base gzip ncurses-bin \
     && apt-get autoremove --yes \
     && test ! -e /usr/bin/gzip \
