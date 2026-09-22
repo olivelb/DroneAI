@@ -117,3 +117,22 @@ Fixable HIGH/CRITICAL still fail the separate Trivy gate. These dispositions do
 not qualify other service images, a release tag, deployment or infrastructure.
 Removing an entry immediately restores the promotion block for that finding;
 reverting the native checker requires reverting its dependent dispositions too.
+
+## PCRE2 refresh (2026-09-22)
+
+The pinned base contains `libpcre2-8-0=10.46-1~deb13u1`. The September 21
+Trivy artifact reports three fixable HIGH findings: CVE-2026-86145,
+CVE-2026-89157 and CVE-2026-89161, fixed in `10.46-1~deb13u2`.
+The existing stable APT refresh now explicitly upgrades PCRE2 alongside
+Expat and OpenSSL. No sid source or vulnerability waiver is added.
+
+The repository-owned native checker rejects older PCRE2 packages and exercises
+the linked library through a `grep -P` lookbehind match. The image build and
+promotion both run this check as UID 10001, together with the existing SQLite,
+ACL and absent-component contracts. CI still rejects fixable HIGH/CRITICAL
+findings using a scan of the actual image. Dated counts above remain historical.
+
+Integration Compose now pulls MinIO and its client from their official Quay
+repositories because the Docker Hub server image is unavailable. Both manifest
+digests are unchanged and verified on Quay, preserving the image contents.
+See [MinIO container documentation](https://min.io/docs/minio/container/operations/install-deploy-manage/deploy-minio-single-node-single-drive.html).

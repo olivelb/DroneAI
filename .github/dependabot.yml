@@ -29,6 +29,11 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    # Node declarations must match the Node 24 runtime and CI.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
     groups:
       frontend-dependencies:
         patterns:
