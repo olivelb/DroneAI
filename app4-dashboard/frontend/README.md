@@ -148,3 +148,17 @@ protected work.
 
 See the repository-level [`README.md`](../../README.md) for the full stack and
 [`DEVELOPMENT.md`](../../DEVELOPMENT.md) for the supported Node/npm workflow.
+
+### Dependency lockfile compatibility
+
+The project uses npm 10.8.2 through Corepack. The `brace-expansion@1` security
+override keeps the patched 1.1.18 release pinned only for the legacy major;
+modern minimatch retains its own compatible brace-expansion major.
+Do not broaden this override to ESLint or eslint-config-next ancestors:
+npm 10 and npm 11 resolve those broad overrides differently, causing an
+npm-11-generated lockfile to lose entries required by `corepack npm ci`.
+
+For an override change, regenerate a copy of the manifests with both npm
+versions, then verify a clean install and `npm ls brace-expansion balanced-match
+--all` on both versions. Finish with audit, tests, lint, typecheck and build;
+successful lockfile generation alone is insufficient.
