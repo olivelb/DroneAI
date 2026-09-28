@@ -20,7 +20,7 @@ nvidia-nvjitlink-cu12==12.9.86
 pillow==12.3.0
 plyfile==1.1.5
 pycolmap==4.2.0
-pyparsing==3.3.2
+pyparsing==3.3.3
 pyproj==3.7.2
 rasterio==1.5.1
 scipy==1.18.0
