@@ -132,7 +132,19 @@ promotion both run this check as UID 10001, together with the existing SQLite,
 ACL and absent-component contracts. CI still rejects fixable HIGH/CRITICAL
 findings using a scan of the actual image. Dated counts above remain historical.
 
-Integration Compose now pulls MinIO and its client from their official Quay
-repositories because the Docker Hub server image is unavailable. Both manifest
-digests are unchanged and verified on Quay, preserving the image contents.
-See [MinIO container documentation](https://min.io/docs/minio/container/operations/install-deploy-manage/deploy-minio-single-node-single-drive.html).
+## Integration MinIO source builds (2026-09-30)
+
+The earlier Docker Hub to Quay workaround is no longer available: both pinned
+Quay images return HTTP 401. Test Compose now builds the official MinIO server
+and client sources at full immutable Git revisions. The Go builder and Debian
+runtime bases are pinned by digest; module resolution is read-only and the Go
+toolchain cannot silently download a different version. Revision and license
+metadata are retained in the images.
+
+`docker compose -f compose.test.yaml build minio minio-init` prepares the images;
+Compose also builds them automatically when starting these services. A clean
+build requires access to GitHub, Docker Hub and the Go module proxy. Updating
+either source revision requires the real PostgreSQL/Kafka/S3 and HTTP integration
+suite. These are test dependencies, not production image qualification.
+See [the test image definition](../tests/integration/minio/Dockerfile) and
+[upstream source-only distribution](https://github.com/minio/minio#source-only-distribution).
