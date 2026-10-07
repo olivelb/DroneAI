@@ -14,3 +14,5 @@ rasterio
 sqlalchemy
 uvicorn[standard]
 websockets
+# HTTPS proxy TLS and chunked-response security fixes.
+urllib3>=2.8.0,<3
