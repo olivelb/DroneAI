@@ -1,4 +1,4 @@
-FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS native-packages
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS native-packages
 
 # Signed immutable Debian snapshot; only this build stage can see sid.
 # Expired metadata is allowed only for this dated archive; signatures stay required.
@@ -10,7 +10,7 @@ RUN printf '%s\n' \
     && apt-get -o Dir::Etc::sourcelist=/tmp/native.list -o Dir::Etc::sourceparts=- \
       download libsqlite3-0=3.53.4-2 libacl1=2.4.0-1 tar=1.35+dfsg-5
 
-FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
