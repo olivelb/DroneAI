@@ -100,9 +100,9 @@ confluent-kafka==2.15.0 \
     --hash=sha256:ff43508f8e929d83545272ef4f17e27fdaa9cc8397f77cf2236b22d67de4edc4 \
     --hash=sha256:ff6d0041e7d5318af548d90d67bb3a72410a77fe616a05564c3fa1ea13f23453
     # via -r api.in
-fastapi==0.143.0 \
-    --hash=sha256:1acffe48206a80917cf7dac21992b5c44b25384e8902bf745c1fd9dabcf6c51f \
-    --hash=sha256:3e9395fd35276425b61b516a31fdd7c77fe2af83e41b4da22e30696fb1304c5d
+fastapi==0.143.3 \
+    --hash=sha256:75e8bd68e2f52f77d29b2879749c257d64de2d85282d25270caf2bfccce5efe5 \
+    --hash=sha256:b9ab567ee57afb4454004ce04c889f8f0160ac47946b99795887cd6e88484848
     # via -r api.in
 geoalchemy2==0.20.0 \
     --hash=sha256:1489a1d106519542a79c97cd0b4c537d80462c353610ebc2429cf2c43daac717 \
