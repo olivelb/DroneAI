@@ -17,3 +17,9 @@ transformers
 ultralytics==8.4.0
 # HTTPS proxy TLS and chunked-response security fixes.
 urllib3>=2.8.0,<3
+
+# Security floors for the October 2026 dependency advisories.
+certifi>=2026.10.23
+pillow>=13.0.0,<14
+filelock>=4.2.1,<5
+setuptools>=84.1.0
