@@ -18,3 +18,8 @@ ruff
 scipy
 shellcheck-py
 zstandard
+
+# Security floors for the October 2026 dependency advisories.
+filelock>=4.2.1,<5
+setuptools>=84.1.0
+msgpack>=1.2.3,<2
