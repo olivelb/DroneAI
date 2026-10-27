@@ -4,7 +4,7 @@ confluent-kafka
 fastapi
 geoalchemy2
 numpy
-pillow
+pillow>=13.0.0,<14
 prometheus-client
 psycopg2-binary
 pydantic
@@ -16,3 +16,7 @@ uvicorn[standard]
 websockets
 # HTTPS proxy TLS and chunked-response security fixes.
 urllib3>=2.8.0,<3
+
+# Security floors for the October 2026 dependency advisories.
+certifi>=2026.10.23
+opentelemetry-api>=1.45.1,<2
