@@ -6,7 +6,7 @@ cuda-toolkit[cublas,cudart,cufft,curand,cusolver,cusparse,nvrtc]==12.9.*
 nvidia-nvjitlink-cu12==12.9.86
 geoalchemy2
 numpy
-pillow
+pillow>=13.0.0,<14
 plyfile
 prometheus-client
 psycopg2-binary
@@ -19,3 +19,6 @@ sqlalchemy
 zstandard
 # HTTPS proxy TLS and chunked-response security fixes.
 urllib3>=2.8.0,<3
+
+# Security floors for the October 2026 dependency advisories.
+certifi>=2026.10.23
