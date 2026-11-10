@@ -14,6 +14,7 @@ ENV AERIAL_MODEL_SHA256=8674b0c24bf68aab5eb45009e0ac3808ce432237edf8cb5c50ae2191
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
+    apt \
     libgl1 \
     libglib2.0-0 \
     libssl3t64 openssl \

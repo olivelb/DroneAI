@@ -8,7 +8,7 @@ httpx2
 jsonschema
 mypy
 numpy
-pip==26.2.2
+pip==26.3
 pip-audit
 pip-tools
 pyflakes
