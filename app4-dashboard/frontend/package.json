@@ -17,8 +17,8 @@
   "dependencies": {
     "@types/leaflet": "^1.9.22",
     "leaflet": "^1.9.4",
-    "lucide-react": "^1.70.0",
-    "next": "16.4.5",
+    "lucide-react": "^1.72.0",
+    "next": "16.4.6",
     "playcanvas": "2.22.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
@@ -32,8 +32,8 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.4.5",
-    "jscpd": "5.4.2",
+    "eslint-config-next": "16.4.6",
+    "jscpd": "5.4.3",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^5.1.0"
