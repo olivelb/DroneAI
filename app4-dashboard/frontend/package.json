@@ -17,7 +17,7 @@
   "dependencies": {
     "@types/leaflet": "^1.9.22",
     "leaflet": "^1.9.4",
-    "lucide-react": "^1.72.0",
+    "lucide-react": "^1.77.0",
     "next": "16.4.6",
     "playcanvas": "2.22.0",
     "react": "19.3.1",
@@ -26,7 +26,7 @@
     "sharp": "0.35.5"
   },
   "devDependencies": {
-    "@playwright/test": "1.65.0",
+    "@playwright/test": "1.65.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^24",
     "@types/react": "^19",
@@ -36,7 +36,7 @@
     "jscpd": "5.4.3",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.1"
   },
   "overrides": {
     "postcss": "8.5.24",
